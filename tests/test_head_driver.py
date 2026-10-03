@@ -21,6 +21,7 @@ from motion_acq.head.dynamixel import (
     ADDR_PROFILE_VELOCITY,
     ADDR_TORQUE_ENABLE,
     FakeHeadBus,
+    HeadAlertError,
     HeadBusError,
     HeadDriver,
     HeadHardwareConfig,
@@ -189,19 +190,115 @@ def test_session_anchors_after_delay_then_follows():
     assert tick_to_deg(bus.present_ticks[2]) == pytest.approx(71.8, abs=0.1)
 
 
-def test_session_never_commands_before_anchor_or_while_lost():
+def make_session(samples, bus: FakeHeadBus, *, delay=0.0, faults=3) -> HeadSession:
+    driver = make_driver(bus)
+    driver.start()
+    return HeadSession(
+        ScriptedTracker(samples), driver,
+        HeadRetargeter(make_config(max_velocity_deg_s=60.0, max_acceleration_deg_s2=300.0)),
+        auto_start_delay_s=delay, max_consecutive_faults=faults, clock=Clock(),
+    )
+
+
+def goal_writes(bus: FakeHeadBus) -> int:
+    return sum(1 for _, addr, _ in bus.writes if addr == ADDR_GOAL_POSITION)
+
+
+def test_session_never_commands_before_anchor():
     lost = [FakeSample(pose_from_yaw_pitch(0, 0), False)] * 20
     bus = fake_bus()
-    session, steps = run_session(lost, bus)
+    session = make_session(lost, bus)
+    writes = goal_writes(bus)
+    for _ in lost:
+        session.tick()
     assert not session.anchored and session.stats.commands == 0
+    assert goal_writes(bus) == writes
+
+
+def test_session_writes_no_goal_while_hmd_lost():
     tracked = [FakeSample(pose_from_yaw_pitch(0, 0), True)] * 10
     moving = [FakeSample(pose_from_yaw_pitch(5, 0), True)] * 30
     gone = [FakeSample(pose_from_yaw_pitch(-30, 0), False)] * 30
-    session, steps = run_session(tracked + moving + gone, bus)
-    commands_before_loss = session.stats.commands
-    assert all(s.state is HeadState.HOLD for s in steps[-30:])
+    bus = fake_bus()
+    session = make_session(tracked + moving + gone, bus)
+    for _ in tracked + moving:
+        session.tick()
+    commands, writes, present = session.stats.commands, goal_writes(bus), dict(bus.present_ticks)
+    assert commands > 0
+    steps = [session.tick() for _ in gone]
+    assert all(s.state is HeadState.HOLD for s in steps)
     assert session.stats.holds == 30
-    assert session.stats.commands == commands_before_loss
+    assert session.stats.commands == commands
+    assert goal_writes(bus) == writes and bus.present_ticks == present
+
+
+def test_session_stops_when_reads_fail_even_if_writes_succeed():
+    samples = [FakeSample(pose_from_yaw_pitch(k / 5, 0), True) for k in range(200)]
+    bus = fake_bus()
+    session = make_session(samples, bus, faults=3)
+    session.tick()
+    bus.fail_reads = 1000
+    with pytest.raises(HeadBusError, match="consecutive faulty cycles"):
+        for _ in range(10):
+            session.tick()
+    assert session.stats.commands > 0  # the writes kept succeeding
+
+
+def test_session_stops_at_once_on_hardware_alert():
+    samples = [FakeSample(pose_from_yaw_pitch(0, 0), True)] * 20
+    bus = fake_bus()
+    session = make_session(samples, bus, faults=100)
+    session.tick()
+    bus.alert = True
+    with pytest.raises(HeadAlertError):
+        session.tick()
+
+
+def test_session_stops_on_runtime_hardware_error():
+    samples = [FakeSample(pose_from_yaw_pitch(0, 0), True)] * 200
+    bus = fake_bus()
+    session = make_session(samples, bus)
+    session.tick()
+    bus.hardware_error[1] = 0x20
+    with pytest.raises(HeadBusError, match="overload"):
+        for _ in range(100):  # checked once per second (50 ticks at 50 Hz)
+            session.tick()
+
+
+def test_non_finite_command_is_refused_without_writing():
+    bus = fake_bus()
+    driver = make_driver(bus)
+    driver.start()
+    writes = len(bus.writes)
+    with pytest.raises(HeadBusError, match="non-finite"):
+        driver.command(float("nan"), 70.0)
+    assert len(bus.writes) == writes
+
+
+def test_configure_failure_restores_torque_in_place():
+    bus = fake_bus()
+    bus.fail_writes = 0
+    driver = make_driver(bus)
+    original = bus._write
+
+    def fail_on_mode(dxl_id, address, value):
+        if address == ADDR_OPERATING_MODE and dxl_id == 2:
+            raise HeadBusError("fake mode write failure")
+        original(dxl_id, address, value)
+
+    bus.write1 = fail_on_mode  # type: ignore[method-assign]
+    with pytest.raises(HeadBusError, match="mode write"):
+        driver.start()
+    assert bus.torque_on(1) and bus.torque_on(2)
+    assert not bus.is_open
+
+
+def test_sag_out_of_window_after_torque_off_aborts_but_holds():
+    bus = fake_bus(tilt=57.5)  # 0.7 deg inside the lower tilt window edge
+    bus.sag_ticks_on_torque_off[2] = -40  # ~3.5 deg drop once torque is off
+    with pytest.raises(HeadBusError, match="home the head first"):
+        make_driver(bus).start()
+    assert bus.torque_on(2)
 
 
 def test_session_stops_after_consecutive_faults():

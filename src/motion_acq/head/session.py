@@ -16,7 +16,7 @@ from typing import IO, Protocol
 
 import numpy as np
 
-from motion_acq.head.dynamixel import HeadBusError, HeadDriver
+from motion_acq.head.dynamixel import HeadAlertError, HeadBusError, HeadDriver
 from motion_acq.head.retarget import HeadRetargeter, HeadState, HeadStep
 from motion_acq.tracking.base import ControllerPairSample
 
@@ -36,6 +36,7 @@ class SessionStats:
     commands: int = 0
     holds: int = 0
     faults: int = 0
+    reanchors: int = 0
 
 
 class HeadSession:
@@ -62,6 +63,7 @@ class HeadSession:
         self.stats = SessionStats()
         self._tracked_since: float | None = None
         self._consecutive_faults = 0
+        self._tick_faulted = False
         self._last_sent: tuple[float, float] | None = None
         self._last_hw_check = 0.0
         self.measured: tuple[float, float] | None = None
@@ -73,19 +75,28 @@ class HeadSession:
     def _read_measured(self) -> tuple[float, float] | None:
         try:
             self.measured = self.driver.read()
-            self._consecutive_faults = 0
         except HeadBusError as exc:
-            self._fault(f"read: {exc}")
+            self._fault(exc, "read")
             return None
         return self.measured
 
-    def _fault(self, message: str) -> None:
+    def _fault(self, exc: HeadBusError, where: str) -> None:
+        """Record a fault. A hardware alert stops at once; others count per tick."""
+        if isinstance(exc, HeadAlertError):
+            raise exc
         self.stats.faults += 1
+        self._tick_faulted = True
+        log.warning("Head fault (%s): %s", where, exc)
+
+    def _end_tick(self) -> None:
+        if not self._tick_faulted:
+            self._consecutive_faults = 0
+            return
+        self._tick_faulted = False
         self._consecutive_faults += 1
-        log.warning("Head fault (%d in a row): %s", self._consecutive_faults, message)
         if self._consecutive_faults > self.max_consecutive_faults:
             raise HeadBusError(
-                f"{self._consecutive_faults} consecutive head faults; stopping (head holds)."
+                f"{self._consecutive_faults} consecutive faulty cycles; stopping (head holds)."
             )
 
     def _maybe_anchor(self, sample: ControllerPairSample, now: float) -> None:
@@ -111,7 +122,7 @@ class HeadSession:
         try:
             errors = self.driver.hardware_errors()
         except HeadBusError as exc:
-            self._fault(f"hardware status: {exc}")
+            self._fault(exc, "hardware status")
             return
         if errors:
             raise HeadBusError(f"head hardware error latched: {errors}")
@@ -127,9 +138,8 @@ class HeadSession:
         try:
             self._last_sent = self.driver.command(*command)
             self.stats.commands += 1
-            self._consecutive_faults = 0
         except HeadBusError as exc:
-            self._fault(f"command: {exc}")
+            self._fault(exc, "command")
 
     def tick(self) -> HeadStep | None:
         now = self.clock()
@@ -139,16 +149,22 @@ class HeadSession:
         if not self.anchored:
             self._maybe_anchor(sample, now)
             self._write_log(now, sample, None)
+            self._end_tick()
             return None
         step = self.retargeter.step(
             np.asarray(sample.device_hmd_pose), bool(sample.hmd_tracked), now
         )
+        if step.reanchored:
+            self.stats.reanchors += 1
+            log.info("Head re-anchored at pan %.1f / tilt %.1f deg.",
+                     step.command_pan_deg, step.command_tilt_deg)
         if step.state is HeadState.HOLD:
             self.stats.holds += 1
         else:
             self._send(step)
         self._read_measured()
         self._write_log(now, sample, step)
+        self._end_tick()
         return step
 
     def _write_log(
@@ -161,6 +177,7 @@ class HeadSession:
             "hmd_quat_xyzw": [round(float(v), 6) for v in np.asarray(sample.device_hmd_pose)[3:7]],
             "hmd_tracked": bool(sample.hmd_tracked),
             "state": (step.state.value if step else self.retargeter.state.value),
+            "reanchored": bool(step.reanchored) if step else False,
             "rel_yaw_deg": step.rel_yaw_deg if step else None,
             "rel_pitch_deg": step.rel_pitch_deg if step else None,
             "filtered_yaw_deg": step.filtered_yaw_deg if step else None,

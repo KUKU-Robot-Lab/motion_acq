@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import time
 from pathlib import Path
 
@@ -39,6 +40,19 @@ from motion_acq.tracking.meta_quest import MetaQuestConfig, MetaQuestTrackingPro
 
 log = logging.getLogger("motion_acq.head")
 STATUS_PERIOD_S = 1.0
+MAX_RATE_HZ = 200.0
+
+
+def _positive_rate(text: str) -> float:
+    value = float(text)
+    if not 0.0 < value <= MAX_RATE_HZ:
+        raise argparse.ArgumentTypeError(f"rate must be in (0, {MAX_RATE_HZ:g}] Hz")
+    return value
+
+
+def _sigterm_to_interrupt(signum, frame) -> None:  # noqa: ARG001
+    # kill <pid> (SIGTERM) is the standard stop here: run the same cleanup as Ctrl+C.
+    raise KeyboardInterrupt
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -50,7 +64,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--tcp-port", type=int, default=None)
     p.add_argument("--sync-port", type=int, default=None)
     p.add_argument("--auto-start-delay-s", type=float, default=2.0)
-    p.add_argument("--rate-hz", type=float, default=None, help="Override head.rate_hz.")
+    p.add_argument("--rate-hz", type=_positive_rate, default=None, help="Override head.rate_hz.")
     p.add_argument("--duration-s", type=float, default=0.0, help="Stop after N s (0 = until Ctrl+C).")
     p.add_argument("--log-dir", type=Path, default=Path("logs/head"))
     p.add_argument("--no-log", action="store_true")
@@ -93,7 +107,9 @@ def main(argv: list[str] | None = None) -> None:
     config = load_head_config(args.rig_config, allow_fake_default=args.backend == "fake")
     if not config.from_station:
         log.warning("No head section in %s; fake head uses home 0/0.", args.rig_config)
-    rate_hz = args.rate_hz or config.rate_hz
+    rate_hz = args.rate_hz if args.rate_hz is not None else config.rate_hz
+    if not 0.0 < rate_hz <= MAX_RATE_HZ:
+        raise SystemExit(f"head.rate_hz {rate_hz} is outside (0, {MAX_RATE_HZ:g}].")
     retarget = config.retarget.with_axes(args.axes)
     log.info(
         "Head %s backend, axes=%s, pan window [%.1f, %.1f], tilt window [%.1f, %.1f] deg, %.0f Hz.",
@@ -105,6 +121,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     tracker = build_tracker(args)
     log_file = None if args.no_log else open_log(args.log_dir, os.environ.get(STATION_ENV, ""))
+    signal.signal(signal.SIGTERM, _sigterm_to_interrupt)
     tracker.start()
     try:
         measured = driver.start()
@@ -121,10 +138,15 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         log.info("Stopping head.")
     finally:
-        tracker.stop()
-        driver.stop(torque_off=args.torque_off_on_exit)
-        if log_file is not None:
-            log_file.close()
+        try:
+            tracker.stop()
+        except Exception:  # noqa: BLE001 - never skip the driver cleanup
+            log.exception("tracker.stop() failed")
+        try:
+            driver.stop(torque_off=args.torque_off_on_exit)
+        finally:
+            if log_file is not None:
+                log_file.close()
 
 
 def _run(session: HeadSession, rate_hz: float, duration_s: float) -> None:
@@ -138,8 +160,8 @@ def _run(session: HeadSession, rate_hz: float, duration_s: float) -> None:
             _status(session, step)
         time.sleep(max(period - (time.monotonic() - cycle), 0.0))
     s = session.stats
-    log.info("Head done: %d cycles, %d commands, %d hold cycles, %d faults.",
-             s.cycles, s.commands, s.holds, s.faults)
+    log.info("Head done: %d cycles, %d commands, %d hold cycles, %d re-anchors, %d faults.",
+             s.cycles, s.commands, s.holds, s.reanchors, s.faults)
 
 
 def _status(session: HeadSession, step) -> None:

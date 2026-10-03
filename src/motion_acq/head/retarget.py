@@ -22,9 +22,9 @@ import numpy as np
 
 from motion_acq.tracking.transforms import quat_to_matrix
 
-# Below this horizontal component of the forward axis the HMD looks almost
-# straight up or down and yaw is undefined.
-_MIN_HORIZONTAL = 1e-3
+# Above this |pitch| the forward axis is close to vertical: its heading is
+# dominated by noise (about 11x at 85 deg), so yaw is held instead of updated.
+MAX_YAW_PITCH_DEG = 75.0
 
 
 def wrap_deg(angle: float) -> float:
@@ -32,18 +32,22 @@ def wrap_deg(angle: float) -> float:
     return (float(angle) + 180.0) % 360.0 - 180.0
 
 
-def hmd_yaw_pitch_deg(pose7: np.ndarray) -> tuple[float, float] | None:
-    """Absolute yaw/pitch of the HMD forward axis, or None when undefined."""
-    quaternion = np.asarray(pose7, dtype=np.float64).reshape(7)[3:7]
+def hmd_yaw_pitch_deg(pose7: np.ndarray) -> tuple[float | None, float] | None:
+    """Absolute (yaw, pitch) of the HMD forward axis.
+
+    Returns None for an unusable pose; yaw is None when |pitch| exceeds
+    MAX_YAW_PITCH_DEG and the heading is not trustworthy.
+    """
+    pose = np.asarray(pose7, dtype=np.float64).reshape(7)
+    quaternion = pose[3:7]
     if not np.all(np.isfinite(quaternion)) or np.linalg.norm(quaternion) < 1e-6:
         return None
     forward = quat_to_matrix(quaternion)[:, 0]
     horizontal = math.hypot(forward[0], forward[1])
-    if horizontal < _MIN_HORIZONTAL:
-        return None
-    yaw = math.degrees(math.atan2(forward[1], forward[0]))
     pitch = math.degrees(math.atan2(forward[2], horizontal))
-    return yaw, pitch
+    if abs(pitch) > MAX_YAW_PITCH_DEG:
+        return None, pitch
+    return math.degrees(math.atan2(forward[1], forward[0])), pitch
 
 
 class OneEuroFilter:
@@ -185,6 +189,15 @@ class RetargetConfig:
     d_cutoff_hz: float = 1.0
     max_velocity_deg_s: float = 60.0
     max_acceleration_deg_s2: float = 300.0
+    # A control cycle longer than this (a stalled loop) still integrates only
+    # this much time, so a stall never turns into one large step.
+    max_step_dt_s: float = 0.06
+    # Resume from a HOLD longer than this by re-anchoring at the current head
+    # and HMD pose (Quest reconnect, app restart, recenter while lost).
+    reanchor_after_hold_s: float = 0.5
+    # A frame-to-frame HMD jump larger than this is a tracking-origin change
+    # (Quest recenter), not head motion: hold and re-anchor.
+    max_hmd_jump_deg: float = 30.0
     pan_enabled: bool = True
     tilt_enabled: bool = True
 
@@ -202,7 +215,7 @@ class RetargetConfig:
 class HeadState(str, Enum):
     IDLE = "idle"  # not anchored yet: never command
     RUNNING = "running"
-    HOLD = "hold"  # HMD lost or undefined: keep the last command
+    HOLD = "hold"  # HMD lost, unusable or jumped: keep the last command
 
 
 @dataclass(frozen=True)
@@ -216,6 +229,7 @@ class HeadStep:
     target_tilt_deg: float | None
     command_pan_deg: float | None
     command_tilt_deg: float | None
+    reanchored: bool = False
 
 
 class _Axis:
@@ -227,74 +241,123 @@ class _Axis:
         self.limiter = RateLimiter(config.max_velocity_deg_s, config.max_acceleration_deg_s2)
         self.base_deg = axis.home_deg
         self.target_deg = axis.home_deg
+        self.filtered = 0.0
 
-    def anchor(self, measured_deg: float, t_s: float) -> None:
-        self.base_deg = self.axis.clamp(measured_deg)
+    def anchor(self, head_deg: float, t_s: float) -> None:
+        self.base_deg = self.axis.clamp(head_deg)
         self.target_deg = self.base_deg
+        self.filtered = 0.0
         self.deadband.reset(0.0)
         self.filter.reset(0.0, t_s)
         self.limiter.reset(self.base_deg)
 
-    def step(self, relative_deg: float, t_s: float, dt: float) -> tuple[float, float]:
-        filtered = self.filter(self.deadband(relative_deg), t_s)
+    def step(self, relative_deg: float, t_s: float, dt: float) -> float:
+        self.filtered = self.filter(self.deadband(relative_deg), t_s)
         if self.enabled:
-            raw = self.base_deg + self.axis.sign * self.axis.scale * filtered
+            raw = self.base_deg + self.axis.sign * self.axis.scale * self.filtered
             self.target_deg = self.axis.clamp(raw)
         else:
             self.target_deg = self.base_deg
-        return filtered, self.limiter(self.target_deg, dt)
+        return self.limiter(self.target_deg, dt)
 
 
 class HeadRetargeter:
-    """Anchor-relative HMD yaw/pitch -> limited pan/tilt commands."""
+    """Anchor-relative HMD yaw/pitch -> limited pan/tilt commands.
+
+    Yaw is unwrapped continuously (no flip at ±180 deg from the anchor) and is
+    held while the HMD looks near-vertically. HOLD keeps the last command; a
+    long HOLD or an HMD jump re-anchors so the head never snaps to a new origin.
+    """
 
     def __init__(self, config: RetargetConfig) -> None:
         self.config = config
         self.state = HeadState.IDLE
         self._anchor_yaw = 0.0
         self._anchor_pitch = 0.0
+        self._yaw_unwrapped = 0.0
+        self._last_raw_yaw = 0.0
+        self._last_pitch = 0.0
         self._last_t: float | None = None
+        self._hold_since: float | None = None
         self._pan = _Axis(config.pan, config, config.pan_enabled)
         self._tilt = _Axis(config.tilt, config, config.tilt_enabled)
+
+    @property
+    def command_deg(self) -> tuple[float, float]:
+        return self._pan.limiter.position, self._tilt.limiter.position
 
     def anchor(
         self, hmd_pose7: np.ndarray, head_deg: tuple[float, float], t_s: float
     ) -> bool:
         """Capture R_hmd_anchor and R_head_anchor. False if the HMD pose is unusable."""
         angles = hmd_yaw_pitch_deg(hmd_pose7)
-        if angles is None:
+        if angles is None or angles[0] is None:
             return False
-        self._anchor_yaw, self._anchor_pitch = angles
+        yaw, pitch = angles
+        self._anchor_yaw = self._yaw_unwrapped = self._last_raw_yaw = yaw
+        self._anchor_pitch = self._last_pitch = pitch
         self._pan.anchor(head_deg[0], t_s)
         self._tilt.anchor(head_deg[1], t_s)
         self._last_t = t_s
+        self._hold_since = None
         self.state = HeadState.RUNNING
         return True
+
+    def _hold(self, t_s: float) -> HeadStep:
+        if self._hold_since is None:
+            self._hold_since = t_s
+        self.state = HeadState.HOLD
+        self._pan.limiter.stop()
+        self._tilt.limiter.stop()
+        return HeadStep(
+            HeadState.HOLD, None, None, None, None,
+            self._pan.target_deg, self._tilt.target_deg, *self.command_deg,
+        )
+
+    def _reanchor(self, hmd_pose7: np.ndarray, t_s: float) -> HeadStep:
+        self.anchor(hmd_pose7, self.command_deg, t_s)
+        return HeadStep(
+            HeadState.RUNNING, 0.0, 0.0, 0.0, 0.0,
+            self._pan.target_deg, self._tilt.target_deg, *self.command_deg,
+            reanchored=True,
+        )
 
     def step(self, hmd_pose7: np.ndarray | None, tracked: bool, t_s: float) -> HeadStep:
         if self.state is HeadState.IDLE:
             return HeadStep(HeadState.IDLE, *([None] * 8))
-        dt = 0.0 if self._last_t is None else max(t_s - self._last_t, 0.0)
+        raw_dt = 0.0 if self._last_t is None else max(t_s - self._last_t, 0.0)
+        dt = min(raw_dt, self.config.max_step_dt_s)
         self._last_t = t_s
         angles = hmd_yaw_pitch_deg(hmd_pose7) if tracked and hmd_pose7 is not None else None
         if angles is None:
-            # HMD loss -> head HOLD on the last command; resume decelerated.
-            self.state = HeadState.HOLD
-            self._pan.limiter.stop()
-            self._tilt.limiter.stop()
-            return HeadStep(
-                HeadState.HOLD, None, None, None, None,
-                self._pan.target_deg, self._tilt.target_deg,
-                self._pan.limiter.position, self._tilt.limiter.position,
-            )
+            return self._hold(t_s)
+        assert hmd_pose7 is not None
+        raw_yaw, pitch = angles
+        long_hold = (
+            self._hold_since is not None
+            and t_s - self._hold_since > self.config.reanchor_after_hold_s
+        )
+        jump = abs(pitch - self._last_pitch) > self.config.max_hmd_jump_deg or (
+            raw_yaw is not None
+            and abs(wrap_deg(raw_yaw - self._last_raw_yaw)) > self.config.max_hmd_jump_deg
+        )
+        if long_hold or jump:
+            if raw_yaw is None:
+                return self._hold(t_s)  # cannot anchor while looking vertically
+            return self._reanchor(hmd_pose7, t_s)
+        self._hold_since = None
         self.state = HeadState.RUNNING
-        rel_yaw = wrap_deg(angles[0] - self._anchor_yaw)
-        rel_pitch = angles[1] - self._anchor_pitch
-        filt_yaw, pan_cmd = self._pan.step(rel_yaw, t_s, dt)
-        filt_pitch, tilt_cmd = self._tilt.step(rel_pitch, t_s, dt)
+        if raw_yaw is not None:
+            self._yaw_unwrapped += wrap_deg(raw_yaw - self._last_raw_yaw)
+            self._last_raw_yaw = raw_yaw
+        self._last_pitch = pitch
+        rel_yaw = self._yaw_unwrapped - self._anchor_yaw
+        rel_pitch = pitch - self._anchor_pitch
+        pan_cmd = self._pan.step(rel_yaw, t_s, dt)
+        tilt_cmd = self._tilt.step(rel_pitch, t_s, dt)
         return HeadStep(
             HeadState.RUNNING,
-            rel_yaw, rel_pitch, filt_yaw, filt_pitch,
+            rel_yaw, rel_pitch, self._pan.filtered, self._tilt.filtered,
             self._pan.target_deg, self._tilt.target_deg,
             pan_cmd, tilt_cmd,
         )

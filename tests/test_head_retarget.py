@@ -38,8 +38,12 @@ def test_mock_unity_motion_signs_match_tracking_frame():
     assert (yaw, pitch) == pytest.approx((0.0, -20.0), abs=1e-6)
 
 
-def test_straight_down_has_no_yaw():
-    assert hmd_yaw_pitch_deg(pose_from_yaw_pitch(0, -90)) is None
+def test_near_vertical_has_no_yaw_but_keeps_pitch():
+    yaw, pitch = hmd_yaw_pitch_deg(pose_from_yaw_pitch(0, -90))
+    assert yaw is None and pitch == pytest.approx(-90.0)
+    yaw, pitch = hmd_yaw_pitch_deg(pose_from_yaw_pitch(30, 80))
+    assert yaw is None and pitch == pytest.approx(80.0)
+    assert hmd_yaw_pitch_deg(pose_from_yaw_pitch(30, 70))[0] == pytest.approx(30.0)
 
 
 def test_wrap_deg():
@@ -97,7 +101,11 @@ def test_anchor_relative_mapping_with_signs_and_clamp():
     assert step.rel_pitch_deg == pytest.approx(5.0, abs=1e-6)
     assert step.command_pan_deg == pytest.approx(7.1, abs=1e-3)
     assert step.command_tilt_deg == pytest.approx(76.8, abs=1e-3)
-    step = rt.step(pose_from_yaw_pitch(120, 30), True, 0.06)  # far beyond the window
+    t = 0.04
+    for k in range(1, 61):  # turn on gradually (1 deg/frame) far beyond the window
+        t += 0.02
+        step = rt.step(pose_from_yaw_pitch(60 + k, -25 + k), True, t)
+    assert not step.reanchored
     assert step.command_pan_deg == pytest.approx(17.1)
     assert step.command_tilt_deg == pytest.approx(86.8)
 
@@ -144,3 +152,100 @@ def test_anchor_clamps_start_into_window():
     rt.anchor(pose_from_yaw_pitch(0, 0), (40.0, 71.8), 0.0)
     step = rt.step(pose_from_yaw_pitch(0, 0), True, 0.02)
     assert step.target_pan_deg == pytest.approx(17.1)
+
+
+def _walk(rt, start_t, poses, dt=0.02):
+    t, steps = start_t, []
+    for pose in poses:
+        t += dt
+        steps.append(rt.step(pose, True, t))
+    return t, steps
+
+
+def test_yaw_unwraps_across_180_without_flipping():
+    rt = HeadRetargeter(make_config())
+    rt.anchor(pose_from_yaw_pitch(170, 0), (-2.9, 71.8), 0.0)
+    # Turn left through +180 (raw yaw wraps to -180..-170): relative +20.
+    path = [pose_from_yaw_pitch(170 + k, 0) for k in range(1, 21)]
+    _, steps = _walk(rt, 0.0, path)
+    assert steps[-1].rel_yaw_deg == pytest.approx(20.0, abs=1e-6)
+    assert all(b.rel_yaw_deg > a.rel_yaw_deg for a, b in zip(steps, steps[1:], strict=False))
+
+
+def test_jitter_opposite_the_anchor_stays_on_one_side():
+    rt = HeadRetargeter(make_config(max_velocity_deg_s=60.0, max_acceleration_deg_s2=300.0))
+    rt.anchor(pose_from_yaw_pitch(0, 0), (-2.9, 71.8), 0.0)
+    walk = [pose_from_yaw_pitch(k, 0) for k in range(1, 180)]  # turn left to 179
+    t, _ = _walk(rt, 0.0, walk)
+    jitter = [pose_from_yaw_pitch(179 if i % 2 else -179, 0) for i in range(100)]
+    _, steps = _walk(rt, t, jitter)
+    targets = {round(s.target_pan_deg, 3) for s in steps}
+    assert targets == {17.1}  # pinned at the left end, never the right end
+
+
+def test_yaw_is_held_while_looking_near_vertically():
+    rt = HeadRetargeter(make_config())
+    rt.anchor(pose_from_yaw_pitch(0, 60), (-2.9, 71.8), 0.0)
+    path = [pose_from_yaw_pitch(0, 60 + k) for k in range(1, 26)]  # up to 85 deg
+    t, steps = _walk(rt, 0.0, path)
+    noisy = [pose_from_yaw_pitch(25 * (-1) ** i, 85) for i in range(20)]
+    _, steps = _walk(rt, t, noisy)
+    assert {round(s.rel_yaw_deg, 6) for s in steps} == {0.0}
+    assert steps[-1].rel_pitch_deg == pytest.approx(25.0)
+
+
+def test_anchor_refused_while_looking_vertically():
+    rt = HeadRetargeter(make_config())
+    assert not rt.anchor(pose_from_yaw_pitch(0, 88), (-2.9, 71.8), 0.0)
+    assert rt.state is HeadState.IDLE
+
+
+def test_long_hold_reanchors_without_moving_the_head():
+    rt = HeadRetargeter(make_config(max_velocity_deg_s=60.0, max_acceleration_deg_s2=300.0))
+    rt.anchor(pose_from_yaw_pitch(0, 0), (-2.9, 71.8), 0.0)
+    t, steps = _walk(rt, 0.0, [pose_from_yaw_pitch(10, 0)] * 100)
+    held = steps[-1].command_pan_deg
+    for _ in range(50):  # 1 s lost: the operator turned, or the app restarted
+        t += 0.02
+        rt.step(None, False, t)
+    step = rt.step(pose_from_yaw_pitch(-20, 0), True, t + 0.02)
+    assert step.reanchored and step.command_pan_deg == pytest.approx(held)
+    t, steps = _walk(rt, t + 0.02, [pose_from_yaw_pitch(-15, 0)] * 100)
+    assert steps[-1].command_pan_deg == pytest.approx(held + 5.0, abs=0.05)
+
+
+def test_recenter_jump_reanchors_instead_of_snapping():
+    rt = HeadRetargeter(make_config(max_velocity_deg_s=60.0, max_acceleration_deg_s2=300.0))
+    rt.anchor(pose_from_yaw_pitch(0, 0), (-2.9, 71.8), 0.0)
+    t, steps = _walk(rt, 0.0, [pose_from_yaw_pitch(5, 0)] * 100)
+    before = steps[-1].command_pan_deg
+    step = rt.step(pose_from_yaw_pitch(95, 0), True, t + 0.02)  # Quest recenter
+    assert step.reanchored and step.command_pan_deg == pytest.approx(before)
+
+
+def test_stalled_loop_does_not_turn_into_a_big_step():
+    cfg = make_config(max_velocity_deg_s=60.0, max_acceleration_deg_s2=300.0)
+    rt = HeadRetargeter(cfg)
+    rt.anchor(pose_from_yaw_pitch(0, 0), (-2.9, 71.8), 0.0)
+    t, steps = _walk(rt, 0.0, [pose_from_yaw_pitch(k, 0) for k in range(1, 16)])
+    before = steps[-1].command_pan_deg
+    step = rt.step(pose_from_yaw_pitch(15, 0), True, t + 2.0)  # 2 s stall
+    assert abs(step.command_pan_deg - before) <= 60.0 * cfg.max_step_dt_s + 1e-6
+
+
+def test_rate_limiter_target_reversal_keeps_limits():
+    lim = RateLimiter(max_velocity=60.0, max_acceleration=300.0)
+    lim.reset(0.0)
+    dt, positions = 0.02, []
+    for i in range(300):
+        positions.append(lim(20.0 if i < 30 else -20.0, dt))
+    v = np.diff([0.0, *positions]) / dt
+    a = np.diff([0.0, *v]) / dt
+    assert np.max(np.abs(v)) <= 60.0 + 1e-6
+    # Every step keeps the limit except the single arrival step, where the snap
+    # onto the target leaves a quantisation residue (measured 1.11x).
+    arrivals = [int(np.argmax(np.isclose(positions, x))) for x in (20.0, -20.0)]
+    others = np.delete(np.abs(a), [i + k for i in arrivals for k in (0, 1)])
+    assert np.max(others) <= 300.0 + 1e-6
+    assert np.max(np.abs(a)) <= 300.0 * 1.15
+    assert min(positions) >= -20.0 - 1e-9 and positions[-1] == pytest.approx(-20.0)

@@ -84,10 +84,16 @@ Quest Link.
 `macq head` runs as its own process, independent of the arms. It anchors after
 the HMD has been tracked for 2 s, then maps yaw -> pan and pitch -> tilt
 relative to that moment: deadband -> One Euro -> sign/scale -> window around
-home (pan ±20°, tilt ±15° at first) -> 60°/s, 300°/s² limits. HMD loss holds
-the head. Startup refuses a latched hardware error, a wrong motor model or a
-head outside its window, and enables torque in place (goal = present). Each
-run writes `logs/head/head_<station>_<time>.jsonl`.
+home (pan ±20°, tilt ±15° at first) -> 60°/s, 300°/s² limits. Yaw is unwrapped
+continuously and held while |pitch| > 75°. HMD loss holds the head; a HOLD
+longer than 0.5 s or a > 30° HMD jump (Quest recenter) re-anchors at the
+current head pose instead of snapping. Startup refuses another process on the
+port (flock + /proc check), a latched hardware error, a wrong motor model or a
+head outside its window, and enables torque in place (goal = present); a
+failure while torque is off re-enables it in place. A hardware-alert flag
+stops at once; other faults stop after 10 faulty cycles in a row. SIGTERM runs
+the same cleanup as Ctrl+C. Each run writes
+`logs/head/head_<station>_<time>.jsonl`.
 
 ```bash
 uv sync --extra head ...                 # dynamixel-sdk
