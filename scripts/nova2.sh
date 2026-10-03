@@ -3,12 +3,15 @@
 #
 #   scripts/nova2.sh up [both|right|left]      # start SenseCom, wait for the gloves
 #   scripts/nova2.sh status                    # adapter, gloves, SenseCom, glove topics
+#   scripts/nova2.sh driver                    # glove driver (nova2.launch.py) in the background, logged
 #   scripts/nova2.sh connect [both|right|left] # fallback: BlueZ connect (bumsu's connect_senseglove.py)
 #   scripts/nova2.sh disconnect [both|right|left]
 #
-# Then: ros2 launch motion_acq_hand nova2.launch.py (the glove driver refuses
-# to start without SenseCom), then calibrate (every SenseCom start: the raw
-# ranges move, macq station --real checks the calibration is newer).
+# Then: scripts/nova2.sh driver (the glove driver refuses to start without
+# SenseCom), then calibrate (every SenseCom start: the raw ranges move,
+# macq station --real checks the calibration is newer). SenseCom and the
+# driver run on the general cores of the sim2real CPU plan (motion_acq.cpu),
+# never on the RH56F1 EtherCAT master cores.
 #
 # Firmware v2 gloves are BLE: SenseCom finds them by name and connects itself,
 # BlueZ only needs to trust them (no pairing). The gloves are the shared lab
@@ -30,6 +33,12 @@ PLAYER_LOG="$HOME/.config/unity3d/SenseGlove/SenseCom 1.9.0/Player.log"
 SCAN_TIMEOUT_S="${NOVA2_SCAN_TIMEOUT_S:-15}"
 
 die() { echo "error: $*" >&2; exit 1; }
+
+# taskset prefix for the general cores; empty when the PC is not pinned.
+general_cores() {
+  local list; list="$("$PY" -m motion_acq.cpu --general 2>/dev/null || true)"
+  if [[ -n "$list" ]] && command -v taskset >/dev/null; then echo "taskset -c $list"; fi
+}
 command -v bluetoothctl >/dev/null || die "bluetoothctl not found (bluez)"
 [[ -x "$PY" ]] || die "$PY missing: run uv sync first"
 
@@ -123,11 +132,32 @@ cmd_sensecom() {
   local log; log="$LOG_DIR/sensecom_$(date +%Y%m%d_%H%M%S).log"
   # From ssh there is no XAUTHORITY; the GDM X11 session keeps its cookie here.
   local xauth="${XAUTHORITY:-/run/user/$(id -u)/gdm/Xauthority}"
-  (cd "$(dirname "$SENSECOM")" && DISPLAY="$display" XAUTHORITY="$xauth" setsid "$SENSECOM" >"$log" 2>&1 < /dev/null &)
+  local pin; pin="$(general_cores)"
+  # shellcheck disable=SC2086
+  (cd "$(dirname "$SENSECOM")" && DISPLAY="$display" XAUTHORITY="$xauth" setsid $pin "$SENSECOM" >"$log" 2>&1 < /dev/null &)
   sleep 3
   pids="$(sensecom_pids)"
   [[ -n "$pids" ]] || die "SenseCom exited at start; see $log"
   echo "SenseCom running (PID ${pids//$'\n'/ }, DISPLAY $display, log $log)"
+}
+
+cmd_driver() {
+  if pgrep -f "motion_acq_hand nova2.launch.py" >/dev/null; then echo "glove driver already running"; return 0; fi
+  [[ -n "$(sensecom_pids)" ]] || die "SenseCom is not running (scripts/nova2.sh up first)"
+  local distro="${ROS_DISTRO:-}"
+  [[ -n "$distro" ]] || for d in humble jazzy; do [[ -f "/opt/ros/$d/setup.bash" ]] && distro="$d" && break; done
+  [[ -f "$ROOT/ros_ws/install/setup.bash" ]] || die "ros_ws not built (scripts/ros_ws_setup.sh --full)"
+  mkdir -p "$LOG_DIR"
+  local log; log="$LOG_DIR/driver_$(date +%Y%m%d_%H%M%S).log"
+  local pin; pin="$(general_cores)"
+  setsid bash -c "source /opt/ros/$distro/setup.bash && source '$ROOT/ros_ws/install/setup.bash' && exec $pin ros2 launch motion_acq_hand nova2.launch.py" \
+    >"$log" 2>&1 < /dev/null &
+  sleep 8
+  if grep -q "Configured and activated senseglove_state_broadcaster" "$log"; then
+    echo "glove driver up (log $log); stop it with Ctrl+C in its terminal or kill the ros2 launch PID"
+  else
+    echo "glove driver not confirmed yet; see $log" >&2
+  fi
 }
 
 cmd_up() {
@@ -139,7 +169,7 @@ cmd_up() {
   while :; do
     pending=""
     while read -r side serial mac name; do is_connected "$mac" || pending+=" $side"; done < <(gloves "$1")
-    [[ -z "$pending" ]] && { echo "gloves connected; next: ros2 launch motion_acq_hand nova2.launch.py"; return 0; }
+    [[ -z "$pending" ]] && { echo "gloves connected; next: $0 driver"; return 0; }
     (( SECONDS >= deadline )) && break
     sleep 2
   done
@@ -154,6 +184,7 @@ case "${1:-status}" in
   connect) cmd_connect "$which" ;;
   disconnect) cmd_disconnect "$which" ;;
   sensecom) cmd_sensecom ;;
+  driver) cmd_driver ;;
   up) cmd_up "$which" ;;
-  *) die "usage: $0 {up|status|sensecom|connect|disconnect} [both|right|left]" ;;
+  *) die "usage: $0 {up|driver|status|sensecom|connect|disconnect} [both|right|left]" ;;
 esac

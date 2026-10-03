@@ -52,6 +52,8 @@ class OpenArmCanSettings:
     home_tolerance_rad: float = 0.05
     watchdog_timeout_s: float = 0.15
     following_error_rad: float = 0.35
+    # SCHED_FIFO of the streamer thread, as the s2r OpenArm controller_manager (0 = off).
+    rt_priority: int = 50
     # False when the J8 gripper motor is absent (e.g. an RH56F1 hand is mounted).
     gripper_enabled: bool = True
     gripper_closed_position_rad: float = 0.0
@@ -109,6 +111,7 @@ def load_openarm_settings(
         home_tolerance_rad=float(control.get("home_tolerance_rad", 0.05)),
         watchdog_timeout_s=float(control.get("watchdog_timeout_s", 0.15)),
         following_error_rad=float(control.get("following_error_rad", 0.35)),
+        rt_priority=int(control.get("rt_priority", 50)),
         gripper_enabled=bool(
             rig_gripper.get("enabled", gripper.get("enabled", True))
         ),
@@ -261,6 +264,7 @@ class OpenArmJointStreamer(JointStreamer):
         super().__init__(
             command_rate_hz=settings.command_rate_hz,
             thread_name="openarm-sdk-streamer",
+            rt_priority=settings.rt_priority,
         )
         self.arms = arms
         self.settings = settings

@@ -32,6 +32,7 @@ from motion_acq_hand.common import (
     fake_isolated,
     glove_qos,
     hand_ns,
+    keep_off_rt,
 )
 
 import rclpy
@@ -194,6 +195,7 @@ def main() -> None:
 
     from rclpy.signals import SignalHandlerOptions
 
+    print(keep_off_rt(), flush=True)  # off the RH56F1 EtherCAT cores (sim2real cpu plan)
     stops = threading.Semaphore(0)
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     for sig in (signal.SIGINT, signal.SIGTERM):

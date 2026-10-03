@@ -86,6 +86,23 @@ def _run(cmd: list[str], timeout: float = 10.0) -> str:
         return ""
 
 
+def _cpu_report() -> None:
+    """CPU plan and RT limit, shared with sim2real. A missing RT limit only warns:
+    the arm streamer then runs without SCHED_FIFO, as HandUMI always did."""
+    from motion_acq.cpu import ARM_STREAMER_FIFO, current_plan, format_cpulist, governors, rt_limit
+
+    cpu = current_plan()
+    where = (f"general {format_cpulist(cpu.general)}, RH56F1 EtherCAT cores {format_cpulist(cpu.reserved)} kept free"
+             if cpu.rt else cpu.note)
+    print(f"  [info] CPU plan: {where}; governor {','.join(governors()) or '?'}")
+    limit = rt_limit()
+    if limit >= ARM_STREAMER_FIFO:
+        print(f"  [ok] RT limit: rtprio {limit} (arm streamer SCHED_FIFO {ARM_STREAMER_FIFO})")
+    else:
+        print(f"  [warn] RT limit: rtprio {limit}; the arm streamer runs without SCHED_FIFO "
+              "(once: sudo bash scripts/rt_setup.sh, then reboot)")
+
+
 def can_holders(pgrep_output: str) -> list[str]:
     """s2r processes that may own the OpenArm CAN links (pgrep -af lines).
 
@@ -111,6 +128,7 @@ def preflight(plan: Plan) -> list[str]:
         linked = "tcp:65432" in forwards
         _check(linked, "Quest USB link", "adb forward tcp:65432" if linked else
                "no tcp:65432 forward (scripts/quest_usb.sh status / forward)", problems)
+    _cpu_report()
     robot = str((plan.rig.get("recording") or {}).get("robot") or "openarmv1")
     runtime = load_embodiment(robot)
     settings = load_openarm_settings(
@@ -289,6 +307,10 @@ def recorder_command(plan: Plan, extra: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    from motion_acq.cpu import keep_off_rt
+
+    # Every producer and the recorder inherit this affinity (sim2real cpu plan).
+    print(keep_off_rt(), file=sys.stderr)
     argv = list(sys.argv[1:] if argv is None else argv)
     extra: list[str] = []
     if "--" in argv:

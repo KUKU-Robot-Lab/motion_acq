@@ -33,6 +33,7 @@ def ensure_motion_acq_on_path() -> Path:
 
 REPO_ROOT = ensure_motion_acq_on_path()
 
+from motion_acq.cpu import keep_off_rt  # noqa: E402
 from motion_acq.hand.nova2 import SIDE_TAG, GloveDataError, check_serial, glove_topic, load_gloves  # noqa: E402,F401
 
 
@@ -116,6 +117,7 @@ def spin_node(factory) -> None:
     import rclpy
     from rclpy.executors import ExternalShutdownException
 
+    print(keep_off_rt(), flush=True)  # off the RH56F1 EtherCAT cores (sim2real cpu plan)
     rclpy.init()
     node = None
     try:

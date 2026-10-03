@@ -778,6 +778,9 @@ def _run_real() -> None:
 
 
 def main() -> None:
+    from motion_acq.cpu import keep_off_rt
+
+    print(keep_off_rt(), file=sys.stderr)  # off the RH56F1 EtherCAT cores (sim2real cpu plan)
     _run_real()
 
 

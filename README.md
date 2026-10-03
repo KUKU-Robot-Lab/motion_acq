@@ -127,7 +127,7 @@ package `ros_ws/src/motion_acq_hand` wraps it for the system interpreter:
 
 | executable | role |
 |---|---|
-| `hand_node` | glove `/senseglove/glove<serial>/<rh\|lh>/senseglove_states` (best_effort) -> `/hand_<side>/angle_set` at 30 Hz. Rules in `motion_acq.hand.controller`: disabled until `/motion_acq/hand_<side>/enable` (Bool); enable needs a fresh, plausible `angle_actual` (no 0/-1/65535, within each axis range ±100) and subscribed driver topics; starts from the measured pose and walks home (open) before following the glove; `hand_id` taken from `angle_actual`; speed/force re-sent every 1 s; glove older than 0.2 s -> HOLD (nothing published); `angle_actual` lost > 0.5 s -> latched FAULT (disable + enable to clear); disable, Ctrl+C and SIGTERM walk the hand home (open) and then stop; a FAULT leaves it where it is. Params `amplitude` (0-1 of the open->closed travel), `driver_speed`, `driver_force`. `enable_on_start` only on the fake domain. JSONL log + optional UDP sidecar |
+| `hand_node` | glove `/senseglove/glove<serial>/<rh\|lh>/senseglove_states` (best_effort) -> `/hand_<side>/angle_set` at 120 Hz (the sim2real RH56F1 EtherCAT command rate). Rules in `motion_acq.hand.controller`: disabled until `/motion_acq/hand_<side>/enable` (Bool); enable needs a fresh, plausible `angle_actual` (no 0/-1/65535, within each axis range ±100) and subscribed driver topics; starts from the measured pose and walks home (open) before following the glove; `hand_id` taken from `angle_actual`; speed/force re-sent every 1 s; glove older than 0.2 s -> HOLD (nothing published); `angle_actual` lost > 0.5 s -> latched FAULT (disable + enable to clear); disable, Ctrl+C and SIGTERM walk the hand home (open) and then stop; a FAULT leaves it where it is. Params `amplitude` (0-1 of the open->closed travel), `driver_speed`, `driver_force`. `enable_on_start` only on the fake domain. JSONL log + optional UDP sidecar |
 | `calibrate` | records the open / fist / thumb_opposed poses -> `configs/hands/calibration/<user>_<side>.yaml` |
 | `fake_glove`, `fake_rh56f1` | fake Nova 2 and fake RH56F1 (honours `hand_id` like the vendor driver); refuse to run unless `ROS_DOMAIN_ID=177` and `ROS_LOCALHOST_ONLY=1`, fixed (they use the real driver topic names) |
 
@@ -205,6 +205,27 @@ Fake end to end (no hardware): `scripts/fake_hand_check.sh right` and `left`
 once (fake glove calibrations), then `.venv/bin/python scripts/fake_record_check.py`
 (mock Quest, fake head bus, fake hands on domain 177, `teleop-record
 --fake-robot` with a simulated OpenArm SDK) -> PASS/FAIL on the dataset.
+
+## CPU and real-time (shared with sim2real)
+
+Both stations follow the sim2real CPU plan (`motion_acq.cpu`, a port of
+sim2real `policy_control/cpu_plan.py` with a parity test): the two RH56F1
+EtherCAT master cores (arm4090: cpu14/15 and their SMT siblings 30/31) stay
+free, and every motion_acq process (teleop-record, teleop-real, head, hand
+nodes, SenseCom, glove driver, `macq station` and its children) runs on the
+general cores (arm4090: 0-13,16-29). The OpenArm streamer thread asks for
+SCHED_FIFO 50 like the s2r controller_manager. That needs the RT limit,
+opened once per PC with the same files sim2real uses:
+
+```bash
+bash scripts/rt_setup.sh --check        # arm4090: already open (rtprio 98)
+sudo bash scripts/rt_setup.sh           # arm5080: once, then reboot
+.venv/bin/python -m motion_acq.cpu      # this PC's plan and limits
+```
+
+Without it the streamer runs at normal priority and `macq station --real`
+warns. Hand commands go out at 120 Hz, the s2r RH56F1 EtherCAT command rate.
+`MACQ_CPU_PIN=0` (or `S2R_CPU_PIN=0`) turns pinning off.
 
 ## Bringing a station up: `macq station`
 

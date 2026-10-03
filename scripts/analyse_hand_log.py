@@ -50,7 +50,7 @@ def main(path: str) -> int:
         failures.append("a HOLD cycle carried registers (would publish)")
     if any(r["glove_age_s"] is not None and r["glove_age_s"] <= 0.2 for r in holds):
         failures.append("HOLD with a fresh glove sample")
-    # Rate: q_command change per cycle within max velocity * dt (2 rad/s, 30 Hz, small slack).
+    # Rate: q_command change per cycle within max velocity * dt (2 rad/s, small slack).
     worst = 0.0
     for a, b in zip(running, running[1:], strict=False):
         dt = b["t_mono_s"] - a["t_mono_s"]

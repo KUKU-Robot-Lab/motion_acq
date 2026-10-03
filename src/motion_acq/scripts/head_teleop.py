@@ -27,6 +27,7 @@ import numpy as np
 
 from motion_acq.calibration.control_tcp import ControllerTcpCalibration
 from motion_acq.config import DEFAULT_RIG_CONFIG, STATION_ENV
+from motion_acq.cpu import keep_off_rt
 from motion_acq.head.config import HeadConfig, load_head_config
 from motion_acq.head.dynamixel import (
     FakeHeadBus,
@@ -121,6 +122,7 @@ def build_bus(args: argparse.Namespace, config: HeadConfig) -> HeadBus:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s - %(message)s", datefmt="%H:%M:%S")
+    log.info(keep_off_rt())  # off the RH56F1 EtherCAT cores (sim2real cpu plan)
     config = load_head_config(args.rig_config, allow_fake_default=args.backend == "fake")
     if not config.from_station:
         log.warning("No head section in %s; fake head uses home 0/0.", args.rig_config)

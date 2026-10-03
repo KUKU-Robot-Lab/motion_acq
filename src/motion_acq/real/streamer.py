@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import numpy as np
@@ -143,18 +144,26 @@ class JointStreamer:
                 ...
     """
 
-    def __init__(self, *, command_rate_hz: float, thread_name: str) -> None:
+    def __init__(self, *, command_rate_hz: float, thread_name: str, rt_priority: int = 0) -> None:
         if command_rate_hz <= 0.0:
             raise ValueError("command_rate_hz must be > 0")
         self.command_rate_hz = float(command_rate_hz)
+        self.rt_priority = int(rt_priority)
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._error: BaseException | None = None
         self._thread = threading.Thread(
-            target=self._run,
+            target=self._thread_main,
             name=thread_name,
             daemon=True,
         )
+
+    def _thread_main(self) -> None:
+        if self.rt_priority > 0:
+            from motion_acq.cpu import request_fifo
+
+            logging.getLogger(__name__).info("%s %s", self._thread.name, request_fifo(self.rt_priority))
+        self._run()
 
     def start(self) -> None:
         self._thread.start()
