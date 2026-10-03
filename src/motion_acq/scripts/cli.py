@@ -36,6 +36,10 @@ COMMANDS = {
         "motion_acq.scripts.teleop_record",
         "Record real-robot teleoperation demonstrations",
     ),
+    ("station",): Command(
+        "motion_acq.scripts.station",
+        "Bring up a station: head + hands + recorder (--fake | --real)",
+    ),
     ("head",): Command(
         "motion_acq.scripts.head_teleop",
         "Meta Quest HMD -> Dynamixel pan/tilt head (fake bus by default)",

@@ -3,11 +3,10 @@
 
     .venv/bin/python scripts/fake_record_check.py [--station arm4090] [--seconds 8]
 
-Starts the mock Quest (moving HMD), `macq head` on its fake bus, the fake hand
-chains for both sides (ROS_DOMAIN_ID=177, localhost only), then
-`macq teleop-record --fake-robot` in a pseudo-terminal, presses Space once to
-start, lets --episode-time-s save the episode, and checks the dataset. Every
-process it starts is its own child and is stopped by PID at the end.
+Runs `macq station --fake` (mock Quest, fake head bus, fake hand chains on
+ROS_DOMAIN_ID=177 localhost-only, teleop-record --fake-robot) in a
+pseudo-terminal, presses Space once to start, lets --episode-time-s save the
+episode, and checks the dataset. The station stops its own processes.
 """
 
 from __future__ import annotations
@@ -25,52 +24,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 VENV = ROOT / ".venv" / "bin"
 LOGS = ROOT / "logs" / "fake_record"
-PORTS = {"head": 47101, "hand_right": 47111, "hand_left": 47112}
 IDENTITY_TCP = """calibration:
   frame_convention: pose7=[x,y,z,qx,qy,qz,qw], meters, xyzw quaternion
   controller_to_gripper_tcp:
     left: {position: [0.0, 0.0, 0.0], quaternion: [0.0, 0.0, 0.0, 1.0]}
     right: {position: [0.0, 0.0, 0.0], quaternion: [0.0, 0.0, 0.0, 1.0]}
 """
-
-
-def ros_env_cmd(command: str) -> list[str]:
-    distro = os.environ.get("ROS_DISTRO") or next(
-        d for d in ("humble", "jazzy") if Path(f"/opt/ros/{d}/setup.bash").exists()
-    )
-    rc_ws = os.environ.get("ROBOT_CONTROL_WS", str(Path.home() / "rl_ws/robot_control/ros_ws/install"))
-    script = (
-        f"set +u; source /opt/ros/{distro}/setup.bash; source {rc_ws}/setup.bash; "
-        f"source {ROOT}/ros_ws/install/setup.bash; export ROS_DOMAIN_ID=177 ROS_LOCALHOST_ONLY=1; "
-        f"exec {command}"
-    )
-    return ["bash", "-c", script]
-
-
-class Procs:
-    def __init__(self) -> None:
-        self.items: list[tuple[str, subprocess.Popen]] = []
-
-    def start(self, name: str, cmd: list[str], **kw) -> subprocess.Popen:
-        log = open(LOGS / f"{name}.log", "w")
-        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-                                cwd=ROOT, **kw)
-        self.items.append((name, proc))
-        return proc
-
-    def stop_all(self) -> None:
-        for _name, proc in reversed(self.items):
-            if proc.poll() is None:
-                os.killpg(proc.pid, signal.SIGINT)  # own session: launch + its nodes
-        deadline = time.monotonic() + 15
-        for _name, proc in reversed(self.items):
-            try:
-                proc.wait(timeout=max(0.1, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGTERM)
-                proc.wait(timeout=5)
-
-
 def wait_for(path: Path, text: str, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -134,61 +93,44 @@ def main() -> int:
     ap.add_argument("--station", default="arm4090")
     ap.add_argument("--seconds", type=float, default=8.0)
     ap.add_argument("--check-only", action="store_true", help="only re-check the last dataset")
-    ap.add_argument("--arms-only", action="store_true", help="no head/hands: teleop-record --no-sidecars")
+    ap.add_argument("--arms-only", action="store_true", help="no head/hands (macq station --no-head --hands none)")
     args = ap.parse_args()
+    out = LOGS / "dataset"
     if args.check_only:
-        failures = check_dataset(LOGS / "dataset", args.seconds, 30, args.arms_only)
+        failures = check_dataset(out, args.seconds, 30, args.arms_only)
         print("FAIL: " + "; ".join(failures) if failures else "PASS")
         return 1 if failures else 0
     LOGS.mkdir(parents=True, exist_ok=True)
-    out = LOGS / "dataset"
     shutil.rmtree(out, ignore_errors=True)
     tcp = LOGS / "identity_tcp.yaml"
     tcp.write_text(IDENTITY_TCP)
-    cal = {side: ROOT / "logs" / "hand" / f"fake_calibration_{side}.yaml" for side in ("right", "left")}
-    env = {**os.environ, "MACQ_STATION": args.station, "MACQ_FAKE_ROBOT_START": "home",
-           "PYTHONUNBUFFERED": "1"}
-    procs = Procs()
+    env = {**os.environ, "MACQ_STATION": args.station, "PYTHONUNBUFFERED": "1"}
+    station_args = ["--no-head", "--hands", "none"] if args.arms_only else []
+    master, slave = os.openpty()
+    log_path = LOGS / "station.log"
+    log = open(log_path, "w")
+    # macq station --fake runs every producer and teleop-record in the foreground
+    # on this pseudo-terminal, exactly as the assistant would use it.
+    proc = subprocess.Popen([
+        str(VENV / "macq"), "station", "--fake", *station_args, "--",
+        "--controller-tcp-calibration", str(tcp), "--num-episodes", "1",
+        "--episode-time-s", str(args.seconds), "--output-dir", str(out),
+        "--no-preview", "--no-rerun", "--no-sounds", "--no-record-audio",
+    ], stdin=slave, stdout=log, stderr=subprocess.STDOUT, cwd=ROOT, env=env, start_new_session=True)
+    os.close(slave)
     try:
-        for side in () if args.arms_only else ("right", "left"):
-            if not cal[side].exists():
-                print(f"run scripts/fake_hand_check.sh {side} first (needs {cal[side]})")
-                return 2
-        procs.start("mock_quest", [str(VENV / "python"), "-m", "motion_acq.tracking.mock_quest_sender",
-                                   "--hmd-yaw-amp-deg", "20", "--hmd-pitch-amp-deg", "8"], env=env)
-        time.sleep(1.5)
-        if not args.arms_only:
-            procs.start("head", [str(VENV / "macq"), "head", "--udp-target", f"127.0.0.1:{PORTS['head']}",
-                                 "--quest-ip", "127.0.0.1", "--log-dir", str(LOGS)], env=env)
-        for side in () if args.arms_only else ("right", "left"):
-            procs.start(f"hand_{side}", ros_env_cmd(
-                f"ros2 launch motion_acq_hand fake_hand.launch.py side:={side} calibration:={cal[side]} "
-                f"udp_target:=127.0.0.1:{PORTS['hand_' + side]}"))
-        master, slave = os.openpty()
-        rec_log = LOGS / "teleop_record.log"
-        procs.start("teleop_record", [
-            str(VENV / "macq"), "teleop-record", "--device", "meta", "--fake-robot", "--skip-feetech",
-            "--space-start", "--skip-cameras", "--quest-ip", "127.0.0.1",
-            "--controller-tcp-calibration", str(tcp), "--num-episodes", "1",
-            "--episode-time-s", str(args.seconds), "--output-dir", str(out),
-            "--no-preview", "--no-rerun", "--no-sounds", "--no-record-audio",
-            *(["--no-sidecars"] if args.arms_only else []),
-        ], env=env, stdin=slave)
-        os.close(slave)
-        if not wait_for(rec_log, "press Space to start episode", 180):
-            print("recorder never became ready; see", rec_log)
+        if not wait_for(log_path, "press Space to start episode", 180):
+            print("recorder never became ready; see", log_path)
             return 1
-        time.sleep(3.0)  # head anchors after 2 s of tracked HMD; hands enable on start
+        time.sleep(3.0)  # head anchors after 2 s of tracked HMD; fake hands enable on start
         os.write(master, b" ")
-        recorder = procs.items[-1][1]
-        try:
-            recorder.wait(timeout=args.seconds + 120)
-        except subprocess.TimeoutExpired:
-            print("recorder did not finish; see", rec_log)
-            return 1
-        print(f"teleop-record exit code {recorder.returncode}")
-    finally:
-        procs.stop_all()
+        proc.wait(timeout=args.seconds + 150)
+    except subprocess.TimeoutExpired:
+        print("station did not finish; see", log_path)
+        os.killpg(proc.pid, signal.SIGINT)
+        proc.wait(timeout=30)
+        return 1
+    print(f"macq station exit code {proc.returncode}")
     failures = check_dataset(out, args.seconds, 30, args.arms_only)
     if failures:
         print("FAIL: " + "; ".join(failures))

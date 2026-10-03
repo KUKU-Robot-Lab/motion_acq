@@ -172,3 +172,20 @@ Fake end to end (no hardware): `scripts/fake_hand_check.sh right` and `left`
 once (fake glove calibrations), then `.venv/bin/python scripts/fake_record_check.py`
 (mock Quest, fake head bus, fake hands on domain 177, `teleop-record
 --fake-robot` with a simulated OpenArm SDK) -> PASS/FAIL on the dataset.
+
+## Bringing a station up: `macq station`
+
+```bash
+MACQ_STATION=arm4090 macq station --fake -- --num-episodes 3          # all fake
+MACQ_STATION=arm4090 macq station --real --user op1 --preflight-only  # read-only checks
+MACQ_STATION=arm4090 macq station --real --user op1 -- --num-episodes 10
+MACQ_STATION=arm5080 macq station --real -- --num-episodes 10          # arms only
+```
+
+Head and hands run in their own process groups (logs under `logs/station/`);
+`teleop-record` runs in the foreground for the assistant's keys. `--real`
+first checks, read-only: Quest USB forward, CAN up with FD 1M/5M and not held
+by an s2r bringup, head port free, RH56F1 driver and glove topics on the
+current ROS_DOMAIN_ID, hand calibration files. Any failure stops before
+anything starts. Real hands start disabled and are enabled after Enter.
+`scripts/fake_record_check.py` drives `macq station --fake` end to end.

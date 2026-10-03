@@ -81,3 +81,10 @@ head:
   limits:
     max_velocity_deg_s: 60.0
     max_acceleration_deg_s2: 300.0
+
+# STEP 3 hands: Nova 2 serials as senseglove_ros names them
+# (/senseglove/glove<serial>/<rh|lh>/senseglove_states). VERIFY after pairing
+# the gloves in SenseCom; macq station --real refuses empty serials.
+hands:
+  right: {glove_serial: ""}
+  left: {glove_serial: ""}
