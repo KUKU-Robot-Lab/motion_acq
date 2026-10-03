@@ -29,8 +29,8 @@ uv run --group dev pytest -q tests
 
 ## Check without a Quest (mock sender)
 
-`quest_ip` stays empty until each station's Quest IP is known. Meanwhile the
-pipeline runs against the bundled mock Quest (TCP 65432, UDP 42000 on localhost):
+The pipeline also runs against the bundled mock Quest (TCP 65432, UDP 42000 on
+localhost). Stop any `adb forward` first; both use local port 65432:
 
 ```bash
 export MACQ_STATION=arm4090
@@ -60,3 +60,21 @@ cd ~/rl_ws/motion_acq && git pull   # main tracks kuku/main
 |---|---|---|---|
 | arm4090 | can0 | can1 | false: s2r owns the links; motion_acq only validates them |
 | arm5080 | can0 | can1 | true (one PCAN-USB Pro FD; VERIFY wiring with show_param) |
+
+## Meta Quest over USB (default)
+
+Each station's Quest is wired to its PC. The HandUMI Quest App listens on
+TCP 65432 on all interfaces, so `adb forward` tunnels the pose stream and the
+rig uses `quest_ip: 127.0.0.1`. adb (Google platform-tools) and the pinned APK
+(v0.2.1, sha256 checked) live under `~/opt` on each station.
+
+```bash
+scripts/quest_usb.sh status    # device authorized? app installed? forwards
+scripts/quest_usb.sh install   # first time per Quest
+scripts/quest_usb.sh forward   # after every replug or adb restart
+macq tracking pose --device meta
+```
+
+The UDP time-sync is not tunnelled, so frames carry the PC receive time
+(`clock_synced=false`). Enable Developer Mode on the Quest first; do not start
+Quest Link.

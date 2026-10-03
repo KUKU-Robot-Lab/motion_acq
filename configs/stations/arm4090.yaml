@@ -30,7 +30,9 @@ robots:
 
 meta_quest:
   connection:
-    quest_ip: ""  # VERIFY: set this station's Quest IP; until then pass --quest-ip
+    # Wired (default): scripts/quest_usb.sh forward, then 127.0.0.1.
+    # Wi-Fi: put this station's Quest IP here instead.
+    quest_ip: "127.0.0.1"
     tcp_port: 65432
     sync_port: 42000
     connect_retry_s: 1.0
