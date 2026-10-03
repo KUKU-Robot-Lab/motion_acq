@@ -4,6 +4,7 @@
 #   scripts/quest_usb.sh status    # adb device, app installed, forward active
 #   scripts/quest_usb.sh install   # install the pinned APK (first time per Quest)
 #   scripts/quest_usb.sh forward   # adb forward tcp:65432 -> Quest 65432
+#   scripts/quest_usb.sh launch    # (re)start the app in the headset over adb
 #
 # With the forward active, the station rig uses quest_ip 127.0.0.1. Only TCP is
 # tunnelled; the UDP time-sync (42000) is not, so frames are stamped with the PC
@@ -14,6 +15,7 @@ set -euo pipefail
 ADB="${ADB:-$(command -v adb || echo "$HOME/opt/platform-tools/adb")}"
 APK="${QUEST_APK:-$HOME/opt/handumi-quest-app/handumi-quest-app-v0.2.1.apk}"
 PACKAGE="com.handumi.questapp"
+ACTIVITY="com.unity3d.player.UnityPlayerActivity"
 TCP_PORT="${QUEST_TCP_PORT:-65432}"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -57,9 +59,22 @@ cmd_forward() {
   echo "Launch the app in the headset (Library -> Unknown Sources) and keep it in front."
 }
 
+cmd_launch() {
+  # Closing a Quest system panel can close the app too; this brings it back.
+  one_device
+  "$ADB" shell am start -n "$PACKAGE/$ACTIVITY" >/dev/null
+  sleep 3
+  if "$ADB" shell pidof "$PACKAGE" >/dev/null; then
+    echo "app running; put the headset on (it pauses while asleep)"
+  else
+    die "app did not start; open it in the headset (Library -> Unknown Sources)"
+  fi
+}
+
 case "${1:-status}" in
   status) cmd_status ;;
   install) cmd_install ;;
   forward) cmd_forward ;;
-  *) die "usage: $0 {status|install|forward}" ;;
+  launch) cmd_launch ;;
+  *) die "usage: $0 {status|install|forward|launch}" ;;
 esac
