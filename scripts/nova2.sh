@@ -63,7 +63,11 @@ cmd_status() {
     fi
   done < <(gloves both)
   local pids; pids="$(sensecom_pids)"
-  echo "SenseCom: ${pids:+running (PID ${pids//$'\n'/ })}${pids:-not running} (log: $PLAYER_LOG)"
+  if [[ -n "$pids" ]]; then
+    echo "SenseCom: running (PID ${pids//$'\n'/ }; log: $PLAYER_LOG)"
+  else
+    echo "SenseCom: not running"
+  fi
   if [[ -n "${ROS_DISTRO:-}" ]] && command -v ros2 >/dev/null; then
     echo "glove topics (ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}):"
     timeout 15 ros2 topic list 2>/dev/null | grep '^/senseglove/.*/senseglove_states$' | sed 's/^/  /' || echo "  none"
