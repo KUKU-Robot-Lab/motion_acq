@@ -26,3 +26,20 @@ uv run --group dev pytest -q tests
 ```
 
 `openarm_can` needs CLI11 at build time (`libcli11-dev` or a local install).
+
+## Check without a Quest (mock sender)
+
+`quest_ip` stays empty until each station's Quest IP is known. Meanwhile the
+pipeline runs against the bundled mock Quest (TCP 65432, UDP 42000 on localhost):
+
+```bash
+export MACQ_STATION=arm4090
+.venv/bin/python -m motion_acq.tracking.mock_quest_sender &      # terminal 1
+macq tracking pose --device meta --quest-ip 127.0.0.1             # terminal 2
+macq teleop --device meta --robot openarmv1 --quest-ip 127.0.0.1 \
+  --skip-feetech --skip-cameras --auto-start --no-browser         # sim only
+```
+
+`--skip-feetech` is needed: the HandUMI handheld Feetech grippers are not used.
+Without them the double-squeeze start gesture is unavailable, so start with
+`--auto-start` (sim) or `--space-start` (real).

@@ -67,7 +67,7 @@ robots:
       right_port: can1
   openarmv1:
     backend: openarm_can
-    home_pose: forward_open
+    # home_pose: <name from configs/robots/openarmv1.yaml home_poses>; omit for home_q
     can:
       fd: true
       bitrate: 1000000

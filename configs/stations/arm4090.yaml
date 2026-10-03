@@ -16,7 +16,6 @@ recording:
 robots:
   openarmv1:
     backend: openarm_can
-    home_pose: forward_open
     gripper:
       enabled: false
     can:
@@ -28,7 +27,7 @@ robots:
 
 meta_quest:
   connection:
-    quest_ip: "0.0.0.0"  # VERIFY: this station's Quest IP on the same LAN
+    quest_ip: ""  # VERIFY: set this station's Quest IP; until then pass --quest-ip
     tcp_port: 65432
     sync_port: 42000
     connect_retry_s: 1.0
