@@ -114,3 +114,40 @@ def test_doctor_still_fails_without_cameras_key(tmp_path) -> None:
     rig.write_text("meta_quest: {}\n", encoding="utf-8")
     checks = collect_doctor_checks(rig, robot="openarmv1")
     assert [c.status for c in checks if c.name == "cameras"] == ["fail"]
+
+
+@pytest.mark.parametrize(
+    ("station", "left", "right", "auto_repair"),
+    [("arm4090", "can1", "can0", False), ("arm5080", "can3", "can2", True)],
+)
+def test_station_can_ports(station, left, right, auto_repair):
+    settings = load_openarm_settings(rig_config=station_rig_config(station))
+    assert (settings.left_port, settings.right_port) == (left, right)
+    assert settings.can_auto_repair is auto_repair
+    assert settings.enable_fd and settings.bitrate == 1_000_000
+    assert settings.dbitrate == 5_000_000
+
+
+@pytest.mark.parametrize(("auto_repair", "requested", "expected"), [
+    (False, True, False), (True, True, True), (True, False, False),
+])
+def test_prepare_never_repairs_when_station_forbids_it(
+    monkeypatch, auto_repair, requested, expected
+):
+    from motion_acq.real import can_setup
+    from motion_acq.real.openarm.driver import OpenArmCanEnvironment, OpenArmCanSettings
+
+    seen = {}
+
+    def fake_ready(ports, *, bitrate, dbitrate, repair):
+        seen["ports"], seen["repair"] = list(ports), repair
+        return {}
+
+    monkeypatch.setattr(can_setup, "ensure_can_fd_interfaces_ready", fake_ready)
+    env = OpenArmCanEnvironment(
+        OpenArmCanSettings(left_port="can3", right_port="can2", can_auto_repair=auto_repair),
+        active_sides=("left", "right"),
+        joint_limits={},
+    )
+    env.prepare(repair=requested)
+    assert seen == {"ports": ["can3", "can2"], "repair": expected}

@@ -19,11 +19,14 @@ robots:
     gripper:
       enabled: false
     can:
+      # arm4090: can0 = right arm, can1 = left arm (PCAN-USB Pro FD, sim2real docs/HOST_arm4090.md).
+      # The s2r stack owns these links: never reconfigure them from motion_acq.
       fd: true
       bitrate: 1000000
       dbitrate: 5000000
-      left_port: can1   # VERIFY with ip -details link show + openarm-can-cli show_param
-      right_port: can0  # VERIFY
+      left_port: can1
+      right_port: can0
+      auto_repair: false
 
 meta_quest:
   connection:

@@ -42,6 +42,9 @@ class OpenArmCanSettings:
     enable_fd: bool = True
     bitrate: int = 1_000_000
     dbitrate: int = 5_000_000
+    # False on stations where another stack owns the CAN links (arm4090 / s2r):
+    # validate only, never take the links down to reconfigure them with sudo.
+    can_auto_repair: bool = True
     command_rate_hz: float = 100.0
     max_joint_speed_rad_s: float = 1.0
     home_max_joint_speed_rad_s: float = 0.25
@@ -93,6 +96,7 @@ def load_openarm_settings(
         enable_fd=bool(can.get("fd", True)),
         bitrate=int(can.get("bitrate", 1_000_000)),
         dbitrate=int(can.get("dbitrate", 5_000_000)),
+        can_auto_repair=bool(can.get("auto_repair", True)),
         command_rate_hz=float(control.get("command_rate_hz", 100.0)),
         max_joint_speed_rad_s=float(control.get("max_joint_speed_rad_s", 1.0)),
         home_max_joint_speed_rad_s=float(
@@ -465,7 +469,7 @@ class OpenArmCanEnvironment:
             ],
             bitrate=self.settings.bitrate,
             dbitrate=self.settings.dbitrate,
-            repair=repair,
+            repair=repair and self.settings.can_auto_repair,
         )
 
     def _split_side_q(

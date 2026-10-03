@@ -43,3 +43,20 @@ macq teleop --device meta --robot openarmv1 --quest-ip 127.0.0.1 \
 `--skip-feetech` is needed: the HandUMI handheld Feetech grippers are not used.
 Without them the double-squeeze start gesture is unavailable, so start with
 `--auto-start` (sim) or `--space-start` (real).
+
+## Code flow
+
+The main development checkout is the local 5090 PC. Commit and push there to
+`kuku` (https://github.com/KUKU-Robot-Lab/motion_acq, the canonical repo);
+`origin` is a personal mirror. The stations only pull:
+
+```bash
+cd ~/rl_ws/motion_acq && git pull   # main tracks kuku/main
+```
+
+## CAN per station
+
+| station | right arm | left arm | auto_repair |
+|---|---|---|---|
+| arm4090 | can0 | can1 | false: s2r owns the links; motion_acq only validates them |
+| arm5080 | can2 | can3 | true (VERIFY left/right once the OpenArm is connected) |

@@ -1,6 +1,6 @@
 # Station rig for arm5080. Select with: MACQ_STATION=arm5080 macq <command>
 # STEP 1 scope: Meta Quest -> OpenArm arms (J1-J7) only. The OpenArm J8
-# gripper motor is not connected; the end effector is dexterous hands (to be connected, controlled outside motion_acq).
+# gripper motor is not connected; the end effector is RH56F1 (both arms, to be connected, controlled outside motion_acq).
 # Values marked VERIFY must be checked on the station before real teleop.
 
 station: arm5080
@@ -19,11 +19,13 @@ robots:
     gripper:
       enabled: false
     can:
+      # arm5080: OpenArm not connected yet; expected on can2/can3. VERIFY which is left/right.
       fd: true
       bitrate: 1000000
       dbitrate: 5000000
-      left_port: can1   # VERIFY with ip -details link show + openarm-can-cli show_param
-      right_port: can0  # VERIFY
+      left_port: can3
+      right_port: can2
+      auto_repair: true
 
 meta_quest:
   connection:
