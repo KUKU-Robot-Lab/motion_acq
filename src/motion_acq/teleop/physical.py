@@ -5,8 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from motion_acq.config import DEFAULT_RIG_CONFIG
-from motion_acq.config import station_default_robot
+from motion_acq.config import DEFAULT_RIG_CONFIG, station_default_robot
 from motion_acq.real.registry import REAL_ROBOT_NAMES
 from motion_acq.teleop.common import SIDE_CHOICES
 from motion_acq.teleop.motion import add_teleop_motion_arguments
