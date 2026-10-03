@@ -7,10 +7,19 @@ Meta Quest -> OpenArm teleoperation and demonstration capture, run as two indepe
 
 Two independent stations, each with its own Meta Quest and OpenArm pair:
 
-| station | PC | hands | rig file |
-|---|---|---|---|
-| arm4090 | RTX 4090 robot PC | RH56F1 on both arms | `configs/stations/arm4090.yaml` |
-| arm5080 | RTX 5080 PC | OpenArm gripper now, LEAP hand planned (Quest-only tests) | `configs/stations/arm5080.yaml` |
+| station | PC | robot YAML | hands | rig file |
+|---|---|---|---|---|
+| arm4090 | RTX 4090 robot PC | `openarm_rh56f1` | RH56F1 on both arms | `configs/stations/arm4090.yaml` |
+| arm5080 | RTX 5080 PC | `openarmv1` (HandUMI default) | OpenArm gripper now, LEAP hand planned (Quest-only tests) | `configs/stations/arm5080.yaml` |
+
+`openarm_rh56f1` (arm4090) is built from the hdgp asset
+`openarm_rh56f1_bi_rl` by `scripts/build_openarm_rh56f1_urdf.py`: arm joints
+renamed for the OpenArm driver, hands fixed open (thumb_1 1.57 rad), head
+fixed, TCP = palm sensor frame (right (0.08, -0.30, 0.45) m at home), home and
+IK posture = sim2real `rh56f1_aglt`. Every link matches the hdgp model within
+1e-9 m; `--check` (also a test) fails if the hdgp asset changes. Meshes are
+referenced from `~/rl_ws/urdf` like the hdgp asset; IK does not load them.
+`--robot` defaults to the station's `recording.robot`.
 
 Select the station per shell: `export MACQ_STATION=arm4090`. Run commands from
 the repository root. STEP 1 drives only J1..J7; the J8 gripper motor is disabled

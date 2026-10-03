@@ -5,6 +5,8 @@ from __future__ import annotations
 from importlib import import_module
 from pathlib import Path
 
+import yaml
+
 from motion_acq.real.base import TeleopRobotBackend
 from motion_acq.robots.registry import RobotRuntime
 
@@ -58,8 +60,25 @@ def _backend_key(robot: str, runtime: RobotRuntime) -> str:
 
 REAL_BACKEND_NAMES: tuple[str, ...] = tuple(sorted(_ROBOT_BACKEND_MODULES))
 
+
+def _robots_with_backend() -> tuple[str, ...]:
+    """Robot YAMLs whose real.backend resolves to a registered backend."""
+    from motion_acq.robots.registry import CONFIG_DIR, available_robot_names
+
+    names = []
+    for name in available_robot_names():
+        data = yaml.safe_load((CONFIG_DIR / f"{name}.yaml").read_text(encoding="utf-8")) or {}
+        backend = str(((data.get("real") or {}).get("backend")) or name)
+        if _REAL_BACKEND_ALIASES.get(backend, backend) in _ROBOT_BACKEND_MODULES:
+            names.append(name)
+    return tuple(names)
+
+
+REAL_ROBOT_NAMES: tuple[str, ...] = _robots_with_backend()
+
 __all__ = [
     "REAL_BACKEND_NAMES",
+    "REAL_ROBOT_NAMES",
     "RobotBackend",
     "TeleopRobotBackend",
     "make_real_backend",

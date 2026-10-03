@@ -11,7 +11,7 @@ recording:
   device: meta
   cameras: []
   fps: 30
-  robot: openarmv1
+  robot: openarm_rh56f1
   # Head and hand processes stream to the recorder over UDP (localhost); every
   # listed stream is required while recording. Start them with
   #   macq head --udp-target 127.0.0.1:47101
@@ -23,7 +23,7 @@ recording:
     hand_left: 47112
 
 robots:
-  openarmv1:
+  openarm_rh56f1:
     backend: openarm_can
     home_pose: rh56f1_aglt  # sim2real home (hands open); start anchor for teleop
     gripper:

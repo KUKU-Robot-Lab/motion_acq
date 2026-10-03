@@ -44,6 +44,7 @@ class OpenArmBackend:
                 rig_config,
                 runtime.config.real_options,
                 user_openarm_gripper_calibration_path(),
+                robot_name=runtime.name,
             ),
             active_sides=active_sides,
             joint_limits={

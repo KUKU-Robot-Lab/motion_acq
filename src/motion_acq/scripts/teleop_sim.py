@@ -66,7 +66,7 @@ from motion_acq.cameras import (
     read_camera_frames,
     resolve_camera_ids,
 )
-from motion_acq.config import DEFAULT_RIG_CONFIG
+from motion_acq.config import DEFAULT_RIG_CONFIG, station_default_robot
 from motion_acq.robots.registry import EMBODIMENT_NAMES, load_embodiment, resolve_home_q
 from motion_acq.robots.utils import IDENTITY_POSE7
 from motion_acq.scripts.record import _camera_list_arg, build_tracker, connect_feetech
@@ -123,7 +123,7 @@ def _parse_sim_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--help-advanced", action="store_true", help="Show expert hardware options.")
     p.add_argument("--device", choices=("pico", "meta"), required=True)
-    p.add_argument("--robot", choices=EMBODIMENT_NAMES, default="openarmv1")
+    p.add_argument("--robot", choices=EMBODIMENT_NAMES, default=station_default_robot())
     p.add_argument(
         "--home-pose",
         default=None,

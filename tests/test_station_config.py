@@ -34,9 +34,14 @@ def test_unknown_station_is_refused():
         station_rig_config("nope")
 
 
+STATION_ROBOT = {"arm4090": "openarm_rh56f1", "arm5080": "openarmv1"}
+
+
 @pytest.mark.parametrize("station", ["arm4090", "arm5080"])
 def test_station_disables_j8_gripper(station):
-    settings = load_openarm_settings(rig_config=station_rig_config(station))
+    settings = load_openarm_settings(
+        rig_config=station_rig_config(station), robot_name=STATION_ROBOT[station]
+    )
     assert settings.gripper_enabled is False
 
 
@@ -121,7 +126,9 @@ def test_doctor_still_fails_without_cameras_key(tmp_path) -> None:
     [("arm4090", "can1", "can0", False), ("arm5080", "can1", "can0", True)],
 )
 def test_station_can_ports(station, left, right, auto_repair):
-    settings = load_openarm_settings(rig_config=station_rig_config(station))
+    settings = load_openarm_settings(
+        rig_config=station_rig_config(station), robot_name=STATION_ROBOT[station]
+    )
     assert (settings.left_port, settings.right_port) == (left, right)
     assert settings.can_auto_repair is auto_repair
     assert settings.enable_fd and settings.bitrate == 1_000_000

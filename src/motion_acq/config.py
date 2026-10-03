@@ -31,6 +31,16 @@ def station_rig_config(station: str | None = None) -> Path:
 
 
 DEFAULT_RIG_CONFIG = station_rig_config()
+
+
+def station_default_robot(fallback: str = "openarmv1") -> str:
+    """recording.robot of the selected station rig (arm4090: openarm_rh56f1)."""
+    try:
+        with DEFAULT_RIG_CONFIG.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except OSError:
+        return fallback
+    return str((data.get("recording") or {}).get("robot") or fallback)
 SIDES = ("left", "right")
 
 

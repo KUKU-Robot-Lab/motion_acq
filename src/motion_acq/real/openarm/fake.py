@@ -57,7 +57,8 @@ def build_backend(
     active_sides: tuple[str, ...] = ("left", "right"),
 ) -> TeleopRobotBackend:
     settings = load_openarm_settings(
-        rig_config, runtime.config.real_options, user_openarm_gripper_calibration_path()
+        rig_config, runtime.config.real_options, user_openarm_gripper_calibration_path(),
+        robot_name=runtime.name,
     )
     sdk = FakeOpenArmSdk(start_q_by_port=_start_q_by_port(runtime, rig_config, settings))
     environment = OpenArmCanEnvironment(

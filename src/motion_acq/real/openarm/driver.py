@@ -68,6 +68,7 @@ def load_openarm_settings(
     rig_config: Path,
     robot_real: dict[str, Any] | None = None,
     gripper_calibration_path: Path | None = None,
+    robot_name: str = "openarmv1",
 ) -> OpenArmCanSettings:
     """Combine portable robot defaults with machine-local CAN assignments."""
     robot_real = robot_real or {}
@@ -75,7 +76,9 @@ def load_openarm_settings(
     if rig_config.exists():
         with rig_config.open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
-    rig_robot = (data.get("robots") or {}).get("openarmv1") or {}
+    # Machine-local CAN/gripper settings live under robots.<robot name> in the
+    # station rig (openarmv1 on arm5080, openarm_rh56f1 on arm4090).
+    rig_robot = (data.get("robots") or {}).get(robot_name) or {}
     can = rig_robot.get("can") or {}
     rig_gripper = rig_robot.get("gripper") or {}
     control = robot_real.get("control") or {}

@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from motion_acq.config import DEFAULT_RIG_CONFIG, load_rig_config
+from motion_acq.config import DEFAULT_RIG_CONFIG, load_rig_config, station_default_robot
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,7 @@ class DoctorCheck:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rig-config", type=Path, default=DEFAULT_RIG_CONFIG)
-    parser.add_argument("--robot", default="openarmv1")
+    parser.add_argument("--robot", default=station_default_robot())
     parser.add_argument("--device", choices=("pico", "meta"), default="meta")
     parser.add_argument(
         "--strict",

@@ -6,7 +6,8 @@ import argparse
 from pathlib import Path
 
 from motion_acq.config import DEFAULT_RIG_CONFIG
-from motion_acq.real.registry import REAL_BACKEND_NAMES
+from motion_acq.config import station_default_robot
+from motion_acq.real.registry import REAL_ROBOT_NAMES
 from motion_acq.teleop.common import SIDE_CHOICES
 from motion_acq.teleop.motion import add_teleop_motion_arguments
 from motion_acq.teleop.standby import GRIPPER_PARK_HOLD_S
@@ -28,7 +29,12 @@ def _camera_list(value: str) -> list[str]:
 def add_physical_teleop_arguments(parser: argparse.ArgumentParser) -> None:
     """Add the controls shared by live and recording real-robot teleop."""
     parser.add_argument("--device", choices=("pico", "meta"), required=True)
-    parser.add_argument("--robot", choices=REAL_BACKEND_NAMES, default="openarmv1")
+    parser.add_argument(
+        "--robot",
+        choices=REAL_ROBOT_NAMES,
+        default=station_default_robot(),
+        help="Robot YAML with a real backend; default: the station rig recording.robot.",
+    )
     parser.add_argument(
         "--home-pose",
         default=None,

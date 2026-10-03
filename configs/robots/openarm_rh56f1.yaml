@@ -1,0 +1,51 @@
+# arm4090: OpenArm v1.0 pair with an Inspire RH56F1 on each wrist (no J8
+# gripper motor) and the head. URDF built from the hdgp asset
+# openarm_rh56f1_bi_rl by scripts/build_openarm_rh56f1_urdf.py: arm joints
+# renamed to openarm_<side>_joint<i>, hands fixed open (thumb_1 1.57 rad),
+# head fixed at 0, TCP = <side> palm sensor frame (openarm_<side>_hand_tcp).
+# The hand itself is driven by motion_acq_hand, not by this robot.
+kind: openarm_rh56f1
+urdf: assets/openarm_rh56f1/openarm_rh56f1.urdf
+pkg_root: assets/openarm_rh56f1
+arms:
+  left:
+    ee_link: openarm_left_hand_tcp
+    joint_names: [openarm_left_joint1, openarm_left_joint2, openarm_left_joint3, openarm_left_joint4,
+                  openarm_left_joint5, openarm_left_joint6, openarm_left_joint7]
+  right:
+    ee_link: openarm_right_hand_tcp
+    joint_names: [openarm_right_joint1, openarm_right_joint2, openarm_right_joint3, openarm_right_joint4,
+                  openarm_right_joint5, openarm_right_joint6, openarm_right_joint7]
+# URDF actuated order: right j1..j7, left j1..j7. rh56f1_aglt is the sim2real
+# home (deploy/policy_control/config/homes/rh56f1_aglt.yaml); it is also the IK
+# posture/rest reference.
+home_poses:
+  rh56f1_aglt: [-1.2127, 0.2026, 0.6538, 1.7608, 0.3791, 0.5785, 0.6646,
+                1.2127, -0.2026, -0.6538, 1.7608, -0.3791, -0.5785, -0.6646]
+default_home_pose: rh56f1_aglt
+controller_tcp_calibrations:
+  # Quest 3 controllers in the Nova 2 glove mounts; calibrate in that state.
+  meta: configs/calibration/controller_tcp/meta_openarm_rh56f1.yaml
+ik_weights:
+  pos: 100.0
+  ori: 10.0
+  rest: 3.0
+  max_joint_delta: 0.03333333
+replay:
+  max_joint_delta: 0.35
+real:
+  backend: openarm_can
+  gripper:
+    enabled: false  # no J8 motor: the RH56F1 sits on the wrist
+  control:
+    command_rate_hz: 100
+    max_joint_speed_rad_s: 1.0
+    home_max_joint_speed_rad_s: 0.25
+    home_timeout_s: 30
+    home_tolerance_rad: 0.10
+    watchdog_timeout_s: 0.15
+    following_error_rad: 0.35
+  gains:
+    # Vendor control_gains.yaml, the same values sim2real uses on arm4090.
+    kp: [70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0]
+    kd: [2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5]
