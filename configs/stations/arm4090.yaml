@@ -16,6 +16,7 @@ recording:
 robots:
   openarmv1:
     backend: openarm_can
+    home_pose: rh56f1_aglt  # sim2real home (hands open); start anchor for teleop
     gripper:
       enabled: false
     can:

@@ -10,7 +10,7 @@ Two independent stations, each with its own Meta Quest and OpenArm pair:
 | station | PC | hands | rig file |
 |---|---|---|---|
 | arm4090 | RTX 4090 robot PC | RH56F1 on both arms | `configs/stations/arm4090.yaml` |
-| arm5080 | RTX 5080 PC | RH56F1 (to be connected) | `configs/stations/arm5080.yaml` |
+| arm5080 | RTX 5080 PC | OpenArm gripper now, LEAP hand planned (Quest-only tests) | `configs/stations/arm5080.yaml` |
 
 Select the station per shell: `export MACQ_STATION=arm4090`. Run commands from
 the repository root. STEP 1 drives only J1..J7; the J8 gripper motor is disabled

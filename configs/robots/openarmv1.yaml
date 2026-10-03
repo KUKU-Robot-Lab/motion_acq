@@ -33,6 +33,19 @@ arms:
 # Teleoperation home. J2 spreads the elbows away from the center column, J3
 # brings the hands toward the working area, and J4 points the arms forward.
 home_q: [0.0, -0.34906585, 0.17453293, 1.57079633, 0.0, 0.0, 0.0, 0.0, 0.34906585, -0.17453293, 1.57079633, 0.0, 0.0, 0.0, 0.0, 0.0]
+# Station start poses (joint order = URDF actuated order: left j1..j7,
+# right j1..j7, left finger, right finger). rh56f1_aglt is the sim2real home
+# (deploy/policy_control/config/homes/rh56f1_aglt.yaml, hdgp rh_aglt start pose,
+# left = mirror (-,-,-,+,-,-,-)). robot_control profile openarm_rh56f1 maps the
+# canonical joints to these URDF joints with sign +1 and identical limits.
+home_poses:
+  # HandUMI default (same values as home_q below).
+  home_q: [0.0, -0.34906585, 0.17453293, 1.57079633, 0.0, 0.0, 0.0,
+           0.0, 0.34906585, -0.17453293, 1.57079633, 0.0, 0.0, 0.0,
+           0.0, 0.0]
+  rh56f1_aglt: [1.2127, -0.2026, -0.6538, 1.7608, -0.3791, -0.5785, -0.6646,
+                -1.2127, 0.2026, 0.6538, 1.7608, 0.3791, 0.5785, 0.6646,
+                0.0, 0.0]
 gripper_max_width_m: 0.088
 handumi_tool:
   gripper: openarm_parallel_v1

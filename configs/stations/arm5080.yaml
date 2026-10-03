@@ -1,8 +1,9 @@
 # Station rig for arm5080. Select with: MACQ_STATION=arm5080 macq <command>
-# STEP 1 scope: Meta Quest -> OpenArm arms (J1-J7) only. Both CAN buses answer
-# J8 (gripper motor) too; motion_acq leaves it untouched (gripper.enabled false).
-# RH56F1 hands are to be connected later and controlled outside motion_acq.
-# No head section: this station has no head yet (macq head runs fake only).
+# arm5080: OpenArm with the OpenArm parallel grippers for now (J8 answers on
+# both buses); a LEAP hand is planned. Real tests here are Meta Quest only
+# (no glove, no head). STEP 1 drives J1..J7; J8 stays untouched
+# (gripper.enabled false) until the gripper mapping is decided.
+# No head section: this station has no head (macq head runs fake only).
 # Values marked VERIFY must be checked on the station before real teleop.
 
 station: arm5080

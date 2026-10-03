@@ -1,0 +1,58 @@
+# Nova 2 glove -> RH56F1 hand retargeting (STEP 3).
+#
+# 1. feature = weighted sum of glove angles (rad, senseglove_ros SenseGloveState).
+# 2. a per-user, per-side calibration maps each feature to n = 0 at its open pose
+#    and n = 1 at its closed pose (configs/hands/calibration/<user>_<side>.yaml).
+# 3. each RH56F1 joint = open_rad + n * (closed_rad - open_rad), One Euro
+#    filtered and rate limited, then converted to registers with
+#    rh56f1_hand_map.yaml (per-side calibration).
+# Entries marked VERIFY are unconfirmed until the glove is worn (G6).
+
+features:
+  index: {index_mcp: 1.0, index_pip: 1.0, index_dip: 1.0}
+  middle: {middle_mcp: 1.0, middle_pip: 1.0, middle_dip: 1.0}
+  ring: {ring_mcp: 1.0, ring_pip: 1.0, ring_dip: 1.0}
+  pinky: {pinky_mcp: 1.0, pinky_pip: 1.0, pinky_dip: 1.0}
+  thumb_bend: {thumb_pip: 1.0, thumb_dip: 1.0}
+  # VERIFY: CMC flexion (thumb_mcp) vs CMC abduction (thumb_brake) for opposition.
+  thumb_opposition: {thumb_mcp: 1.0}
+
+# Calibration poses, recorded with the hand still for ~2 s each.
+poses:
+  open: "flat hand, fingers straight, thumb out to the side"
+  fist: "fingers curled into a fist, thumb bent over the fingers"
+  thumb_opposed: "fingers straight, thumb tip on the base of the little finger"
+
+# feature: [pose giving n = 0, pose giving n = 1]
+feature_poses:
+  index: [open, fist]
+  middle: [open, fist]
+  ring: [open, fist]
+  pinky: [open, fist]
+  thumb_bend: [open, fist]
+  thumb_opposition: [open, thumb_opposed]
+
+# Minimum |closed - open| per feature for a calibration to be accepted (rad).
+min_span_rad: 0.2
+
+joints:
+  index_1: {feature: index, open_rad: 0.0, closed_rad: 1.5285594}
+  middle_1: {feature: middle, open_rad: 0.0, closed_rad: 1.5285594}
+  ring_1: {feature: ring, open_rad: 0.0, closed_rad: 1.5285594}
+  pinky_1: {feature: pinky, open_rad: 0.0, closed_rad: 1.5285594}
+  thumb_2: {feature: thumb_bend, open_rad: 0.0, closed_rad: 0.474555}
+  # thumb_1: smaller rad = more opposition (register up). open = contract
+  # hand_home 1.57 (sim2real); VERIFY the opposed end on the hand.
+  thumb_1: {feature: thumb_opposition, open_rad: 1.57, closed_rad: 0.3}
+
+# sim2real contract hand_home: RH56F1 open (thumb_1 1.57, the rest 0).
+home_rad: {thumb_1: 1.57, thumb_2: 0.0, index_1: 0.0, middle_1: 0.0, ring_1: 0.0, pinky_1: 0.0}
+
+filter: {min_cutoff_hz: 1.5, beta: 0.3, d_cutoff_hz: 1.0}
+# RH56F1 measured ~135-140 deg/s (2.4 rad/s) at speed 2000 (sim2real 09.30).
+limits: {max_velocity_rad_s: 2.0, max_acceleration_rad_s2: 20.0, max_step_dt_s: 0.1}
+rate_hz: 30.0
+stale_s: 0.2       # no glove sample for this long -> HOLD
+driver:
+  speed: 2000      # SetSpeed1, same as sim2real pd hw_speed
+  force: 600       # SetForce1 [g], same as sim2real pd hw_force

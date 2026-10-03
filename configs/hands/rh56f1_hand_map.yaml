@@ -1,0 +1,53 @@
+# RH56F1 joint (rad) <-> vendor angle register (0.1 deg), copied from
+# sim2real deploy/policy_control/config/rh56f1_hand_map.yaml @ 3ca354e (touch and
+# mimic sections dropped). Same conversion as sim2real policy_control/rh56f1_map.py:
+#   default: linear between joints.<j>.rad and joints.<j>.reg end points;
+#   calibration.<side>: q[deg] = (reg0 - reg) * deg_per_10reg / 10, read range
+#   extended 50 registers past the bent end, commands clipped to the default reg range.
+# Driver topics /hand_<side>/angle_set (SetAngle1 int32[6], -1 = leave the axis),
+# slots 0..5 = pinky, ring, middle, index, thumb bend (thumb_2), thumb rotation (thumb_1).
+# Four fingers: larger register = more open. thumb_1: larger register = opposition
+# across the palm (sim2real docs/RH56F1_TUNING_0930.md).
+schema: policy_control/rh56f1_hand_map/v1
+slot_order: [pinky_1, ring_1, middle_1, index_1, thumb_2, thumb_1]
+joint_order: [thumb_1, thumb_2, index_1, middle_1, ring_1, pinky_1]
+joints:
+  thumb_1:
+    rad: [0.0, 2.0943951]
+    reg: [1750, 600]
+    verified: true
+  thumb_2:
+    rad: [0.0, 0.474555]
+    reg: [1350, 1100]
+    verified: true
+  index_1:
+    rad: [0.0, 1.5285594]
+    reg: [1740, 900]
+    verified: true
+  middle_1:
+    rad: [0.0, 1.5285594]
+    reg: [1740, 900]
+    verified: true
+  ring_1:
+    rad: [0.0, 1.5285594]
+    reg: [1740, 900]
+    verified: true
+  pinky_1:
+    rad: [0.0, 1.5285594]
+    reg: [1740, 900]
+    verified: true
+calibration:
+  right:
+    index_1: {reg0: 1776.3, deg_per_10reg: 1.0052}
+    middle_1: {reg0: 1771.8, deg_per_10reg: 1.0045}
+    ring_1: {reg0: 1787.5, deg_per_10reg: 1.0095}
+    pinky_1: {reg0: 1790.9, deg_per_10reg: 1.0121}
+    thumb_2: {reg0: 1362.0, deg_per_10reg: 0.9923}
+    thumb_1: {reg0: 1754.8, deg_per_10reg: 0.9979}
+  left:
+    index_1: {reg0: 1779.0, deg_per_10reg: 1.0065}
+    middle_1: {reg0: 1764.3, deg_per_10reg: 1.0013}
+    ring_1: {reg0: 1766.7, deg_per_10reg: 1.0019}
+    pinky_1: {reg0: 1762.6, deg_per_10reg: 1.001}
+    thumb_2: {reg0: 1376.4, deg_per_10reg: 0.9891}
+    thumb_1: {reg0: 1817.8, deg_per_10reg: 0.998}
