@@ -1,0 +1,36 @@
+# Station rig for arm5080. Select with: MACQ_STATION=arm5080 macq <command>
+# STEP 1 scope: Meta Quest -> OpenArm arms (J1-J7) only. The OpenArm J8
+# gripper motor is not connected; the end effector is dexterous hands (to be connected, controlled outside motion_acq).
+# Values marked VERIFY must be checked on the station before real teleop.
+
+station: arm5080
+
+cameras: {}
+
+recording:
+  device: meta
+  cameras: []
+  fps: 30
+  robot: openarmv1
+
+robots:
+  openarmv1:
+    backend: openarm_can
+    home_pose: forward_open
+    gripper:
+      enabled: false
+    can:
+      fd: true
+      bitrate: 1000000
+      dbitrate: 5000000
+      left_port: can1   # VERIFY with ip -details link show + openarm-can-cli show_param
+      right_port: can0  # VERIFY
+
+meta_quest:
+  connection:
+    quest_ip: "0.0.0.0"  # VERIFY: this station's Quest IP on the same LAN
+    tcp_port: 65432
+    sync_port: 42000
+    connect_retry_s: 1.0
+  health:
+    frame_stale_timeout_s: 0.25

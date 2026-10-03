@@ -1,0 +1,21 @@
+"""Shared defaults for synchronized HandUMI dataset capture."""
+
+from __future__ import annotations
+
+TRACKING_LOSS_TIMEOUT_S = 1.0
+SYNC_LAG_S = 0.04
+MAX_SYNC_SKEW_S = 0.06
+CAMERA_STALE_TIMEOUT_S = 0.25
+GRIPPER_STALE_TIMEOUT_S = 0.10
+SENSOR_LOSS_TIMEOUT_S = 1.0
+FEETECH_SAMPLE_HZ = 100.0
+
+__all__ = [
+    "CAMERA_STALE_TIMEOUT_S",
+    "FEETECH_SAMPLE_HZ",
+    "GRIPPER_STALE_TIMEOUT_S",
+    "MAX_SYNC_SKEW_S",
+    "SENSOR_LOSS_TIMEOUT_S",
+    "SYNC_LAG_S",
+    "TRACKING_LOSS_TIMEOUT_S",
+]

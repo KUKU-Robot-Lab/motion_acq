@@ -1,0 +1,52 @@
+[project]
+name = "motion_acq"
+version = "0.1.0"
+description = "Meta Quest teleoperation and demonstration capture for OpenArm stations (derived from HandUMI)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "lerobot[feetech]==0.5.1",
+    "huggingface-hub>=1.0.0,<2.0.0",
+    "rerun-sdk>=0.24.0,<0.27.0",
+    "pyyaml>=6.0",
+    "opencv-python>=4.10,<5",
+    "numpy>=2.0",
+    "jax>=0.4.0",
+    "jaxlie>=1.0.0",
+    "jaxls @ git+https://github.com/brentyi/jaxls.git",
+    "yourdfpy",
+    "pyroki @ git+https://github.com/chungmin99/pyroki.git",
+    "scipy>=1.17.1",
+    "vosk>=0.3.45",
+    "sounddevice>=0.4.6",
+    "rich>=13.9",
+]
+
+[project.optional-dependencies]
+openarm = [
+    "openarm_can @ git+https://github.com/enactic/openarm_can.git@1.2.9#subdirectory=python",
+]
+sim = [
+    "viser>=1.0.0",
+    "mujoco>=3.9.0",
+]
+
+[project.scripts]
+macq = "motion_acq.scripts.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/motion_acq"]
