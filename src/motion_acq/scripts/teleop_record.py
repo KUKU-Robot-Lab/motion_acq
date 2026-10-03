@@ -128,6 +128,7 @@ from motion_acq.teleop.common import (
     JointMotionDiagnostics,
     KeyboardSpaceListener,
     TeleopLoopTimer,
+    return_home_on_exit,
 )
 from motion_acq.teleop.common import (
     enabled_sides as _enabled_sides,
@@ -1998,6 +1999,7 @@ def _run_record() -> None:
     else:
         escape_listener.start()
 
+    arms_homed = False  # the start pose was reached; the end pose is home again
     try:
         record_log.info("Starting tracking before moving real arms.")
         tracker.start()
@@ -2072,6 +2074,7 @@ def _run_record() -> None:
         real_env.connect()
         record_log.info("Selected home pose: %s", home_pose_name)
         real_env.home(home_q)
+        arms_homed = True
         joint_filter.reset(home_q)
         startup_widths = _latest_widths(grippers)
         command_stream.submit(
@@ -2586,6 +2589,8 @@ def _run_record() -> None:
                     dataset_writer.close()
                 if audio_recorder is not None:
                     audio_recorder.close()
+                if arms_homed:
+                    return_home_on_exit(real_env, home_q, record_log)
                 real_env.disconnect()
             finally:
                 if grippers is not None:

@@ -8,7 +8,9 @@ Disabled at start; enable/disable with std_msgs/Bool on
 /motion_acq/hand_<side>/enable. The enable/fault rules live in
 motion_acq.hand.controller (fresh, plausible angle_actual; all driver topics
 subscribed; hand_id taken from angle_actual; speed/force re-sent every second;
-angle_actual loss -> latched FAULT; disable freezes the hand where it is).
+angle_actual loss -> latched FAULT, the hand stays put). Start and end pose is
+home (hand open): enable walks home before following the glove; disable, Ctrl+C
+and SIGTERM walk home before stopping (a second signal skips the return).
 enable_on_start is only accepted on the isolated fake domain. Every cycle is
 logged to <log_dir>/hand_<side>_<time>.jsonl and, if udp_target is set, sent
 as one JSON datagram (recorder sidecar).
@@ -30,9 +32,9 @@ from motion_acq_hand.common import (
     fake_isolated,
     glove_qos,
     hand_ns,
-    spin_node,
 )
 
+import rclpy
 from rclpy.node import Node
 from rh56f1_interfaces.msg import GetAngleAct1, SetAngle1, SetForce1, SetSpeed1
 from senseglove_msgs.msg import SenseGloveState
@@ -158,6 +160,21 @@ class HandNode(Node):
                                        "registers", "measured_registers")
         })))
 
+    def return_home(self, interrupted) -> None:
+        """End pose = home: disable walks the hand home; spin until it is there."""
+        if not self.controller.want_enable and not self.controller.busy:
+            return
+        self.get_logger().info(f"hand {self.side}: returning home before exit")
+        self.controller.request_enable(False)
+        deadline = time.monotonic() + self.controller.config.home_timeout_s + 1.0
+        while self.controller.busy and time.monotonic() < deadline:
+            if interrupted():
+                self.get_logger().warning(f"hand {self.side}: second stop, leaving the hand where it is")
+                return
+            rclpy.spin_once(self, timeout_sec=0.02)
+        state = "at home" if not self.controller.busy else "home not reached"
+        self.get_logger().info(f"hand {self.side}: {state}")
+
     def destroy_node(self) -> None:
         try:
             self.log_file.close()
@@ -166,7 +183,31 @@ class HandNode(Node):
 
 
 def main() -> None:
-    spin_node(HandNode)
+    """Spin until SIGINT/SIGTERM, then walk the hand home before exiting.
+
+    rclpy's own signal handler would shut the context down at the first
+    Ctrl+C, leaving no way to publish the return; signals are handled here
+    instead. A second signal skips the return (the hand stays where it is).
+    """
+    import signal
+    import threading
+
+    from rclpy.signals import SignalHandlerOptions
+
+    stops = threading.Semaphore(0)
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stops.release())
+    node = None
+    try:
+        node = HandNode()
+        while not stops.acquire(blocking=False):
+            rclpy.spin_once(node, timeout_sec=0.05)
+        node.return_home(lambda: stops.acquire(blocking=False))
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

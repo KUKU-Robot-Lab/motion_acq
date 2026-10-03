@@ -5,10 +5,13 @@
     macq head --axes pan               # staged test: tilt stays at its anchor
     macq head --backend real           # opens the station head port
 
-The head anchors after the HMD has been tracked for --auto-start-delay-s; it
-then follows yaw (pan) and pitch (tilt) relative to that moment. HMD loss
-holds the head. Ctrl+C stops; the head keeps its last goal (torque stays on)
-unless --torque-off-on-exit is given.
+Start and end pose is home (head.pan/tilt.home_deg): after torque on the head
+walks there at head.limits.home_speed_deg_s (default 20 deg/s), and walks back
+on Ctrl+C, SIGTERM, --duration-s or a bus fault (not on a hardware alert,
+which stops in place). The head anchors after the HMD has been tracked for
+--auto-start-delay-s; it then follows yaw (pan) and pitch (tilt) relative to
+that moment, around home. HMD loss holds the head. After the return the head
+holds home (torque on) unless --torque-off-on-exit is given.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from motion_acq.config import DEFAULT_RIG_CONFIG, STATION_ENV
 from motion_acq.head.config import HeadConfig, load_head_config
 from motion_acq.head.dynamixel import (
     FakeHeadBus,
+    HeadAlertError,
     HeadBus,
     HeadBusError,
     HeadDriver,
@@ -136,9 +140,13 @@ def main(argv: list[str] | None = None) -> None:
     log_file = None if args.no_log else open_log(args.log_dir, os.environ.get(STATION_ENV, ""))
     signal.signal(signal.SIGTERM, _sigterm_to_interrupt)
     tracker.start()
+    alert = False
     try:
         measured = driver.start()
-        log.info("Head ready at pan %.1f / tilt %.1f deg (torque on, holding).", *measured)
+        log.info("Head torque on at pan %.1f / tilt %.1f deg; moving to home %.1f / %.1f at %.0f deg/s.",
+                 *measured, *config.home, config.home_speed_deg_s)
+        measured = driver.move_to(*config.home, speed_deg_s=config.home_speed_deg_s, rate_hz=rate_hz)
+        log.info("Head at home (pan %.1f / tilt %.1f deg); following the HMD after anchoring.", *measured)
         session = HeadSession(
             tracker, driver, HeadRetargeter(retarget),
             auto_start_delay_s=args.auto_start_delay_s,
@@ -148,6 +156,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         _run(session, rate_hz, args.duration_s)
     except HeadBusError as exc:
+        alert = isinstance(exc, HeadAlertError)
         raise SystemExit(f"Head stopped: {exc}") from exc
     except KeyboardInterrupt:
         log.info("Stopping head.")
@@ -157,10 +166,25 @@ def main(argv: list[str] | None = None) -> None:
         except Exception:  # noqa: BLE001 - never skip the driver cleanup
             log.exception("tracker.stop() failed")
         try:
+            _return_home(driver, config, rate_hz, alert=alert)
             driver.stop(torque_off=args.torque_off_on_exit)
         finally:
             if log_file is not None:
                 log_file.close()
+
+
+def _return_home(driver: HeadDriver, config: HeadConfig, rate_hz: float, *, alert: bool) -> None:
+    """End pose = home, like the start pose. A hardware alert stops in place."""
+    if not driver.started:
+        return
+    if alert:
+        log.error("Hardware alert: the head stays where it is (not returning home).")
+        return
+    try:
+        measured = driver.move_to(*config.home, speed_deg_s=config.home_speed_deg_s, rate_hz=rate_hz)
+        log.info("Head back at home (pan %.1f / tilt %.1f deg).", *measured)
+    except (HeadBusError, KeyboardInterrupt) as exc:
+        log.error("Head could not return home: %s", exc or "interrupted")
 
 
 def _run(session: HeadSession, rate_hz: float, duration_s: float) -> None:

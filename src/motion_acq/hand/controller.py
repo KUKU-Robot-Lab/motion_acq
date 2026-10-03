@@ -5,8 +5,12 @@ requests, calls tick() at the control rate and publishes what it returns.
 
 States
     DISABLED  nothing is published.
-    ENABLED   streaming angle_set; RUNNING while the glove is fresh, HOLD
-              (nothing published) while it is stale or frozen.
+    ENABLED   streaming angle_set. Start and end pose is home (hand open):
+              after enable the hand walks home (HOMING) and only then follows
+              the glove (RUNNING, or HOLD with nothing published while the
+              glove is stale or frozen); a disable walks it home again and
+              then disables. Not reaching home in home_timeout_s is a FAULT
+              at the start and a plain disable at the end.
     FAULT     latched; nothing is published until a disable and a new enable.
 
 Enable needs: a fresh angle_actual whose six registers are plausible (no 0,
@@ -14,7 +18,7 @@ Enable needs: a fresh angle_actual whose six registers are plausible (no 0,
 driver topic subscribed. The hand then starts from that measured pose;
 speed/force are sent at enable and re-sent every resend_s. Losing
 angle_actual for longer than measured_stale_s while enabled is a FAULT.
-Disable freezes the hand: the last measured registers are sent once.
+A FAULT does not move the hand (its feedback cannot be trusted).
 
 Frozen glove: when SenseCom dies, senseglove_ros keeps publishing its last
 values on time and without error (seen on bumsu's setup, 2026-09-22). A glove
@@ -43,12 +47,20 @@ class Mode(str, Enum):
     FAULT = "fault"
 
 
+class Phase(str, Enum):
+    TO_HOME = "to_home"  # after enable: walk home before following
+    FOLLOW = "follow"
+    RETURN = "return_home"  # after disable: walk home, then disable
+
+
 @dataclass(frozen=True)
 class ControllerConfig:
     glove_stale_s: float = 0.2
     glove_frozen_s: float = 1.0
     measured_stale_s: float = 0.5
     resend_s: float = 1.0
+    home_timeout_s: float = 5.0
+    home_tolerance_registers: int = 30  # ~3 deg on the fingers
     driver_speed: int = 2000
     driver_force: int = 600
 
@@ -101,8 +113,11 @@ class HandController:
         self.glove_errors = 0
         self.measured: tuple[list[int], int, float] | None = None  # registers, hand_id, t
         self._last_resend = -math.inf
-        self._freeze_pending = False
+        self.phase = Phase.TO_HOME
+        self._phase_t0: float | None = None
         self.last_refusal: str | None = None
+        self.home_rad = dict(retargeter.config.home_rad)
+        self._home_registers = hand_map.to_registers(self.home_rad, side=side)
 
     # -- inputs -----------------------------------------------------------
     def on_glove(self, angles: Mapping[str, float], t: float) -> None:
@@ -121,14 +136,36 @@ class HandController:
 
     def request_enable(self, enable: bool) -> None:
         self.want_enable = bool(enable)
-        if enable:
-            return
         if self.mode is Mode.ENABLED:
-            self._freeze_pending = True
-        if self.mode is not Mode.DISABLED:
+            if enable and self.phase is Phase.RETURN:
+                self._set_phase(Phase.TO_HOME, None)
+            elif not enable and self.phase is not Phase.RETURN:
+                self._set_phase(Phase.RETURN, None)
+            return
+        if not enable and self.mode is Mode.FAULT:
             self.mode = Mode.DISABLED
             self.fault_reason = None
             self.retargeter.state = HandState.IDLE
+
+    def _set_phase(self, phase: Phase, t: float | None) -> None:
+        """t None: the phase clock starts at the next tick (request_enable has no time)."""
+        self.phase = phase
+        self._phase_t0 = t
+
+    @property
+    def busy(self) -> bool:
+        """Still moving to its end pose (the node keeps spinning until False)."""
+        return self.mode is Mode.ENABLED and self.phase is Phase.RETURN
+
+    def _at_home(self, t: float) -> bool:
+        command = self.retargeter.command()
+        if any(abs(command[j] - q) > 1e-3 for j, q in self.home_rad.items()):
+            return False
+        if not self._measured_fresh(t):
+            return False
+        assert self.measured is not None
+        tol = self.config.home_tolerance_registers
+        return all(abs(m - h) <= tol for m, h in zip(self.measured[0], self._home_registers, strict=True))
 
     def _measured_rad(self) -> dict[str, float] | None:
         if self.measured is None or implausible_registers(self.measured[0], self.hand_map, self.side):
@@ -161,16 +198,39 @@ class HandController:
             return "implausible angle_actual: " + "; ".join(reasons)
         self.retargeter.start(self.hand_map.to_rad(self.measured[0], side=self.side), t)
         self.mode = Mode.ENABLED
+        self._set_phase(Phase.TO_HOME, t)
         self._last_resend = -math.inf
         return None
 
+    def _step_enabled(self, t: float):
+        """One ENABLED cycle: walk home, follow the glove, or walk home and disable."""
+        if self.phase is Phase.FOLLOW:
+            glove = self.glove
+            fresh = (glove is not None and t - glove[1] <= self.config.glove_stale_s
+                     and not self.glove_frozen(t))
+            return self.retargeter.step(glove[0] if fresh and glove else None, t)
+        if self._phase_t0 is None:
+            self._phase_t0 = t
+        step = self.retargeter.step_to(self.home_rad, t)
+        if self._at_home(t):
+            if self.phase is Phase.TO_HOME:
+                self._set_phase(Phase.FOLLOW, t)
+            else:
+                self.mode = Mode.DISABLED
+                self.retargeter.state = HandState.IDLE
+        elif t - self._phase_t0 > self.config.home_timeout_s:
+            reason = f"home not reached in {self.config.home_timeout_s:g} s"
+            if self.phase is Phase.TO_HOME:
+                self.mode = Mode.FAULT
+                self.fault_reason = reason
+            else:
+                self.mode = Mode.DISABLED
+                self.last_refusal = reason
+            self.retargeter.state = HandState.IDLE
+        return step
+
     def tick(self, t: float, *, subscribers_ready: bool) -> Outputs:
         out = Outputs(hand_id=None if self.measured is None else self.measured[1])
-        if self._freeze_pending:
-            self._freeze_pending = False
-            if self._measured_fresh(t):
-                assert self.measured is not None
-                out.angle = list(self.measured[0])  # stop where the hand is
         if self.want_enable and self.mode is Mode.DISABLED:
             self.last_refusal = self._try_enable(t, subscribers_ready)
         if self.mode is Mode.ENABLED and not self._measured_fresh(t):
@@ -183,20 +243,18 @@ class HandController:
                 self._last_resend = t
                 out.speed = [self.config.driver_speed] * N_SLOTS
                 out.force = [self.config.driver_force] * N_SLOTS
-            glove = self.glove
-            fresh = (glove is not None and t - glove[1] <= self.config.glove_stale_s
-                     and not self.glove_frozen(t))
-            step = self.retargeter.step(glove[0] if fresh and glove else None, t)
-            if step.state is HandState.RUNNING and step.registers is not None:
+            step = self._step_enabled(t)
+            if step.state in (HandState.RUNNING, HandState.HOMING) and step.registers is not None:
                 out.angle = list(step.registers)
         glove_age = None if self.glove is None else round(t - self.glove[1], 4)
         out.record = {
             "t_mono_s": round(t, 6),
             "side": self.side,
             "mode": self.mode.value,
+            "phase": self.phase.value if self.mode is Mode.ENABLED else None,
             "state": step.state.value if step else HandState.IDLE.value,
             "fault": self.fault_reason,
-            "refusal": self.last_refusal if self.want_enable and self.mode is Mode.DISABLED else None,
+            "refusal": self.last_refusal if self.mode is Mode.DISABLED else None,
             "glove_age_s": glove_age,
             "glove_frozen": self.glove_frozen(t),
             "glove_errors": self.glove_errors,

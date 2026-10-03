@@ -41,6 +41,7 @@ from motion_acq.teleop.common import (
     JointMotionDiagnostics,
     KeyboardSpaceListener,
     TeleopLoopTimer,
+    return_home_on_exit,
 )
 from motion_acq.teleop.common import (
     enabled_sides as _enabled_sides,
@@ -343,6 +344,7 @@ def _run_real() -> None:
     timing_playback_counts = (0, 0, 0)
     joint_debug_next_log_s = time.perf_counter() + 1.0
     feedback_error_reported = False
+    arms_homed = False  # the start pose was reached; the end pose is home again
 
     try:
         real_log.info("Starting tracking before moving real arms.")
@@ -378,6 +380,7 @@ def _run_real() -> None:
         real_env.setup(repair=not args.skip_can_repair)
         real_env.connect()
         real_env.home(home_q)
+        arms_homed = True
         if args.joint_debug:
             feedback_sampler = _LatestJointFeedback(real_env.read, home_q)
             feedback_worker = BestEffortPeriodicWorker(
@@ -756,6 +759,8 @@ def _run_real() -> None:
                     feedback_worker.close()
             finally:
                 try:
+                    if arms_homed:
+                        return_home_on_exit(real_env, home_q, real_log)
                     real_env.disconnect()
                 finally:
                     if grippers is not None:

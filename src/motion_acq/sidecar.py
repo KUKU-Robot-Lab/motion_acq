@@ -19,7 +19,8 @@ Feature layout (fixed shapes, LeRobot):
                  action.hand.<side>            [6] rad (commanded)
                  observation.glove.<side>.angles [20] rad (raw Nova 2 joints)
                  observation.hand.<side>.status [1] int64
-status: -1 missing/stale, 0 idle/disabled, 1 running, 2 hold, 3 fault.
+status: -1 missing/stale, 0 idle/disabled, 1 running, 2 hold, 3 fault,
+4 homing (hand walking to/from its home pose).
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ log = logging.getLogger(__name__)
 HAND_JOINTS = ("thumb_1", "thumb_2", "index_1", "middle_1", "ring_1", "pinky_1")
 STATUS_MISSING = -1
 _HEAD_STATUS = {"idle": 0, "running": 1, "hold": 2}
-_HAND_STATUS = {"idle": 0, "running": 1, "hold": 2}
+_HAND_STATUS = {"idle": 0, "running": 1, "hold": 2, "homing": 4}
 
 
 def _vector(values: Any, size: int) -> np.ndarray | None:

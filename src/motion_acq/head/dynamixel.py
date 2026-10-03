@@ -16,6 +16,8 @@ from __future__ import annotations
 import fcntl
 import math
 import os
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -418,6 +420,46 @@ class HeadDriver:
             self.bus.write4(dxl_id, ADDR_GOAL_POSITION, deg_to_tick(clamped))
             sent.append(clamped)
         return sent[0], sent[1]
+
+    def move_to(
+        self,
+        pan_deg: float,
+        tilt_deg: float,
+        *,
+        speed_deg_s: float,
+        rate_hz: float = 50.0,
+        tolerance_deg: float = 1.0,
+        settle_timeout_s: float = 3.0,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> tuple[float, float]:
+        """Walk the goal from the measured pose to (pan, tilt) at speed_deg_s,
+        then wait until the measured pose is within tolerance_deg of it.
+
+        Used for the start and end pose (home). Targets outside the windows are
+        clamped like any command; a pose not reached in time is an error.
+        """
+        if not speed_deg_s > 0.0 or not rate_hz > 0.0:
+            raise HeadBusError(f"move_to needs positive speed and rate ({speed_deg_s}, {rate_hz})")
+        start = self.read()
+        target = (float(pan_deg), float(tilt_deg))
+        span = max(abs(t - s) for s, t in zip(start, target, strict=True))
+        steps = max(1, math.ceil(span / (speed_deg_s / rate_hz)))
+        for k in range(1, steps + 1):
+            f = k / steps
+            self.command(*(s + (t - s) * f for s, t in zip(start, target, strict=True)))
+            sleep(1.0 / rate_hz)
+        deadline = clock() + settle_timeout_s
+        while True:
+            measured = self.read()
+            if all(abs(m - t) <= tolerance_deg for m, t in zip(measured, target, strict=True)):
+                return measured
+            if clock() >= deadline:
+                raise HeadBusError(
+                    f"head did not reach ({target[0]:.1f}, {target[1]:.1f}) deg: "
+                    f"at ({measured[0]:.1f}, {measured[1]:.1f}) after {settle_timeout_s:.1f} s"
+                )
+            sleep(1.0 / rate_hz)
 
     def stop(self, *, torque_off: bool = False) -> None:
         """Leave the head holding its last goal unless torque_off is requested.

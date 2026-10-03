@@ -329,3 +329,72 @@ def test_session_log_has_step2_fields():
         "meas_pan_deg", "meas_tilt_deg",
     } <= rows[-1].keys()
     assert rows[-1]["state"] == "running"
+
+
+# -- start and end pose = home ---------------------------------------------------
+
+class FakeTime:
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def sleep(self, dt: float) -> None:
+        self.t += dt
+
+    def clock(self) -> float:
+        return self.t
+
+
+def goal_trace(bus: FakeHeadBus, dxl_id: int) -> list[float]:
+    return [tick_to_deg(v) for i, a, v in bus.writes if i == dxl_id and a == ADDR_GOAL_POSITION]
+
+
+def test_move_to_walks_home_at_the_speed_and_waits_for_arrival():
+    bus = fake_bus(pan=7.1, tilt=61.8)  # 10 deg off home on both axes, inside the windows
+    driver = make_driver(bus)
+    driver.start()
+    clock = FakeTime()
+    start_writes = len(bus.writes)
+    measured = driver.move_to(-2.9, 71.8, speed_deg_s=20.0, rate_hz=50.0,
+                              sleep=clock.sleep, clock=clock.clock)
+    assert measured == pytest.approx((-2.9, 71.8), abs=0.1)
+    pan = [tick_to_deg(v) for i, a, v in bus.writes[start_writes:] if i == 1 and a == ADDR_GOAL_POSITION]
+    steps = [abs(b - a) for a, b in zip([7.1] + pan, pan, strict=False)]
+    # 10 deg (plus tick rounding) at 0.4 deg per 20 ms
+    assert len(pan) in (25, 26) and max(steps) <= 20.0 / 50.0 + 0.1
+    assert clock.t == pytest.approx(0.52, abs=0.05)
+
+
+def test_move_to_raises_if_the_head_does_not_arrive():
+    bus = fake_bus()
+    driver = make_driver(bus)
+    driver.start()
+    driver.bus.write4 = lambda *a: None  # goals lost: the head never moves
+    clock = FakeTime()
+    with pytest.raises(HeadBusError, match="did not reach"):
+        driver.move_to(7.1, 71.8, speed_deg_s=20.0, sleep=clock.sleep, clock=clock.clock)
+
+
+def test_head_teleop_starts_and_ends_at_home(monkeypatch):
+    """Fake backend run: walk home, follow briefly, walk home again on exit."""
+    from motion_acq.scripts import head_teleop
+
+    bus = fake_bus(pan=7.1, tilt=61.8)
+    monkeypatch.setattr(head_teleop, "build_bus", lambda args, config: bus)
+
+    class NoQuest:
+        def start(self): ...
+        def stop(self): ...
+        def latest(self):
+            from motion_acq.tracking.base import ControllerPairSample
+            return ControllerPairSample.empty() if hasattr(ControllerPairSample, "empty") else None
+
+    monkeypatch.setattr(head_teleop, "build_tracker", lambda args: NoQuest())
+    monkeypatch.setattr(head_teleop, "_run", lambda session, rate, duration: bus.writes.append(("run",)))
+    head_teleop.main(["--backend", "fake", "--no-log", "--rig-config",
+                      str(station_rig_config("arm4090"))])
+    run_at = bus.writes.index(("run",))
+    before = [w for w in bus.writes[:run_at] if w[0] == 1 and w[1] == ADDR_GOAL_POSITION]
+    after = [w for w in bus.writes[run_at + 1:] if w[0] == 1 and w[1] == ADDR_GOAL_POSITION]
+    assert tick_to_deg(before[-1][2]) == pytest.approx(-2.9, abs=0.1)
+    assert bus.present_ticks[1] == deg_to_tick(-2.9) and bus.present_ticks[2] == deg_to_tick(71.8)
+    assert after and tick_to_deg(after[-1][2]) == pytest.approx(-2.9, abs=0.1)

@@ -158,3 +158,34 @@ def test_episode_capture_keeps_robot_reads_off_control_thread(monkeypatch) -> No
     finally:
         capture.close()
         writer.close()
+
+
+def test_arms_return_home_on_exit_unless_the_streamer_failed():
+    import logging
+
+    import numpy as np
+
+    from motion_acq.teleop.common import return_home_on_exit
+
+    class Env:
+        def __init__(self, healthy=True, stuck=False):
+            self.healthy, self.stuck, self.moved = healthy, stuck, []
+
+        def check_health(self):
+            if not self.healthy:
+                raise RuntimeError("following error")
+
+        def move_home(self, q):
+            if self.stuck:
+                raise TimeoutError("home not reached")
+            self.moved.append(q)
+
+    home = np.zeros(14, dtype=np.float32)
+    log = logging.getLogger("test")
+    env = Env()
+    return_home_on_exit(env, home, log)
+    assert len(env.moved) == 1
+    env = Env(healthy=False)
+    return_home_on_exit(env, home, log)
+    assert env.moved == []
+    return_home_on_exit(Env(stuck=True), home, log)  # reported, never raised

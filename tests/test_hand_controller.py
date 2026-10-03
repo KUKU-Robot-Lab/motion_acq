@@ -160,29 +160,76 @@ def test_feedback_loss_latches_fault_until_reenabled():
     assert rig.ctl.mode is Mode.ENABLED and out.angle is not None
 
 
-def test_disable_freezes_the_hand_once():
+def run_until(rig, angles, predicate, limit=400):
+    for _ in range(limit):
+        out = rig.step(angles)
+        if predicate(out):
+            return out
+    raise AssertionError("condition not reached")
+
+
+def test_enable_walks_home_before_following_the_glove():
+    """Start pose = home (hand open), whatever the glove does meanwhile."""
+    rig = Rig(make_controller())
+    rig.hand = [1300, 1250, 1200, 1150, 1250, 1200]
+    rig.ctl.request_enable(True)
+    out = rig.step(POSE_ANGLES["fist"])
+    assert out.record["state"] == "homing" and out.record["phase"] == "to_home"
+    out = run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["state"] == "running")
+    homing = [o for o in rig.sent if o.record["state"] == "homing"]
+    assert max(abs(a - b) for a, b in zip(homing[-1].angle, HOME_R, strict=True)) <= 2
+    out = run_until(rig, POSE_ANGLES["fist"], lambda o: o.angle[3] < 1000)  # index closes after
+    assert rig.ctl.mode is Mode.ENABLED
+
+
+def test_disable_walks_home_then_disables():
+    """End pose = home: a disable opens the hand under the rate limit, then stops."""
     rig = Rig(make_controller())
     rig.ctl.request_enable(True)
-    for _ in range(20):
-        rig.step(POSE_ANGLES["fist"])
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.angle is not None and o.angle[3] < 1000)
     rig.ctl.request_enable(False)
     out = rig.step(POSE_ANGLES["fist"])
-    assert out.angle == rig.sent[-2].angle or out.angle == rig.hand  # the measured pose
-    assert rig.ctl.mode is Mode.DISABLED
+    assert out.record["state"] == "homing" and rig.ctl.busy
+    run_until(rig, POSE_ANGLES["fist"], lambda o: rig.ctl.mode is Mode.DISABLED)
+    assert max(abs(a - b) for a, b in zip(rig.hand, HOME_R, strict=True)) <= 2
+    assert not rig.ctl.busy
     assert all(rig.step(POSE_ANGLES["fist"]).angle is None for _ in range(10))
+
+
+def test_home_not_reached_is_a_fault_at_start_and_a_disable_at_the_end():
+    ctl = make_controller(home_timeout_s=1.0)
+    rig = Rig(ctl)
+    rig.hand = [1300, 1250, 1200, 1150, 1250, 1200]
+    ctl.request_enable(True)
+    stuck = list(rig.hand)
+    for _ in range(int(1.5 / DT)):
+        rig.step(POSE_ANGLES["open"])
+        rig.hand = list(stuck)  # the hand does not move
+    assert ctl.mode is Mode.FAULT and "home not reached" in ctl.fault_reason
+    ctl.request_enable(False)
+    rig.hand = list(HOME_R)
+    ctl.request_enable(True)
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.angle is not None and o.angle[3] < 1000)
+    ctl.request_enable(False)
+    stuck = list(rig.hand)
+    for _ in range(int(1.5 / DT)):
+        rig.step(POSE_ANGLES["fist"])
+        rig.hand = list(stuck)
+    assert ctl.mode is Mode.DISABLED and "home not reached" in rig.sent[-1].record["refusal"]
 
 
 def test_reenable_reseeds_from_the_new_measured_pose():
     rig = Rig(make_controller())
     rig.ctl.request_enable(True)
-    for _ in range(30):
-        rig.step(POSE_ANGLES["fist"])
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.angle is not None and o.angle[3] < 1000)
     rig.ctl.request_enable(False)
-    rig.step(None)
-    rig.hand = list(HOME_R)  # someone moved the hand while disabled
+    run_until(rig, POSE_ANGLES["fist"], lambda o: rig.ctl.mode is Mode.DISABLED)
+    moved = [1000, 1000, 1000, 1000, 1200, 1300]  # someone moved the hand while disabled
+    rig.hand = list(moved)
     rig.ctl.request_enable(True)
     out = rig.step(POSE_ANGLES["fist"])
-    assert max(abs(a - b) for a, b in zip(out.angle, HOME_R, strict=True)) <= 2
+    assert max(abs(a - b) for a, b in zip(out.angle, moved, strict=True)) <= 30  # no jump
+    assert out.record["state"] == "homing"
 
 
 def test_amplitude_scales_travel():

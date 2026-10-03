@@ -27,7 +27,12 @@ class HeadConfig:
     retarget: RetargetConfig
     rate_hz: float = 50.0
     max_consecutive_faults: int = 10
+    home_speed_deg_s: float = 20.0  # start and end: walk to home at this speed
     from_station: bool = True
+
+    @property
+    def home(self) -> tuple[float, float]:
+        return (self.retarget.pan.home_deg, self.retarget.tilt.home_deg)
 
     @property
     def pan_window(self) -> tuple[float, float]:
@@ -53,6 +58,13 @@ def _axis(data: dict[str, Any], name: str) -> tuple[int, AxisConfig]:
     except (KeyError, ValueError) as exc:
         raise SystemExit(f"Invalid head.{name}: {exc}") from exc
     return dxl_id, axis
+
+
+def _home_speed(limits: dict[str, Any]) -> float:
+    speed = float(limits.get("home_speed_deg_s", 20.0))
+    if not 0.0 < speed <= float(limits.get("max_velocity_deg_s", 60.0)):
+        raise SystemExit(f"head.limits.home_speed_deg_s {speed} must be in (0, max_velocity_deg_s].")
+    return speed
 
 
 def head_config_from_section(data: dict[str, Any], *, from_station: bool = True) -> HeadConfig:
@@ -90,6 +102,7 @@ def head_config_from_section(data: dict[str, Any], *, from_station: bool = True)
         retarget=retarget,
         rate_hz=float(data.get("rate_hz", 50.0)),
         max_consecutive_faults=int(data.get("max_consecutive_faults", 10)),
+        home_speed_deg_s=_home_speed(limits),
         from_station=from_station,
     )
 

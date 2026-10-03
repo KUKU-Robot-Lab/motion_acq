@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import select
 import sys
 import termios
@@ -460,3 +461,22 @@ def sample_state(sample, widths=None) -> np.ndarray:
     left_w = 0.0 if widths is None else widths.left
     right_w = 0.0 if widths is None else widths.right
     return pose_to_state_vector(left, right, left_w, right_w)
+
+
+def return_home_on_exit(real_env: Any, home_q: np.ndarray, log: logging.Logger) -> None:
+    """End pose = start pose: walk the arms home before the motors are disabled.
+
+    Skipped when the arm streamer has failed (following error, CAN loss):
+    then nothing can be commanded safely and the arms stop where they are.
+    """
+    try:
+        real_env.check_health()
+    except Exception as exc:  # noqa: BLE001 - report and leave the arms alone
+        log.error("Arms not returned home (streamer failed: %s).", exc)
+        return
+    log.info("Returning arms home before exit ...")
+    try:
+        real_env.move_home(home_q)
+        log.info("Arms at home.")
+    except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - disconnect must still run
+        log.error("Arms could not return home: %s", exc or "interrupted")

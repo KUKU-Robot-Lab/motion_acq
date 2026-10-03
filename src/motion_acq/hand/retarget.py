@@ -87,6 +87,7 @@ class HandState(str, Enum):
     IDLE = "idle"  # not started: never command
     RUNNING = "running"
     HOLD = "hold"  # glove stale/lost: keep the last command
+    HOMING = "homing"  # walking to the home pose (start and end of a session)
 
 
 @dataclass(frozen=True)
@@ -154,6 +155,23 @@ class HandRetargeter:
         self._last_t = t_s
         self._last_registers = self.hand_map.to_registers(self.command(), side=self.side)
         self.state = HandState.RUNNING
+
+    def step_to(self, q_target: Mapping[str, float], t_s: float) -> HandStep:
+        """Walk the command to a fixed pose (home) under the same rate limits.
+
+        The glove filters restart afterwards, so following begins from here.
+        """
+        if self.state is HandState.IDLE:
+            return HandStep(HandState.IDLE, None, None, None, None, None)
+        dt = 0.0 if self._last_t is None else min(max(t_s - self._last_t, 0.0), self.config.max_step_dt_s)
+        self._last_t = t_s
+        target = {j: float(q_target[j]) for j in self._limiters}
+        q_cmd = {j: self._limiters[j](target[j], dt) for j in self._limiters}
+        for filt in self._filters.values():
+            filt.reset(None)
+        self.state = HandState.HOMING
+        self._last_registers = self.hand_map.to_registers(q_cmd, side=self.side)
+        return HandStep(HandState.HOMING, None, None, target, q_cmd, self._last_registers)
 
     def step(self, angles: Mapping[str, float] | None, t_s: float) -> HandStep:
         if self.state is HandState.IDLE:

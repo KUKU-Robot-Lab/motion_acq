@@ -92,6 +92,7 @@ def test_hand_frame_layout_and_status():
     assert frame["observation.hand.left.status"].tolist() == [1]
     assert spec.to_frame({**record, "mode": "fault"})["observation.hand.left.status"].tolist() == [3]
     assert spec.to_frame({**record, "mode": "disabled", "state": "idle"})["observation.hand.left.status"].tolist() == [0]
+    assert spec.to_frame({**record, "state": "homing"})["observation.hand.left.status"].tolist() == [4]
     broken = spec.to_frame({**record, "glove_angles": [1.0] * 19, "measured_rad": None})
     assert np.all(broken["observation.glove.left.angles"] == 0)
     assert np.all(broken["observation.hand.left.state"] == 0)
