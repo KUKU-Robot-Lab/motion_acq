@@ -117,7 +117,9 @@ cmd_sensecom() {
   [[ -n "$display" ]] || die "no desktop display for $USER: start SenseCom from the desktop terminal"
   mkdir -p "$LOG_DIR"
   local log; log="$LOG_DIR/sensecom_$(date +%Y%m%d_%H%M%S).log"
-  (cd "$(dirname "$SENSECOM")" && DISPLAY="$display" setsid "$SENSECOM" >"$log" 2>&1 < /dev/null &)
+  # From ssh there is no XAUTHORITY; the GDM X11 session keeps its cookie here.
+  local xauth="${XAUTHORITY:-/run/user/$(id -u)/gdm/Xauthority}"
+  (cd "$(dirname "$SENSECOM")" && DISPLAY="$display" XAUTHORITY="$xauth" setsid "$SENSECOM" >"$log" 2>&1 < /dev/null &)
   sleep 3
   pids="$(sensecom_pids)"
   [[ -n "$pids" ]] || die "SenseCom exited at start; see $log"
