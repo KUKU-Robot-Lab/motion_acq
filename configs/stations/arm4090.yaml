@@ -38,3 +38,36 @@ meta_quest:
     connect_retry_s: 1.0
   health:
     frame_stale_timeout_s: 0.25
+
+# STEP 2 head: XC330 x2 on a U2D2. Values from sim2real config/head_home_rh56f1.yaml
+# (home pose matching the 5090 view, motor EEPROM Homing Offset pan +1024 / tilt -1024).
+# The serial port is shared with s2r: only one process may open it at a time.
+head:
+  port: /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT763P8T-if00-port0
+  baud: 1000000
+  rate_hz: 50
+  pan:
+    id: 1
+    home_deg: -2.9
+    range_deg: 20.0   # STEP 2 first window; widen after verification
+    sign: 1           # VERIFY with --axes pan: HMD yaw left must turn the camera left
+  tilt:
+    id: 2
+    home_deg: 71.8
+    range_deg: 15.0
+    sign: 1           # VERIFY with --axes tilt: HMD pitch up must raise the camera
+  motor:
+    model_number: 1240        # XC330-M288-T
+    operating_mode: 3         # position control
+    position_i_gain: 400      # written after the mode (mode write resets gains)
+    profile_acceleration: 20
+    profile_velocity: 50
+    start_tolerance_deg: 2.0  # refuse to start if the head sits outside the window
+  filter:
+    deadband_deg: 0.5
+    min_cutoff_hz: 1.0
+    beta: 0.05
+    d_cutoff_hz: 1.0
+  limits:
+    max_velocity_deg_s: 60.0
+    max_acceleration_deg_s2: 300.0

@@ -28,6 +28,9 @@ dependencies = [
 openarm = [
     "openarm_can @ git+https://github.com/enactic/openarm_can.git@1.2.9#subdirectory=python",
 ]
+head = [
+    "dynamixel-sdk>=3.7",
+]
 sim = [
     "viser>=1.0.0",
     "mujoco>=3.9.0",

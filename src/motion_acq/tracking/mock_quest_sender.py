@@ -28,6 +28,7 @@ import socket
 import struct
 import threading
 import time
+from dataclasses import dataclass
 
 log = logging.getLogger("motion_acq.tracking.mock_quest_sender")
 
@@ -50,19 +51,52 @@ def _xyzw(x: float, y: float, z: float, w: float) -> dict:
     return {"x": x, "y": y, "z": z, "w": w}
 
 
-def _make_frame(seq: int, t0: float, skew_ns: int) -> dict:
+@dataclass(frozen=True)
+class HmdMotion:
+    """Optional head motion for exercising the head pipeline without a Quest.
+
+    Yaw turns about Unity +y (positive = look right), pitch about Unity +x
+    (positive = look down). Every ``loss_every_s`` the HMD pose is dropped for
+    ``loss_s`` to exercise tracking-loss HOLD.
+    """
+
+    yaw_amp_deg: float = 0.0
+    pitch_amp_deg: float = 0.0
+    period_s: float = 8.0
+    loss_every_s: float = 0.0
+    loss_s: float = 0.0
+
+    def rotation(self, t: float) -> dict:
+        phase = 2.0 * math.pi * t / self.period_s if self.period_s > 0 else 0.0
+        yaw = math.radians(self.yaw_amp_deg * math.sin(phase))
+        pitch = math.radians(self.pitch_amp_deg * math.sin(2.0 * phase))
+        cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
+        cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
+        # q_yaw(about y) * q_pitch(about x), quaternions as (x, y, z, w).
+        return _xyzw(cy * sp, sy * cp, -sy * sp, cy * cp)
+
+    def lost(self, t: float) -> bool:
+        if self.loss_every_s <= 0.0 or self.loss_s <= 0.0:
+            return False
+        return (t % self.loss_every_s) >= self.loss_every_s - self.loss_s
+
+
+def _make_frame(
+    seq: int, t0: float, skew_ns: int, hmd: HmdMotion | None = None
+) -> dict:
     """Build one HandUMI Quest App wire sample in raw Unity coordinates."""
+    hmd = hmd or HmdMotion()
     t = time.monotonic() - t0
     sway = 0.05 * math.sin(t)
     bob = 0.05 * math.sin(2.0 * t)
     reach = 0.05 * math.cos(t)
-    return {
+    frame = {
         # Top-level timing (the compatibility TCP/JSON format has no sequence).
         "ovrTimeNs": _device_time_ns(skew_ns),
         "deltaTime": 1.0 / 72.0,
         # HMD pose.
         "hmdPosition": _xyz(0.0, 1.10, 0.05),
-        "hmdRotation": _xyzw(0.0, 0.0, 0.0, 1.0),
+        "hmdRotation": hmd.rotation(t),
         # Left controller.
         "leftControllerPosition": _xyz(-0.20 + sway, 0.95 + bob, 0.30 + reach),
         "leftControllerRotation": _xyzw(0.0, 0.0, 0.0, 1.0),
@@ -91,6 +125,10 @@ def _make_frame(seq: int, t0: float, skew_ns: int) -> dict:
         "rightBattPct": 92,
         "hmdCharging": False,
     }
+    if hmd.lost(t):
+        # The receiver reports the HMD untracked when its pose keys are absent.
+        del frame["hmdPosition"], frame["hmdRotation"]
+    return frame
 
 
 def _udp_sync_server(host: str, sync_port: int, skew_ns: int, stop: threading.Event) -> None:
@@ -119,7 +157,7 @@ def _udp_sync_server(host: str, sync_port: int, skew_ns: int, stop: threading.Ev
 
 
 def _serve_client(conn: socket.socket, addr, fps: float, skew_ns: int,
-                  stop: threading.Event) -> None:
+                  stop: threading.Event, hmd: HmdMotion | None = None) -> None:
     log.info("Client connected: %s", addr)
     seq = 0
     t0 = time.monotonic()
@@ -128,7 +166,7 @@ def _serve_client(conn: socket.socket, addr, fps: float, skew_ns: int,
     try:
         while not stop.is_set():
             loop_start = time.monotonic()
-            frame = _make_frame(seq, t0, skew_ns)
+            frame = _make_frame(seq, t0, skew_ns, hmd)
             line = (json.dumps(frame) + "\n").encode("utf-8")
             try:
                 conn.sendall(line)
@@ -150,7 +188,20 @@ def main() -> None:
     parser.add_argument("--fps", type=float, default=72.0)
     parser.add_argument("--skew-s", type=float, default=5.0,
                         help="Fake device-clock skew vs PC clock (verifies sync).")
+    parser.add_argument("--hmd-yaw-amp-deg", type=float, default=0.0)
+    parser.add_argument("--hmd-pitch-amp-deg", type=float, default=0.0)
+    parser.add_argument("--hmd-period-s", type=float, default=8.0)
+    parser.add_argument("--hmd-loss-every-s", type=float, default=0.0,
+                        help="Drop the HMD pose periodically (0 = never).")
+    parser.add_argument("--hmd-loss-s", type=float, default=0.0)
     args = parser.parse_args()
+    hmd = HmdMotion(
+        yaw_amp_deg=args.hmd_yaw_amp_deg,
+        pitch_amp_deg=args.hmd_pitch_amp_deg,
+        period_s=args.hmd_period_s,
+        loss_every_s=args.hmd_loss_every_s,
+        loss_s=args.hmd_loss_s,
+    )
 
     logging.basicConfig(
         level=logging.INFO,
@@ -182,7 +233,7 @@ def main() -> None:
                 conn, addr = server.accept()
             except TimeoutError:
                 continue
-            _serve_client(conn, addr, args.fps, skew_ns, stop)
+            _serve_client(conn, addr, args.fps, skew_ns, stop, hmd)
     except KeyboardInterrupt:
         pass
     finally:

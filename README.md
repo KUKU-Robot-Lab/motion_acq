@@ -78,3 +78,29 @@ macq tracking pose --device meta
 The UDP time-sync is not tunnelled, so frames carry the PC receive time
 (`clock_synced=false`). Enable Developer Mode on the Quest first; do not start
 Quest Link.
+
+## STEP 2: head (Meta Quest HMD -> Dynamixel pan/tilt)
+
+`macq head` runs as its own process, independent of the arms. It anchors after
+the HMD has been tracked for 2 s, then maps yaw -> pan and pitch -> tilt
+relative to that moment: deadband -> One Euro -> sign/scale -> window around
+home (pan ±20°, tilt ±15° at first) -> 60°/s, 300°/s² limits. HMD loss holds
+the head. Startup refuses a latched hardware error, a wrong motor model or a
+head outside its window, and enables torque in place (goal = present). Each
+run writes `logs/head/head_<station>_<time>.jsonl`.
+
+```bash
+uv sync --extra head ...                 # dynamixel-sdk
+macq head                                # fake bus (default): no serial port opened
+macq head --axes pan                     # staged: tilt stays at its anchor
+macq head --backend real                 # opens head.port; s2r must not hold it
+```
+
+Check without hardware: run the mock with a moving HMD and periodic loss,
+`python -m motion_acq.tracking.mock_quest_sender --hmd-yaw-amp-deg 30
+--hmd-pitch-amp-deg 10 --hmd-loss-every-s 10 --hmd-loss-s 1.5`, then
+`macq head --duration-s 25`.
+
+Only arm4090 has a `head:` section (values from sim2real
+`config/head_home_rh56f1.yaml`). The pan/tilt `sign` entries are unverified
+until the staged hardware test.
