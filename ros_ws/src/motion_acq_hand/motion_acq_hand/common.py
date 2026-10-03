@@ -58,23 +58,44 @@ def check_side(side: str) -> str:
     return side
 
 
-FAKE_DOMAIN_DEFAULT = "177"
+# Fixed on purpose (no override): fakes publish the real driver topic names.
+FAKE_DOMAIN = "177"
+
+
+def fake_isolated() -> bool:
+    return os.environ.get("ROS_DOMAIN_ID") == FAKE_DOMAIN and os.environ.get("ROS_LOCALHOST_ONLY") == "1"
 
 
 def require_fake_isolation(what: str) -> None:
-    """Fake nodes publish the real driver topic names (/hand_<side>/angle_set).
+    """Fake nodes may only run localhost-only on the dedicated fake domain.
 
-    They may only run localhost-only on the dedicated fake domain, so they can
-    never reach a real RH56F1 driver or a real glove stack on any domain.
+    They publish /hand_<side>/angle_set, angle_actual and the glove topic, so
+    on any shared domain they could reach a real RH56F1 driver or hand node.
     """
-    want = os.environ.get("MACQ_FAKE_DOMAIN", FAKE_DOMAIN_DEFAULT)
-    domain = os.environ.get("ROS_DOMAIN_ID", "")
-    localhost = os.environ.get("ROS_LOCALHOST_ONLY", "")
-    if domain != want or localhost != "1":
+    if not fake_isolated():
         raise SystemExit(
-            f"{what} refuses to start: needs ROS_DOMAIN_ID={want} and ROS_LOCALHOST_ONLY=1 "
-            f"(have ROS_DOMAIN_ID={domain or 'unset'}, ROS_LOCALHOST_ONLY={localhost or 'unset'})"
+            f"{what} refuses to start: needs ROS_DOMAIN_ID={FAKE_DOMAIN} and ROS_LOCALHOST_ONLY=1 "
+            f"(have ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID') or 'unset'}, "
+            f"ROS_LOCALHOST_ONLY={os.environ.get('ROS_LOCALHOST_ONLY') or 'unset'})"
         )
+
+
+def declare(node, name: str, default):
+    """Declare a parameter that accepts any type (1234 vs "1234", 1 vs 1.0) and cast it.
+
+    Plain declare_parameter fixes the type from the default, so
+    -p glove_serial:=1234 or -p dropout_s:=1 would fail at start on Humble.
+    """
+    from rcl_interfaces.msg import ParameterDescriptor
+
+    value = node.declare_parameter(name, default, ParameterDescriptor(dynamic_typing=True)).value
+    if value is None:
+        return default
+    if isinstance(default, bool):
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+    return type(default)(value)
 
 
 def spin_node(factory) -> None:

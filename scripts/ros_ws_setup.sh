@@ -21,21 +21,27 @@ fi
 [[ -n "$DISTRO" ]] || { echo "error: no ROS 2 under /opt/ros" >&2; exit 1; }
 RC_WS="${ROBOT_CONTROL_WS:-$HOME/rl_ws/robot_control/ros_ws/install}"
 
+# Pinned third-party revisions (bump deliberately after reviewing upstream changes).
+declare -A SENSEGLOVE_PIN=(
+  [humble]=80e2ff9a4472ca000c377d30239b380cad94fac7
+  [jazzy]=30c962452f7fbea4dd3c91e897f1a28571b2e15a
+)
+PIN="${SENSEGLOVE_PIN[$DISTRO]:-}"
+[[ -n "$PIN" ]] || { echo "error: no senseglove_ros pin for $DISTRO" >&2; exit 1; }
 EXT="$WS/external/senseglove_ros"
 if [[ ! -d "$EXT/.git" ]]; then
   mkdir -p "$WS/external"
-  git clone --quiet --filter=blob:none --sparse -b "$DISTRO" \
+  git clone --quiet --filter=blob:none --sparse --no-checkout \
     https://github.com/Adjuvo/senseglove_ros.git "$EXT"
 fi
 git -C "$EXT" fetch --quiet origin "$DISTRO"
-git -C "$EXT" checkout --quiet "$DISTRO"
-git -C "$EXT" pull --quiet --ff-only origin "$DISTRO"
+git -C "$EXT" checkout --quiet --detach "$PIN"
 if [[ "$FULL" -eq 1 ]]; then
   git -C "$EXT" sparse-checkout disable
 else
   git -C "$EXT" sparse-checkout set senseglove/senseglove_msgs
 fi
-echo "senseglove_ros $DISTRO @ $(git -C "$EXT" rev-parse --short HEAD) ($([[ $FULL -eq 1 ]] && echo full || echo msgs only))"
+echo "senseglove_ros $DISTRO @ $(git -C "$EXT" rev-parse --short HEAD) (pinned) ($([[ $FULL -eq 1 ]] && echo full || echo msgs only))"
 
 set +u
 # shellcheck disable=SC1090

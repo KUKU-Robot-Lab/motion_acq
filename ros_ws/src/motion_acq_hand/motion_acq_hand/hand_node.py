@@ -1,13 +1,15 @@
 """Nova 2 glove -> RH56F1 hand node (one side). Own process; arms and head never wait on it.
 
     ros2 run motion_acq_hand hand_node --ros-args -p side:=right \\
-        -p calibration:=<repo>/configs/hands/calibration/<user>_right.yaml
+        -p calibration:=<repo>/configs/hands/calibration/<user>_right.yaml \\
+        -p amplitude:=0.3 -p driver_speed:=1000 -p driver_force:=300
 
-Disabled at start unless enable_on_start is true; enable/disable with
-std_msgs/Bool on /motion_acq/hand_<side>/enable. Enabling needs a fresh
-angle_actual from the driver (the hand starts from its measured pose), sends
-speed_set/force_set once, then streams angle_set at rate_hz. A glove sample
-older than stale_s holds the hand (nothing is published). Every cycle is
+Disabled at start; enable/disable with std_msgs/Bool on
+/motion_acq/hand_<side>/enable. The enable/fault rules live in
+motion_acq.hand.controller (fresh, plausible angle_actual; all driver topics
+subscribed; hand_id taken from angle_actual; speed/force re-sent every second;
+angle_actual loss -> latched FAULT; disable freezes the hand where it is).
+enable_on_start is only accepted on the isolated fake domain. Every cycle is
 logged to <log_dir>/hand_<side>_<time>.jsonl and, if udp_target is set, sent
 as one JSON datagram (recorder sidecar).
 """
@@ -20,7 +22,16 @@ import socket
 import time
 from pathlib import Path
 
-from motion_acq_hand.common import spin_node, REPO_ROOT, check_side, glove_qos, glove_topic, hand_ns
+from motion_acq_hand.common import (
+    REPO_ROOT,
+    check_side,
+    declare,
+    fake_isolated,
+    glove_qos,
+    glove_topic,
+    hand_ns,
+    spin_node,
+)
 
 from rclpy.node import Node
 from rh56f1_interfaces.msg import GetAngleAct1, SetAngle1, SetForce1, SetSpeed1
@@ -28,45 +39,42 @@ from senseglove_msgs.msg import SenseGloveState
 from std_msgs.msg import Bool, String
 
 from motion_acq.hand.calibration import HandCalibration
+from motion_acq.hand.controller import ControllerConfig, HandController
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state
-from motion_acq.hand.retarget import (
-    DEFAULT_RETARGET,
-    HandRetargeter,
-    HandState,
-    load_hand_retarget_config,
-)
-from motion_acq.hand.rh56f1 import DEFAULT_MAP, N_SLOTS, load_rh56f1_map
-
-MEASURED_FRESH_S = 0.5
+from motion_acq.hand.retarget import DEFAULT_RETARGET, HandRetargeter, load_hand_retarget_config
+from motion_acq.hand.rh56f1 import DEFAULT_MAP, load_rh56f1_map
 
 
 class HandNode(Node):
     def __init__(self) -> None:
         super().__init__("motion_acq_hand")
-        p = self.declare_parameter
-        self.side = check_side(p("side", "right").value)
-        serial = str(p("glove_serial", "0").value)
-        topic = str(p("glove_topic", "").value) or glove_topic(serial, self.side)
-        calibration = str(p("calibration", "").value)
-        retarget_path = Path(str(p("retarget_config", str(DEFAULT_RETARGET)).value))
-        map_path = Path(str(p("hand_map", str(DEFAULT_MAP)).value))
-        enable_on_start = bool(p("enable_on_start", False).value)
-        log_dir = str(p("log_dir", str(REPO_ROOT / "logs" / "hand")).value)
-        udp_target = str(p("udp_target", "").value)
+        self.side = check_side(str(declare(self, "side", "right")))
+        serial = str(declare(self, "glove_serial", "0"))
+        topic = str(declare(self, "glove_topic", "")) or glove_topic(serial, self.side)
+        calibration = str(declare(self, "calibration", ""))
+        retarget_path = Path(str(declare(self, "retarget_config", str(DEFAULT_RETARGET))))
+        map_path = Path(str(declare(self, "hand_map", str(DEFAULT_MAP))))
+        enable_on_start = bool(declare(self, "enable_on_start", False))
+        amplitude = float(declare(self, "amplitude", 1.0))
+        log_dir = Path(str(declare(self, "log_dir", str(REPO_ROOT / "logs" / "hand"))))
+        udp_target = str(declare(self, "udp_target", ""))
         if not calibration:
             raise SystemExit("calibration:=<file> is required (run motion_acq_hand calibrate first)")
+        if enable_on_start and not fake_isolated():
+            raise SystemExit("enable_on_start is only allowed on the isolated fake domain")
 
-        self.config = load_hand_retarget_config(retarget_path)
-        self.hand_map = load_rh56f1_map(map_path)
-        self.retargeter = HandRetargeter(
-            self.config, HandCalibration.load(Path(calibration), side=self.side), self.hand_map, self.side
+        config = load_hand_retarget_config(retarget_path)
+        speed = int(declare(self, "driver_speed", config.driver_speed))
+        force = int(declare(self, "driver_force", config.driver_force))
+        hand_map = load_rh56f1_map(map_path)
+        retargeter = HandRetargeter(
+            config, HandCalibration.load(Path(calibration), side=self.side), hand_map, self.side,
+            amplitude=amplitude,
         )
-        self.enabled = False
-        self.want_enable = enable_on_start
-        self.glove: tuple[dict[str, float], float] | None = None
-        self.glove_errors = 0
-        self.measured: tuple[list[int], float] | None = None
-        self.last_published: list[int] | None = None
+        self.controller = HandController(retargeter, hand_map, self.side, ControllerConfig(
+            glove_stale_s=config.stale_s, driver_speed=speed, driver_force=force,
+        ))
+        self.controller.request_enable(enable_on_start)
 
         ns = hand_ns(self.side)
         self.angle_pub = self.create_publisher(SetAngle1, f"{ns}/angle_set", 10)
@@ -77,15 +85,17 @@ class HandNode(Node):
         self.create_subscription(GetAngleAct1, f"{ns}/angle_actual", self._on_actual, 10)
         self.create_subscription(Bool, f"/motion_acq/hand_{self.side}/enable", self._on_enable, 10)
 
-        self.log_file = self._open_log(Path(log_dir))
+        self.log_file = self._open_log(log_dir)
         self.udp = None
         if udp_target:
             host, port = udp_target.rsplit(":", 1)
             self.udp = (socket.socket(socket.AF_INET, socket.SOCK_DGRAM), (host, int(port)))
-        self.create_timer(1.0 / self.config.rate_hz, self._tick)
+        self._last_mode = self.controller.mode
+        self.create_timer(1.0 / config.rate_hz, self._tick)
         self.get_logger().info(
-            f"hand {self.side}: glove {topic} -> {ns}/angle_set at {self.config.rate_hz:g} Hz "
-            f"({'enable on start' if enable_on_start else 'disabled until enabled'})"
+            f"hand {self.side}: glove {topic} -> {ns}/angle_set at {config.rate_hz:g} Hz, "
+            f"amplitude {amplitude:g}, speed {speed}, force {force} "
+            f"({'enable on start (fake)' if enable_on_start else 'disabled until enabled'})"
         )
 
     def _open_log(self, log_dir: Path):
@@ -98,82 +108,62 @@ class HandNode(Node):
         try:
             angles = angles_from_state(list(msg.joint_names), list(msg.position), self.side)
         except GloveDataError as exc:
-            self.glove_errors += 1
+            self.controller.on_glove_error()
             self.get_logger().warning(f"bad glove sample: {exc}", throttle_duration_sec=2.0)
             return
-        self.glove = (angles, time.monotonic())
+        self.controller.on_glove(angles, time.monotonic())
 
     def _on_actual(self, msg: GetAngleAct1) -> None:
-        values = [int(v) for v in msg.joint_values]  # numpy int32 -> int (JSON log)
-        if len(values) == N_SLOTS:
-            self.measured = (values, time.monotonic())
+        self.controller.on_measured([int(v) for v in msg.joint_values], int(msg.hand_id), time.monotonic())
 
     def _on_enable(self, msg: Bool) -> None:
-        self.want_enable = bool(msg.data)
-        if not msg.data and self.enabled:
-            self.enabled = False
-            self.retargeter.state = HandState.IDLE
-            self.get_logger().info("hand disabled (the hand keeps its last command)")
+        self.get_logger().info(f"enable request: {bool(msg.data)}")
+        self.controller.request_enable(bool(msg.data))
 
-    def _try_enable(self, now: float) -> None:
-        if self.measured is None or now - self.measured[1] > MEASURED_FRESH_S:
-            self.get_logger().warning(
-                "cannot enable: no fresh angle_actual from the RH56F1 driver", throttle_duration_sec=2.0
-            )
-            return
-        measured_rad = self.hand_map.to_rad(self.measured[0], side=self.side)
-        self.retargeter.start(measured_rad, now)
-        speed, force = SetSpeed1(), SetForce1()
-        speed.hand_id = force.hand_id = 1
-        speed.joint_values = [self.config.driver_speed] * N_SLOTS
-        force.joint_values = [self.config.driver_force] * N_SLOTS
-        self.speed_pub.publish(speed)
-        self.force_pub.publish(force)
-        self.enabled = True
-        self.get_logger().info(
-            f"hand enabled from measured {self.measured[0]} "
-            f"(speed {self.config.driver_speed}, force {self.config.driver_force})"
-        )
+    def _subscribers_ready(self) -> bool:
+        return all(p.get_subscription_count() > 0 for p in (self.angle_pub, self.speed_pub, self.force_pub))
+
+    def _publish(self, publisher, msg_type, hand_id: int, values: list[int]) -> None:
+        msg = msg_type()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.hand_id = hand_id
+        msg.joint_values = values
+        publisher.publish(msg)
 
     def _tick(self) -> None:
-        now = time.monotonic()
-        if self.want_enable and not self.enabled:
-            self._try_enable(now)
-        glove = self.glove
-        glove_age = None if glove is None else now - glove[1]
-        angles = glove[0] if glove is not None and now - glove[1] <= self.config.stale_s else None
-        step = self.retargeter.step(angles, now)
-        if step.state is HandState.RUNNING and step.registers is not None:
-            msg = SetAngle1()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.hand_id = 1
-            msg.joint_values = list(step.registers)
-            self.angle_pub.publish(msg)
-            self.last_published = list(step.registers)
-        record = {
-            "t_mono_s": round(now, 6),
-            "side": self.side,
-            "state": step.state.value,
-            "enabled": self.enabled,
-            "glove_age_s": None if glove_age is None else round(glove_age, 4),
-            "features": step.features,
-            "normalized": step.normalized,
-            "q_target_rad": step.q_target,
-            "q_command_rad": step.q_command,
-            "registers": step.registers if step.state is HandState.RUNNING else None,
-            "measured_registers": None if self.measured is None else self.measured[0],
-        }
-        line = json.dumps(record)
-        self.log_file.write(line + "\n")
-        if self.udp is not None:
-            self.udp[0].sendto(line.encode("utf-8"), self.udp[1])
-        self.status_pub.publish(String(data=json.dumps(
-            {k: record[k] for k in ("state", "enabled", "glove_age_s", "registers", "measured_registers")}
-        )))
+        out = self.controller.tick(time.monotonic(), subscribers_ready=self._subscribers_ready())
+        if out.hand_id is not None:
+            if out.speed is not None:
+                self._publish(self.speed_pub, SetSpeed1, out.hand_id, out.speed)
+            if out.force is not None:
+                self._publish(self.force_pub, SetForce1, out.hand_id, out.force)
+            if out.angle is not None:
+                self._publish(self.angle_pub, SetAngle1, out.hand_id, out.angle)
+        mode = self.controller.mode
+        if mode is not self._last_mode:
+            self._last_mode = mode
+            detail = self.controller.fault_reason or ""
+            log = self.get_logger().error if detail else self.get_logger().info
+            log(f"hand {self.side} -> {mode.value} {detail}".rstrip())
+        if out.record.get("refusal"):
+            self.get_logger().warning(f"enable refused: {out.record['refusal']}", throttle_duration_sec=2.0)
+        line = json.dumps(out.record)
+        try:
+            self.log_file.write(line + "\n")
+            if self.udp is not None:
+                self.udp[0].sendto(line.encode("utf-8"), self.udp[1])
+        except OSError as exc:  # logging must never stop the control loop
+            self.get_logger().warning(f"hand log/udp write failed: {exc}", throttle_duration_sec=5.0)
+        self.status_pub.publish(String(data=json.dumps({
+            k: out.record[k] for k in ("mode", "state", "fault", "refusal", "glove_age_s", "glove_errors",
+                                       "registers", "measured_registers")
+        })))
 
     def destroy_node(self) -> None:
-        self.log_file.close()
-        super().destroy_node()
+        try:
+            self.log_file.close()
+        finally:
+            super().destroy_node()
 
 
 def main() -> None:

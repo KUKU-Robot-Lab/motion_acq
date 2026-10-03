@@ -28,6 +28,23 @@ def main(path: str) -> int:
             if not lo <= value <= hi:
                 failures.append(f"slot {slot} register {value} outside [{lo}, {hi}]")
                 break
+    if any(r.get("fault") for r in rows):
+        failures.append(f"fault: {next(r['fault'] for r in rows if r.get('fault'))}")
+    # The first command after enable must start at the measured hand pose.
+    first = running[0] if running else None
+    if first and first["measured_registers"]:
+        jump = max(abs(c - m) for c, m in zip(first["registers"], first["measured_registers"], strict=False))
+        if jump > 40:
+            failures.append(f"first command {jump} registers away from the measured hand")
+    # Resuming after a glove HOLD must not jump.
+    for i in range(1, len(rows)):
+        if rows[i - 1]["state"] == "hold" and rows[i]["state"] == "running":
+            cur = rows[i]
+            before = next((r for r in reversed(rows[: i - 1]) if r["state"] == "running"), None)
+            if before:
+                jump = max(abs(a - b) for a, b in zip(cur["registers"], before["registers"], strict=False))
+                if jump > 40:
+                    failures.append(f"{jump}-register jump when the glove came back")
     holds = [r for r in rows if r["state"] == "hold"]
     if any(r["registers"] is not None for r in holds):
         failures.append("a HOLD cycle carried registers (would publish)")
@@ -35,7 +52,7 @@ def main(path: str) -> int:
         failures.append("HOLD with a fresh glove sample")
     # Rate: q_command change per cycle within max velocity * dt (2 rad/s, 30 Hz, small slack).
     worst = 0.0
-    for a, b in zip(running, running[1:]):
+    for a, b in zip(running, running[1:], strict=False):
         dt = b["t_mono_s"] - a["t_mono_s"]
         if 0 < dt < 0.2:
             worst = max(worst, max(abs(b["q_command_rad"][j] - a["q_command_rad"][j]) / dt for j in a["q_command_rad"]))
@@ -44,14 +61,15 @@ def main(path: str) -> int:
     lag = []
     for r in running[30:]:
         if r["measured_registers"] is not None:
-            lag.append(max(abs(m - c) for m, c in zip(r["measured_registers"], r["registers"])))
+            lag.append(max(abs(m - c) for m, c in zip(r["measured_registers"], r["registers"], strict=False)))
     span = {}
     for slot in range(6):
         values = [r["registers"][slot] for r in running]
         span[slot] = (min(values), max(values)) if values else None
-    period = [b["t_mono_s"] - a["t_mono_s"] for a, b in zip(rows, rows[1:])]
+    period = [b["t_mono_s"] - a["t_mono_s"] for a, b in zip(rows, rows[1:], strict=False)]
     print(f"log {path}")
-    print(f"cycles {len(rows)}  states {dict(states)}  enabled {any(r['enabled'] for r in rows)}")
+    modes = Counter(r.get("mode") for r in rows)
+    print(f"cycles {len(rows)}  states {dict(states)}  modes {dict(modes)}")
     print(f"cycle period mean {sum(period) / max(len(period), 1) * 1000:.1f} ms  max {max(period, default=0) * 1000:.1f} ms")
     print(f"register span per slot (pinky ring middle index thumb_bend thumb_rot): {span}")
     print(f"max joint speed {worst:.2f} rad/s;  fake hand lag median {sorted(lag)[len(lag) // 2] if lag else '-'} reg")

@@ -1,8 +1,10 @@
 """RH56F1 joint radians <-> vendor angle registers (driver slot order).
 
 Port of sim2real policy_control/rh56f1_map.py (3ca354e), angle part only:
-same end points, same per-side calibration and clipping. Python 3.10 safe so
-the ROS hand node can import it on the system interpreter.
+same end points, per-side calibration, clipping and input validation
+(numerically identical on 120k random samples, both sides and no side).
+Touch and mimic are not ported. Python 3.10 safe so the ROS hand node can
+import it on the system interpreter.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from typing import Mapping, Sequence
 
 import yaml
 
+SCHEMA = "policy_control/rh56f1_hand_map/v1"
 N_SLOTS = 6
 LEAVE = -1  # SetAngle1: leave this axis where it is
 DEFAULT_MAP = Path(__file__).resolve().parents[3] / "configs" / "hands" / "rh56f1_hand_map.yaml"
@@ -29,8 +32,17 @@ class Rh56f1Axis:
     slot: int
     rad: tuple[float, float]
     reg: tuple[float, float]
-    verified: bool
+    verified: bool  # direction confirmed on both hands
+    sides: tuple[str, ...] = ()  # confirmed on these hands only (yaml verified: [right])
     cmd: tuple[int, int] | None = None  # command clip range (calibrated axes)
+
+    def ok(self, side: str | None) -> bool:
+        return self.verified or (side is not None and side in self.sides)
+
+    @property
+    def command_range(self) -> tuple[int, int]:
+        lo, hi = self.cmd if self.cmd is not None else (min(self.reg), max(self.reg))
+        return int(lo), int(hi)
 
     def to_reg(self, q: float) -> int:
         lo, hi = self.rad
@@ -63,7 +75,7 @@ class Rh56f1Map:
             value = q[axis.name]
             if not math.isfinite(value):
                 raise HandMapError(f"non-finite {axis.name}: {value}")
-            out[axis.slot] = axis.to_reg(value) if axis.verified else LEAVE
+            out[axis.slot] = axis.to_reg(value) if axis.ok(side) else LEAVE
         return out
 
     def to_rad(self, registers: Sequence[float], *, side: str | None) -> dict[str, float]:
@@ -74,6 +86,8 @@ class Rh56f1Map:
 
 def load_rh56f1_map(path: Path = DEFAULT_MAP) -> Rh56f1Map:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    if raw.get("schema") != SCHEMA:
+        raise HandMapError(f"schema must be {SCHEMA}")
     slot_order = list(raw["slot_order"])
     joint_order = tuple(raw["joint_order"])
     if sorted(slot_order) != sorted(joint_order) or len(slot_order) != N_SLOTS:
@@ -81,11 +95,24 @@ def load_rh56f1_map(path: Path = DEFAULT_MAP) -> Rh56f1Map:
     axes = []
     for name in joint_order:
         j = raw["joints"][name]
-        verified = j.get("verified", False) is True
+        rad = tuple(float(v) for v in j["rad"])
+        reg = tuple(int(v) for v in j["reg"])
+        if len(rad) != 2 or len(reg) != 2 or rad[0] == rad[1] or reg[0] == reg[1]:
+            raise HandMapError(f"{name}: rad and reg need two distinct end points")
+        if min(reg) < 0:
+            raise HandMapError(f"{name}: registers must be >= 0 (-1 means leave the axis)")
+        v = j.get("verified", False)
+        if isinstance(v, (list, tuple)):
+            bad = set(v) - {"right", "left"}
+            if bad:
+                raise HandMapError(f"{name}: verified list may only hold right/left: {sorted(bad)}")
+            sides = tuple(sorted(set(v)))
+            verified, only = set(sides) == {"right", "left"}, sides
+        else:
+            verified, only = v is True, ()
         axes.append(Rh56f1Axis(
-            name, slot_order.index(name),
-            (float(j["rad"][0]), float(j["rad"][1])),
-            (float(j["reg"][0]), float(j["reg"][1])), verified,
+            name, slot_order.index(name), (rad[0], rad[1]), (float(reg[0]), float(reg[1])),
+            verified, only,
         ))
     side_axes = {}
     for side, cal in (raw.get("calibration") or {}).items():
@@ -104,7 +131,7 @@ def load_rh56f1_map(path: Path = DEFAULT_MAP) -> Rh56f1Map:
             end = axis.reg[1] + 50 * direction
             q_end = math.radians((reg0 - end) * slope / 10.0)
             calibrated.append(Rh56f1Axis(
-                axis.name, axis.slot, (0.0, q_end), (reg0, end), axis.verified,
+                axis.name, axis.slot, (0.0, q_end), (reg0, end), axis.verified, axis.sides,
                 cmd=(int(min(axis.reg)), int(max(axis.reg))),
             ))
         side_axes[side] = tuple(calibrated)

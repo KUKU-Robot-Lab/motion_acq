@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import statistics
 import time
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from typing import Mapping, Sequence
 import yaml
 
 SCHEMA = "motion_acq/hand_calibration/v1"
+MIN_LOADED_SPAN_RAD = 1e-3  # a hand-edited file must still have a real range
 
 
 class CalibrationError(ValueError):
@@ -59,10 +61,14 @@ class HandCalibration:
             raise CalibrationError(f"{path}: schema {raw.get('schema')!r}, expected {SCHEMA}")
         if side is not None and raw.get("side") != side:
             raise CalibrationError(f"{path} is a {raw.get('side')} hand calibration, not {side}")
-        ranges = {
-            k: FeatureRange(float(v["open"]), float(v["closed"]))
-            for k, v in (raw.get("ranges") or {}).items()
-        }
+        ranges = {}
+        for k, v in (raw.get("ranges") or {}).items():
+            lo, hi = float(v["open"]), float(v["closed"])
+            if not (math.isfinite(lo) and math.isfinite(hi)) or abs(hi - lo) < MIN_LOADED_SPAN_RAD:
+                raise CalibrationError(f"{path}: {k} open {lo} / closed {hi} is not a usable range")
+            ranges[k] = FeatureRange(lo, hi)
+        if not ranges:
+            raise CalibrationError(f"{path}: no feature ranges")
         return cls(raw["side"], str(raw.get("user", "")), ranges, str(raw.get("created", "")))
 
 

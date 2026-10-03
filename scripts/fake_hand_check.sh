@@ -14,7 +14,7 @@ if [[ -z "$DISTRO" ]]; then
 fi
 RC_WS="${ROBOT_CONTROL_WS:-$HOME/rl_ws/robot_control/ros_ws/install}"
 
-export ROS_DOMAIN_ID="${MACQ_FAKE_DOMAIN:-177}" ROS_LOCALHOST_ONLY=1 MACQ_FAKE_DOMAIN="${MACQ_FAKE_DOMAIN:-177}"
+export ROS_DOMAIN_ID=177 ROS_LOCALHOST_ONLY=1  # the fakes refuse anything else
 set +u
 # shellcheck disable=SC1090
 source "/opt/ros/$DISTRO/setup.bash"
@@ -39,7 +39,7 @@ trap - EXIT
 
 echo "== 2. fake chain for ${SECONDS_RUN}s (glove drops 1 s every 8 s)"
 START_MARK="$(date +%s)"
-timeout --signal=INT "$SECONDS_RUN" ros2 launch motion_acq_hand fake_hand.launch.py \
+timeout --foreground --signal=INT "$SECONDS_RUN" ros2 launch motion_acq_hand fake_hand.launch.py \
   side:="$SIDE" calibration:="$CAL" dropout_every_s:=8.0 dropout_s:=1.0 \
   > "$ROOT/logs/hand/fake_chain.log" 2>&1 || true
 sleep 1

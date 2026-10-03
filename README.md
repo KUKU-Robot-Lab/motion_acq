@@ -118,12 +118,12 @@ package `ros_ws/src/motion_acq_hand` wraps it for the system interpreter:
 
 | executable | role |
 |---|---|
-| `hand_node` | glove `/senseglove/glove<serial>/<rh\|lh>/senseglove_states` (best_effort) -> `/hand_<side>/angle_set` at 30 Hz; disabled until `/motion_acq/hand_<side>/enable` (Bool) and a fresh `angle_actual`; glove older than 0.2 s -> HOLD (nothing published); JSONL log + optional UDP sidecar |
+| `hand_node` | glove `/senseglove/glove<serial>/<rh\|lh>/senseglove_states` (best_effort) -> `/hand_<side>/angle_set` at 30 Hz. Rules in `motion_acq.hand.controller`: disabled until `/motion_acq/hand_<side>/enable` (Bool); enable needs a fresh, plausible `angle_actual` (no 0/-1/65535, within each axis range ±100) and subscribed driver topics; starts from the measured pose; `hand_id` taken from `angle_actual`; speed/force re-sent every 1 s; glove older than 0.2 s -> HOLD (nothing published); `angle_actual` lost > 0.5 s -> latched FAULT (disable + enable to clear); disable freezes the hand at its measured pose. Params `amplitude` (0-1 of the open->closed travel), `driver_speed`, `driver_force`. `enable_on_start` only on the fake domain. JSONL log + optional UDP sidecar |
 | `calibrate` | records the open / fist / thumb_opposed poses -> `configs/hands/calibration/<user>_<side>.yaml` |
-| `fake_glove`, `fake_rh56f1` | fake Nova 2 and fake RH56F1; refuse to run unless `ROS_DOMAIN_ID=177` and `ROS_LOCALHOST_ONLY=1` (they use the real driver topic names) |
+| `fake_glove`, `fake_rh56f1` | fake Nova 2 and fake RH56F1 (honours `hand_id` like the vendor driver); refuse to run unless `ROS_DOMAIN_ID=177` and `ROS_LOCALHOST_ONLY=1`, fixed (they use the real driver topic names) |
 
 ```bash
-scripts/ros_ws_setup.sh             # senseglove_msgs (humble/jazzy branch) + motion_acq_hand
+scripts/ros_ws_setup.sh             # senseglove_msgs (pinned humble/jazzy commit) + motion_acq_hand
 scripts/ros_ws_setup.sh --full      # whole senseglove_ros for the real glove (SenseCom)
 scripts/fake_hand_check.sh right 20 # fake calibration + fake chain with glove dropouts -> PASS/FAIL
 ```
@@ -131,5 +131,7 @@ scripts/fake_hand_check.sh right 20 # fake calibration + fake chain with glove d
 Mapping: `configs/hands/nova2_to_rh56f1.yaml` (features, poses, RH56F1 joint
 ends, filter, 2 rad/s limit, driver speed 2000 / force 600). RH56F1 rad ->
 register: `configs/hands/rh56f1_hand_map.yaml`, a port of sim2real
-`rh56f1_map.py` (identical output). Unverified until the glove is worn: which
+`rh56f1_map.py` (numerically identical; parity test runs when sim2real is
+checked out next to this repo; touch and mimic not ported). For the first real
+runs use a small `amplitude` and lower `driver_speed`/`driver_force`. Unverified until the glove is worn: which
 glove angle drives thumb opposition, and the opposed end of `thumb_1`.

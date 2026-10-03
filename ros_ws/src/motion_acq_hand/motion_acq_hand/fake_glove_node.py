@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 import time
 
-from motion_acq_hand.common import spin_node, check_side, glove_qos, glove_topic, require_fake_isolation
+from motion_acq_hand.common import check_side, declare, glove_qos, glove_topic, require_fake_isolation, spin_node
 
 from geometry_msgs.msg import Quaternion
 from rclpy.node import Node
@@ -27,14 +27,14 @@ from motion_acq.hand.synthetic import POSE_ANGLES, synthetic_angles, synthetic_s
 class FakeGlove(Node):
     def __init__(self) -> None:
         super().__init__("fake_glove")
-        self.side = check_side(self.declare_parameter("side", "right").value)
-        serial = str(self.declare_parameter("serial", "0").value)
-        self.mode = str(self.declare_parameter("mode", "cycle").value)
-        self.pose = str(self.declare_parameter("pose", "open").value)
-        self.period_s = float(self.declare_parameter("period_s", 6.0).value)
-        self.dropout_every_s = float(self.declare_parameter("dropout_every_s", 0.0).value)
-        self.dropout_s = float(self.declare_parameter("dropout_s", 0.0).value)
-        rate_hz = float(self.declare_parameter("rate_hz", 60.0).value)
+        self.side = check_side(str(declare(self, "side", "right")))
+        serial = str(declare(self, "serial", "0"))
+        self.mode = str(declare(self, "mode", "cycle"))
+        self.pose = str(declare(self, "pose", "open"))
+        self.period_s = float(declare(self, "period_s", 6.0))
+        self.dropout_every_s = float(declare(self, "dropout_every_s", 0.0))
+        self.dropout_s = float(declare(self, "dropout_s", 0.0))
+        rate_hz = float(declare(self, "rate_hz", 60.0))
         if self.mode not in ("cycle", "pose") or self.pose not in POSE_ANGLES:
             raise SystemExit(f"mode cycle|pose and pose in {sorted(POSE_ANGLES)}")
         self.pub = self.create_publisher(SenseGloveState, glove_topic(serial, self.side), glove_qos())

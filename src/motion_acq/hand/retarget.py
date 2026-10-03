@@ -108,9 +108,19 @@ class HandRetargeter:
         calibration: HandCalibration,
         hand_map: Rh56f1Map,
         side: str,
+        *,
+        amplitude: float = 1.0,
     ) -> None:
         if calibration.side != side:
             raise ValueError(f"calibration is for the {calibration.side} hand, not {side}")
+        missing = {s.name for s in config.features} - set(calibration.ranges)
+        if missing:
+            raise ValueError(f"calibration lacks features {sorted(missing)}; recalibrate")
+        if not 0.0 < amplitude <= 1.0:
+            raise ValueError(f"amplitude must be in (0, 1], not {amplitude}")
+        # Fraction of each joint's open->closed travel that is used (first real
+        # runs start small); n is scaled before the joint mapping.
+        self.amplitude = float(amplitude)
         mapped = {jm.joint for jm in config.joints}
         if mapped != set(hand_map.joint_order):
             raise ValueError(f"mapping covers {sorted(mapped)}, hand has {list(hand_map.joint_order)}")
@@ -160,7 +170,7 @@ class HandRetargeter:
         norm = self.calibration.normalize(feats)
         q_target, q_cmd = {}, {}
         for jm in self.config.joints:
-            q_target[jm.joint] = jm.target(norm[jm.feature])
+            q_target[jm.joint] = jm.target(self.amplitude * norm[jm.feature])
             smoothed = self._filters[jm.joint](q_target[jm.joint], t_s)
             q_cmd[jm.joint] = self._limiters[jm.joint](smoothed, dt)
         self._last_registers = self.hand_map.to_registers(q_cmd, side=self.side)
