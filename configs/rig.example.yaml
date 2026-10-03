@@ -37,7 +37,7 @@ recording:
   height: 480
   camera_fps: 30
   fps: 30
-  robot: piper
+  robot: openarmv1
 
 # Optional physical robot/table placement for this laboratory. Put the ignored
 # per-robot files in configs/calibration/table/local/<robot>.yaml. Replay profile

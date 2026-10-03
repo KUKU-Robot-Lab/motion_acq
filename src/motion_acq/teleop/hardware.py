@@ -39,7 +39,7 @@ def validate_feetech_ready(args) -> None:
 def validate_feetech_ports_exist(
     feetech_config,
     *,
-    robot: str = "piper",
+    robot: str = "openarmv1",
     list_ports=list_feetech_serial_ports,
 ) -> None:
     ports = {

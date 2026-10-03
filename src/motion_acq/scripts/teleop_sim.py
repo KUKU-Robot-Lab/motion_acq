@@ -123,7 +123,7 @@ def _parse_sim_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--help-advanced", action="store_true", help="Show expert hardware options.")
     p.add_argument("--device", choices=("pico", "meta"), required=True)
-    p.add_argument("--robot", choices=EMBODIMENT_NAMES, default="piper")
+    p.add_argument("--robot", choices=EMBODIMENT_NAMES, default="openarmv1")
     p.add_argument(
         "--home-pose",
         default=None,

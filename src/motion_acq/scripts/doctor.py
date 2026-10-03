@@ -23,7 +23,7 @@ class DoctorCheck:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rig-config", type=Path, default=DEFAULT_RIG_CONFIG)
-    parser.add_argument("--robot", default="piper")
+    parser.add_argument("--robot", default="openarmv1")
     parser.add_argument("--device", choices=("pico", "meta"), default="meta")
     parser.add_argument(
         "--strict",
@@ -64,7 +64,7 @@ def _voice_check() -> DoctorCheck:
 def collect_doctor_checks(
     rig_config: Path,
     *,
-    robot: str = "piper",
+    robot: str = "openarmv1",
     device: str = "meta",
 ) -> list[DoctorCheck]:
     checks = [
@@ -93,6 +93,9 @@ def collect_doctor_checks(
             )
             status = "pass" if path.exists() else "warn"
             checks.append(DoctorCheck(f"camera:{name}", status, str(path)))
+    elif isinstance(cameras, dict):
+        # An explicit empty mapping means the station records no video (STEP 1).
+        checks.append(DoctorCheck("cameras", "pass", "none configured"))
     else:
         checks.append(DoctorCheck("cameras", "fail", "missing cameras mapping"))
 
@@ -213,7 +216,7 @@ def print_doctor_report(checks: list[DoctorCheck]) -> None:
 def run_doctor(
     rig_config: Path,
     *,
-    robot: str = "piper",
+    robot: str = "openarmv1",
     device: str = "meta",
 ) -> bool:
     checks = collect_doctor_checks(rig_config, robot=robot, device=device)

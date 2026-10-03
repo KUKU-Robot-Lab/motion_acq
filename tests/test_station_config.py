@@ -97,3 +97,20 @@ def test_gripper_motor_is_only_touched_when_enabled(enabled):
     assert ("init_gripper" in arm.calls) is enabled
     assert ("gripper" in arm.calls) is enabled
     assert "mit" in arm.calls
+
+
+def test_doctor_accepts_explicit_empty_cameras() -> None:
+    from motion_acq.scripts.doctor import collect_doctor_checks
+
+    checks = collect_doctor_checks(station_rig_config("arm4090"), robot="openarmv1")
+    cameras = [c for c in checks if c.name == "cameras"]
+    assert cameras and cameras[0].status == "pass"
+
+
+def test_doctor_still_fails_without_cameras_key(tmp_path) -> None:
+    from motion_acq.scripts.doctor import collect_doctor_checks
+
+    rig = tmp_path / "rig.yaml"
+    rig.write_text("meta_quest: {}\n", encoding="utf-8")
+    checks = collect_doctor_checks(rig, robot="openarmv1")
+    assert [c.status for c in checks if c.name == "cameras"] == ["fail"]

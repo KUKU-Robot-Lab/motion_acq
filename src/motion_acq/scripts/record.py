@@ -171,7 +171,7 @@ _RECORDING_DEFAULTS: dict[str, object] = {
     "skip_feetech": False,
     "no_video": False,
     "record_audio": False,
-    "robot": "piper",
+    "robot": "openarmv1",
 }
 
 

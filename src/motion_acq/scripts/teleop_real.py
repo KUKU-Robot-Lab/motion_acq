@@ -162,7 +162,7 @@ def _validate_real_args(args: argparse.Namespace) -> None:
         raise SystemExit("--duration-s must be >= 0.")
 
 
-def _validate_feetech_ports_exist(feetech_config, *, robot: str = "piper") -> None:
+def _validate_feetech_ports_exist(feetech_config, *, robot: str = "openarmv1") -> None:
     return validate_feetech_ports_exist(
         feetech_config,
         robot=robot,

@@ -28,7 +28,7 @@ def _camera_list(value: str) -> list[str]:
 def add_physical_teleop_arguments(parser: argparse.ArgumentParser) -> None:
     """Add the controls shared by live and recording real-robot teleop."""
     parser.add_argument("--device", choices=("pico", "meta"), required=True)
-    parser.add_argument("--robot", choices=REAL_BACKEND_NAMES, default="piper")
+    parser.add_argument("--robot", choices=REAL_BACKEND_NAMES, default="openarmv1")
     parser.add_argument(
         "--home-pose",
         default=None,
