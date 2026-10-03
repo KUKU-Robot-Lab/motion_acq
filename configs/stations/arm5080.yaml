@@ -19,12 +19,14 @@ robots:
     gripper:
       enabled: false
     can:
-      # arm5080: OpenArm not connected yet; expected on can2/can3. VERIFY which is left/right.
+      # arm5080: one PCAN-USB Pro FD, ch1 = can0 and ch2 = can1 (no udev renames).
+      # Same convention as arm4090 (can0 = right, can1 = left). VERIFY the wiring
+      # with openarm-can-cli show_param before real teleop.
       fd: true
       bitrate: 1000000
       dbitrate: 5000000
-      left_port: can3
-      right_port: can2
+      left_port: can1
+      right_port: can0
       auto_repair: true
 
 meta_quest:

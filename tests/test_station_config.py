@@ -118,7 +118,7 @@ def test_doctor_still_fails_without_cameras_key(tmp_path) -> None:
 
 @pytest.mark.parametrize(
     ("station", "left", "right", "auto_repair"),
-    [("arm4090", "can1", "can0", False), ("arm5080", "can3", "can2", True)],
+    [("arm4090", "can1", "can0", False), ("arm5080", "can1", "can0", True)],
 )
 def test_station_can_ports(station, left, right, auto_repair):
     settings = load_openarm_settings(rig_config=station_rig_config(station))

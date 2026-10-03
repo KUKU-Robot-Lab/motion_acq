@@ -10,7 +10,7 @@ Two independent stations, each with its own Meta Quest and OpenArm pair:
 | station | PC | hands | rig file |
 |---|---|---|---|
 | arm4090 | RTX 4090 robot PC | RH56F1 on both arms | `configs/stations/arm4090.yaml` |
-| arm5080 | RTX 5080 PC | to be connected | `configs/stations/arm5080.yaml` |
+| arm5080 | RTX 5080 PC | RH56F1 (to be connected) | `configs/stations/arm5080.yaml` |
 
 Select the station per shell: `export MACQ_STATION=arm4090`. Run commands from
 the repository root. STEP 1 drives only J1..J7; the J8 gripper motor is disabled
@@ -59,4 +59,4 @@ cd ~/rl_ws/motion_acq && git pull   # main tracks kuku/main
 | station | right arm | left arm | auto_repair |
 |---|---|---|---|
 | arm4090 | can0 | can1 | false: s2r owns the links; motion_acq only validates them |
-| arm5080 | can2 | can3 | true (VERIFY left/right once the OpenArm is connected) |
+| arm5080 | can0 | can1 | true (one PCAN-USB Pro FD; VERIFY wiring with show_param) |
