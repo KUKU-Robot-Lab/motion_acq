@@ -53,3 +53,6 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/motion_acq"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

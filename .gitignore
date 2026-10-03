@@ -11,3 +11,7 @@ configs/rig.yaml
 configs/calibration/table/local/*.yaml
 outputs/
 logs/
+ros_ws/build/
+ros_ws/install/
+ros_ws/log/
+ros_ws/external/

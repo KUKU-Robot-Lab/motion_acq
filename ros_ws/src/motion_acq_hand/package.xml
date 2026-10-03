@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>motion_acq_hand</name>
+  <version>0.1.0</version>
+  <description>STEP 3: SenseGlove Nova 2 -> RH56F1 hand teleop nodes (hand node, fake glove, fake RH56F1, calibration).</description>
+  <maintainer email="ukwh5681@gmail.com">divingyoon</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>senseglove_msgs</exec_depend>
+  <exec_depend>rh56f1_interfaces</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

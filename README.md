@@ -110,3 +110,26 @@ Check without hardware: run the mock with a moving HMD and periodic loss,
 Only arm4090 has a `head:` section (values from sim2real
 `config/head_home_rh56f1.yaml`). The pan/tilt `sign` entries are unverified
 until the staged hardware test.
+
+## STEP 3: hand (SenseGlove Nova 2 -> RH56F1), arm4090
+
+Pure retargeting lives in `motion_acq.hand` (Python 3.10 safe); the ROS 2
+package `ros_ws/src/motion_acq_hand` wraps it for the system interpreter:
+
+| executable | role |
+|---|---|
+| `hand_node` | glove `/senseglove/glove<serial>/<rh\|lh>/senseglove_states` (best_effort) -> `/hand_<side>/angle_set` at 30 Hz; disabled until `/motion_acq/hand_<side>/enable` (Bool) and a fresh `angle_actual`; glove older than 0.2 s -> HOLD (nothing published); JSONL log + optional UDP sidecar |
+| `calibrate` | records the open / fist / thumb_opposed poses -> `configs/hands/calibration/<user>_<side>.yaml` |
+| `fake_glove`, `fake_rh56f1` | fake Nova 2 and fake RH56F1; refuse to run unless `ROS_DOMAIN_ID=177` and `ROS_LOCALHOST_ONLY=1` (they use the real driver topic names) |
+
+```bash
+scripts/ros_ws_setup.sh             # senseglove_msgs (humble/jazzy branch) + motion_acq_hand
+scripts/ros_ws_setup.sh --full      # whole senseglove_ros for the real glove (SenseCom)
+scripts/fake_hand_check.sh right 20 # fake calibration + fake chain with glove dropouts -> PASS/FAIL
+```
+
+Mapping: `configs/hands/nova2_to_rh56f1.yaml` (features, poses, RH56F1 joint
+ends, filter, 2 rad/s limit, driver speed 2000 / force 600). RH56F1 rad ->
+register: `configs/hands/rh56f1_hand_map.yaml`, a port of sim2real
+`rh56f1_map.py` (identical output). Unverified until the glove is worn: which
+glove angle drives thumb opposition, and the opposed end of `thumb_1`.
