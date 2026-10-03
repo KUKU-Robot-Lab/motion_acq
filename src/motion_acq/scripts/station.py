@@ -97,8 +97,9 @@ def preflight(plan: Plan) -> list[str]:
     if quest.get("quest_ip") == "127.0.0.1":
         adb = shutil.which("adb") or str(Path.home() / "opt/platform-tools/adb")
         forwards = _run([adb, "forward", "--list"])
-        _check("tcp:65432" in forwards, "Quest USB link", "adb forward tcp:65432" if forwards else
-               "no forward (scripts/quest_usb.sh forward)", problems)
+        linked = "tcp:65432" in forwards
+        _check(linked, "Quest USB link", "adb forward tcp:65432" if linked else
+               "no tcp:65432 forward (scripts/quest_usb.sh status / forward)", problems)
     robot = str((plan.rig.get("recording") or {}).get("robot") or "openarmv1")
     runtime = load_embodiment(robot)
     settings = load_openarm_settings(
