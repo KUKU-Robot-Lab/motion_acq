@@ -80,7 +80,7 @@ def wait_for(path: Path, text: str, timeout: float) -> bool:
     return False
 
 
-def check_dataset(out: Path, seconds: float, fps: int) -> list[str]:
+def check_dataset(out: Path, seconds: float, fps: int, arms_only: bool = False) -> list[str]:
     import pandas as pd
 
     files = sorted(out.glob("data/**/*.parquet"))
@@ -92,12 +92,25 @@ def check_dataset(out: Path, seconds: float, fps: int) -> list[str]:
     expected = int(seconds * fps)
     if not 0.8 * expected <= len(df) <= 1.2 * expected:
         failures.append(f"{len(df)} frames, expected ~{expected}")
-    needed = ["observation.state", "action", "observation.head.state", "action.head",
-              "observation.hand.right.state", "action.hand.right", "observation.glove.right.angles",
-              "observation.hand.left.state", "action.hand.left", "observation.glove.left.angles"]
+    needed = ["observation.state", "action"]
+    if not arms_only:
+        needed += ["observation.head.state", "action.head",
+                   "observation.hand.right.state", "action.hand.right", "observation.glove.right.angles",
+                   "observation.hand.left.state", "action.hand.left", "observation.glove.left.angles"]
     missing = [k for k in needed if k not in df.columns]
     if missing:
         failures.append(f"missing columns {missing}")
+        return failures
+    arm = df["observation.state"].map(list).tolist()
+    spread = max(max(col) - min(col) for col in zip(*arm, strict=True))
+    print(f"  arm observation spread (max over joints) {spread:.3f}")
+    if spread < 1e-3:
+        failures.append("arm observation never moved")
+    if arms_only:
+        extra = [c for c in df.columns if c.startswith(("observation.head", "observation.hand", "action.h"))]
+        if extra:
+            failures.append(f"arms-only dataset has sidecar columns {extra}")
+        print(f"  frames {len(df)}")
         return failures
     for key in ("observation.head.status", "observation.hand.right.status", "observation.hand.left.status"):
         values = df[key].map(lambda v: int(v[0]) if hasattr(v, "__len__") else int(v))
@@ -121,9 +134,10 @@ def main() -> int:
     ap.add_argument("--station", default="arm4090")
     ap.add_argument("--seconds", type=float, default=8.0)
     ap.add_argument("--check-only", action="store_true", help="only re-check the last dataset")
+    ap.add_argument("--arms-only", action="store_true", help="no head/hands: teleop-record --no-sidecars")
     args = ap.parse_args()
     if args.check_only:
-        failures = check_dataset(LOGS / "dataset", args.seconds, 30)
+        failures = check_dataset(LOGS / "dataset", args.seconds, 30, args.arms_only)
         print("FAIL: " + "; ".join(failures) if failures else "PASS")
         return 1 if failures else 0
     LOGS.mkdir(parents=True, exist_ok=True)
@@ -136,16 +150,17 @@ def main() -> int:
            "PYTHONUNBUFFERED": "1"}
     procs = Procs()
     try:
-        for side in ("right", "left"):
+        for side in () if args.arms_only else ("right", "left"):
             if not cal[side].exists():
                 print(f"run scripts/fake_hand_check.sh {side} first (needs {cal[side]})")
                 return 2
         procs.start("mock_quest", [str(VENV / "python"), "-m", "motion_acq.tracking.mock_quest_sender",
                                    "--hmd-yaw-amp-deg", "20", "--hmd-pitch-amp-deg", "8"], env=env)
         time.sleep(1.5)
-        procs.start("head", [str(VENV / "macq"), "head", "--udp-target", f"127.0.0.1:{PORTS['head']}",
-                             "--quest-ip", "127.0.0.1", "--log-dir", str(LOGS)], env=env)
-        for side in ("right", "left"):
+        if not args.arms_only:
+            procs.start("head", [str(VENV / "macq"), "head", "--udp-target", f"127.0.0.1:{PORTS['head']}",
+                                 "--quest-ip", "127.0.0.1", "--log-dir", str(LOGS)], env=env)
+        for side in () if args.arms_only else ("right", "left"):
             procs.start(f"hand_{side}", ros_env_cmd(
                 f"ros2 launch motion_acq_hand fake_hand.launch.py side:={side} calibration:={cal[side]} "
                 f"udp_target:=127.0.0.1:{PORTS['hand_' + side]}"))
@@ -157,6 +172,7 @@ def main() -> int:
             "--controller-tcp-calibration", str(tcp), "--num-episodes", "1",
             "--episode-time-s", str(args.seconds), "--output-dir", str(out),
             "--no-preview", "--no-rerun", "--no-sounds", "--no-record-audio",
+            *(["--no-sidecars"] if args.arms_only else []),
         ], env=env, stdin=slave)
         os.close(slave)
         if not wait_for(rec_log, "press Space to start episode", 180):
@@ -173,7 +189,7 @@ def main() -> int:
         print(f"teleop-record exit code {recorder.returncode}")
     finally:
         procs.stop_all()
-    failures = check_dataset(out, args.seconds, 30)
+    failures = check_dataset(out, args.seconds, 30, args.arms_only)
     if failures:
         print("FAIL: " + "; ".join(failures))
         return 1
