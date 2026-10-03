@@ -29,13 +29,13 @@ def generate_launch_description() -> LaunchDescription:
         SetEnvironmentVariable("ROS_LOCALHOST_ONLY", "1"),
     ]
     return LaunchDescription(args + isolation + [
-        Node(package="motion_acq_hand", executable="fake_glove", name="fake_glove", output="screen",
+        Node(package="motion_acq_hand", executable="fake_glove", name=["fake_glove_", side], output="screen",
              parameters=[{"side": side, "mode": LaunchConfiguration("glove_mode"),
                           "dropout_every_s": LaunchConfiguration("dropout_every_s"),
                           "dropout_s": LaunchConfiguration("dropout_s")}]),
-        Node(package="motion_acq_hand", executable="fake_rh56f1", name="fake_rh56f1", output="screen",
+        Node(package="motion_acq_hand", executable="fake_rh56f1", name=["fake_rh56f1_", side], output="screen",
              parameters=[{"side": side, "hand_id": LaunchConfiguration("hand_id")}]),
-        Node(package="motion_acq_hand", executable="hand_node", name="motion_acq_hand", output="screen",
+        Node(package="motion_acq_hand", executable="hand_node", name=["motion_acq_hand_", side], output="screen",
              parameters=[{"side": side, "calibration": LaunchConfiguration("calibration"),
                           "enable_on_start": LaunchConfiguration("enable_on_start"),
                           "udp_target": LaunchConfiguration("udp_target"),

@@ -157,10 +157,11 @@ def _udp_sync_server(host: str, sync_port: int, skew_ns: int, stop: threading.Ev
 
 
 def _serve_client(conn: socket.socket, addr, fps: float, skew_ns: int,
-                  stop: threading.Event, hmd: HmdMotion | None = None) -> None:
+                  stop: threading.Event, hmd: HmdMotion | None = None,
+                  t0: float | None = None) -> None:
     log.info("Client connected: %s", addr)
     seq = 0
-    t0 = time.monotonic()
+    t0 = time.monotonic() if t0 is None else t0  # shared clock: all clients see one motion
     period = 1.0 / fps if fps > 0 else 0.0
     conn.settimeout(1.0)
     try:
@@ -222,18 +223,26 @@ def main() -> None:
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((args.host, args.tcp_port))
-    server.listen(1)
+    # Like the HandUMI Quest App (PoseSender keeps a client list), serve every
+    # client at once: the arm recorder and the head process connect together.
+    server.listen(4)
     server.settimeout(0.5)
     log.info("TCP pose server on %s:%d (fps=%.0f, skew=%.1fs). Ctrl+C to stop.",
              args.host, args.tcp_port, args.fps, args.skew_s)
 
+    t_start = time.monotonic()
     try:
         while True:
             try:
                 conn, addr = server.accept()
             except TimeoutError:
                 continue
-            _serve_client(conn, addr, args.fps, skew_ns, stop, hmd)
+            threading.Thread(
+                target=_serve_client,
+                args=(conn, addr, args.fps, skew_ns, stop, hmd, t_start),
+                name=f"mock-quest-{addr[1]}",
+                daemon=True,
+            ).start()
     except KeyboardInterrupt:
         pass
     finally:

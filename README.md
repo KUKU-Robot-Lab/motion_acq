@@ -135,3 +135,31 @@ register: `configs/hands/rh56f1_hand_map.yaml`, a port of sim2real
 checked out next to this repo; touch and mimic not ported). For the first real
 runs use a small `amplitude` and lower `driver_speed`/`driver_force`. Unverified until the glove is worn: which
 glove angle drives thumb opposition, and the opposed end of `thumb_1`.
+
+## Recording (LeRobot): arms + head + hands in one dataset
+
+`macq teleop-record` writes one LeRobot dataset. Head and hand processes stream
+each control cycle over UDP to localhost; the recorder aligns them to every
+frame by CLOCK_MONOTONIC (`motion_acq.sidecar`) and treats a stale stream like
+a lost camera (sensor health gate). Streams per station come from
+`recording.sidecars` (arm4090: head 47101, hand_right 47111, hand_left 47112);
+`--no-sidecars` records the arms only (arm5080).
+
+| feature | shape | content |
+|---|---|---|
+| `observation.state`, `action` | arm joints | HandUMI canonical arm layout |
+| `observation.head.state`, `action.head` | 2 | pan, tilt (rad) measured / commanded |
+| `observation.head.hmd_rel` | 2 | HMD yaw, pitch relative to the anchor (rad) |
+| `observation.hand.<side>.state`, `action.hand.<side>` | 6 | RH56F1 `<r\|l>_hj_*` (rad) measured / commanded |
+| `observation.glove.<side>.angles` | 20 | raw Nova 2 joints (rad) |
+| `observation.{head,hand.<side>}.status` | 1 | -1 missing, 0 idle/disabled, 1 running, 2 hold, 3 fault |
+
+Assistant keyboard (with `--space-start`, the operator's hands are busy):
+Space start, Space save (>= 1 s after start), R reset the attempt and home,
+Q finish the session, Esc stop. One reader owns the terminal (the upstream
+Esc listener used to swallow Space presses).
+
+Fake end to end (no hardware): `scripts/fake_hand_check.sh right` and `left`
+once (fake glove calibrations), then `.venv/bin/python scripts/fake_record_check.py`
+(mock Quest, fake head bus, fake hands on domain 177, `teleop-record
+--fake-robot` with a simulated OpenArm SDK) -> PASS/FAIL on the dataset.

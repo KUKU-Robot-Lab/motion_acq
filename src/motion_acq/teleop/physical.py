@@ -35,6 +35,11 @@ def add_physical_teleop_arguments(parser: argparse.ArgumentParser) -> None:
         help="Override a legacy named home pose. Omit to use the robot home_q.",
     )
     parser.add_argument("--side", choices=SIDE_CHOICES, default="both")
+    parser.add_argument(
+        "--fake-robot",
+        action="store_true",
+        help="Simulated OpenArm SDK: the real driver path without CAN or motors.",
+    )
     add_teleop_motion_arguments(parser)
     parser.add_argument(
         "--translation-scale",

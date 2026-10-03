@@ -301,6 +301,7 @@ def _run_real() -> None:
         runtime=runtime,
         rig_config=args.rig_config,
         active_sides=enabled_sides,
+        fake=args.fake_robot,
     )
     space_listener = KeyboardSpaceListener(enabled=args.space_start)
     tracker_started = False

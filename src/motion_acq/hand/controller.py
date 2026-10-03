@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping, Sequence
 
+from motion_acq.hand.nova2 import SIDE_PREFIX, glove_joint_names
 from motion_acq.hand.retarget import HandRetargeter, HandState
 from motion_acq.hand.rh56f1 import N_SLOTS, Rh56f1Map
 
@@ -117,6 +118,22 @@ class HandController:
             self.fault_reason = None
             self.retargeter.state = HandState.IDLE
 
+    def _measured_rad(self) -> dict[str, float] | None:
+        if self.measured is None or implausible_registers(self.measured[0], self.hand_map, self.side):
+            return None
+        return self.hand_map.to_rad(self.measured[0], side=self.side)
+
+    def _glove_vector(self) -> list[float] | None:
+        """Raw glove angles in glove_joint_names(side) order (dataset layout)."""
+        if self.glove is None:
+            return None
+        angles = self.glove[0]
+        prefix = len(SIDE_PREFIX[self.side]) + 1
+        try:
+            return [float(angles[name[prefix:]]) for name in glove_joint_names(self.side)]
+        except KeyError:
+            return None
+
     # -- control ----------------------------------------------------------
     def _measured_fresh(self, t: float) -> bool:
         return self.measured is not None and t - self.measured[2] <= self.config.measured_stale_s
@@ -175,6 +192,8 @@ class HandController:
             "q_command_rad": step.q_command if step else None,
             "registers": out.angle,
             "measured_registers": None if self.measured is None else self.measured[0],
+            "measured_rad": self._measured_rad(),
+            "glove_angles": self._glove_vector(),
             "hand_id": out.hand_id,
         }
         return out

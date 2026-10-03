@@ -15,6 +15,11 @@ _ROBOT_BACKEND_MODULES: dict[str, str] = {
     "openarmv1": "motion_acq.real.openarm.teleop",
 }
 
+# --fake-robot: same backend key, simulated SDK (no CAN).
+_FAKE_BACKEND_MODULES: dict[str, str] = {
+    "openarmv1": "motion_acq.real.openarm.fake",
+}
+
 _REAL_BACKEND_ALIASES: dict[str, str] = {
     "openarm_can": "openarmv1",
 }
@@ -26,14 +31,16 @@ def make_real_backend(
     runtime: RobotRuntime,
     rig_config: Path,
     active_sides: tuple[str, ...] = ("left", "right"),
+    fake: bool = False,
 ) -> TeleopRobotBackend:
     """Create a backend without importing SDKs for unused robots."""
     backend_key = _backend_key(robot, runtime)
+    modules = _FAKE_BACKEND_MODULES if fake else _ROBOT_BACKEND_MODULES
     try:
-        module_name = _ROBOT_BACKEND_MODULES[backend_key]
+        module_name = modules[backend_key]
     except KeyError as exc:
         raise ValueError(
-            f"No real hardware backend registered for {robot!r}."
+            f"No {'fake' if fake else 'real hardware'} backend registered for {robot!r}."
         ) from exc
     module = import_module(module_name)
     return module.build_backend(

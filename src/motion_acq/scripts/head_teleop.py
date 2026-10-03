@@ -68,8 +68,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--duration-s", type=float, default=0.0, help="Stop after N s (0 = until Ctrl+C).")
     p.add_argument("--log-dir", type=Path, default=Path("logs/head"))
     p.add_argument("--no-log", action="store_true")
+    p.add_argument(
+        "--udp-target", default=None, metavar="HOST:PORT",
+        help="Also send each cycle to the recorder (teleop-record --sidecar head=PORT).",
+    )
     p.add_argument("--torque-off-on-exit", action="store_true")
     return p.parse_args(argv)
+
+
+def _udp_target(text: str | None) -> tuple[str, int] | None:
+    if not text:
+        return None
+    host, sep, port = text.rpartition(":")
+    if not sep or not host:
+        raise SystemExit(f"--udp-target expects HOST:PORT, not {text!r}")
+    return host, int(port)
 
 
 def build_tracker(args: argparse.Namespace) -> MetaQuestTrackingProvider:
@@ -131,6 +144,7 @@ def main(argv: list[str] | None = None) -> None:
             auto_start_delay_s=args.auto_start_delay_s,
             max_consecutive_faults=config.max_consecutive_faults,
             log_file=log_file,
+            udp_target=_udp_target(args.udp_target),
         )
         _run(session, rate_hz, args.duration_s)
     except HeadBusError as exc:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -52,6 +53,7 @@ class HeadSession:
         max_consecutive_faults: int,
         log_file: IO[str] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        udp_target: tuple[str, int] | None = None,
     ) -> None:
         self.tracker = tracker
         self.driver = driver
@@ -67,6 +69,9 @@ class HeadSession:
         self._last_sent: tuple[float, float] | None = None
         self._last_hw_check = 0.0
         self.measured: tuple[float, float] | None = None
+        self._udp = None
+        if udp_target is not None:
+            self._udp = (socket.socket(socket.AF_INET, socket.SOCK_DGRAM), udp_target)
 
     @property
     def anchored(self) -> bool:
@@ -170,7 +175,7 @@ class HeadSession:
     def _write_log(
         self, now: float, sample: ControllerPairSample, step: HeadStep | None
     ) -> None:
-        if self.log_file is None:
+        if self.log_file is None and self._udp is None:
             return
         record = {
             "t_mono_s": round(now, 6),
@@ -187,7 +192,14 @@ class HeadSession:
             "meas_pan_deg": self.measured[0] if self.measured else None,
             "meas_tilt_deg": self.measured[1] if self.measured else None,
         }
-        self.log_file.write(json.dumps(record) + "\n")
+        line = json.dumps(record)
+        try:
+            if self.log_file is not None:
+                self.log_file.write(line + "\n")
+            if self._udp is not None:
+                self._udp[0].sendto(line.encode("utf-8"), self._udp[1])
+        except OSError as exc:  # logging must never stop the head loop
+            log.warning("head log/udp write failed: %s", exc)
 
 
 def open_log(log_dir: Path, station: str) -> IO[str]:

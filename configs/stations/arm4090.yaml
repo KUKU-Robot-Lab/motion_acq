@@ -12,6 +12,15 @@ recording:
   cameras: []
   fps: 30
   robot: openarmv1
+  # Head and hand processes stream to the recorder over UDP (localhost); every
+  # listed stream is required while recording. Start them with
+  #   macq head --udp-target 127.0.0.1:47101
+  #   hand_node -p udp_target:=127.0.0.1:47111 (right) / 47112 (left)
+  # or record arms only with teleop-record --no-sidecars.
+  sidecars:
+    head: 47101
+    hand_right: 47111
+    hand_left: 47112
 
 robots:
   openarmv1:

@@ -313,11 +313,21 @@ class TeleopLoopTimer:
 
 
 class KeyboardSpaceListener:
-    """Non-blocking Space listener for terminal-triggered teleop starts."""
+    """Non-blocking terminal key listener: Space, plus R (reset) and Q (finish).
 
-    def __init__(self, *, enabled: bool) -> None:
+    The assistant drives recording from the keyboard when the operator's hands
+    are busy (gloves, mounted controllers): see teleop_record.
+    """
+
+    EPISODE_KEYS = ("r", "q")
+
+    def __init__(self, *, enabled: bool, stop_event: threading.Event | None = None) -> None:
+        # One reader owns the terminal: with stop_event set, Esc stops the
+        # session here too (a second stdin reader would swallow Space presses).
+        self.stop_event = stop_event
         self.enabled = enabled and sys.stdin.isatty()
         self._space = threading.Event()
+        self._keys = {key: threading.Event() for key in self.EPISODE_KEYS}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -337,6 +347,27 @@ class KeyboardSpaceListener:
         self._space.clear()
         return True
 
+    def press(self, char: str) -> None:
+        """Register a key press (used by the reader thread and by tests)."""
+        if char == " ":
+            self._space.set()
+        elif char == "\x1b" and self.stop_event is not None:
+            self.stop_event.set()
+        elif char.lower() in self._keys:
+            self._keys[char.lower()].set()
+
+    def consume_key(self, key: str) -> bool:
+        event = self._keys[key]
+        if not event.is_set():
+            return False
+        event.clear()
+        return True
+
+    def clear(self) -> None:
+        self._space.clear()
+        for event in self._keys.values():
+            event.clear()
+
     def close(self) -> None:
         self._stop.set()
         if self._thread is not None:
@@ -351,9 +382,7 @@ class KeyboardSpaceListener:
                 readable, _, _ = select.select([sys.stdin], [], [], 0.1)
                 if not readable:
                     continue
-                char = sys.stdin.read(1)
-                if char == " ":
-                    self._space.set()
+                self.press(sys.stdin.read(1))
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 

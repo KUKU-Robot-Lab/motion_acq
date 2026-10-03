@@ -98,7 +98,10 @@ from motion_acq.dataset.raw import (
     feetech_features,
 )
 from motion_acq.feetech import FeetechGripperPair, FeetechGripperSampler, GripperWidths
+from motion_acq.config import STATION_ENV
 from motion_acq.real.registry import make_real_backend
+from motion_acq.sidecar import SidecarReceiver, parse_sidecar_args, sidecar_features
+from motion_acq.sidecar import SPECS as SIDECAR_SPECS
 from motion_acq.robots.registry import load_embodiment, resolve_home_q
 from motion_acq.scripts.record import (
     _SOFTWARE_VIDEO_CODEC,
@@ -176,6 +179,11 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 record_log = logging.getLogger("handumi.record_teleop")
+
+
+# A Space press this soon after the start is treated as a bounce, not a save.
+SPACE_SAVE_MIN_S = 1.0
+SIDECAR_SCHEMA = "motion_acq/sidecar/v1"
 
 
 class DatasetWriteError(RuntimeError):
@@ -438,7 +446,9 @@ class AsyncEpisodeCapture:
         task: str,
         audio_recorder: PicoAudioRecorder | None,
         max_pending_captures: int = 2,
+        sidecars: list[SidecarReceiver] | None = None,
     ) -> None:
+        self.sidecars = list(sidecars or [])
         self.real_env = real_env
         self.runtime = runtime
         self.dataset_writer = dataset_writer
@@ -635,10 +645,17 @@ class AsyncEpisodeCapture:
             and abs(snapshot.tracking_time_ns - snapshot.target_time_ns)
             <= self.max_sync_skew_ns
         )
+        sidecar_frame: dict[str, np.ndarray] = {}
+        sidecar_health: dict[str, bool] = {}
+        for sidecar in self.sidecars:
+            values, healthy = sidecar.frame(snapshot.target_time_ns, self.max_sync_skew_ns)
+            sidecar_frame.update(values)
+            sidecar_health[f"sidecar_{sidecar.spec.name}"] = healthy
         sensor_health = {
             **camera_health,
             "feetech": gripper_frame.healthy_for_gate,
             "tracking": tracking_sync_ok,
+            **sidecar_health,
         }
         _, timed_out_sensors = self.health_gate.update(
             sensor_health, snapshot.record_time_ns
@@ -688,6 +705,7 @@ class AsyncEpisodeCapture:
                 **capture_timing_frame(
                     snapshot.target_time_ns, snapshot.record_time_ns
                 ),
+                **sidecar_frame,
                 "calibration_id": np.array([-1], dtype=np.int64),
                 "source_kind": np.array([1], dtype=np.int64),
             },
@@ -728,6 +746,11 @@ def _log_episode_interface(
     start = "double-squeeze RIGHT"
     if space_start:
         start += " or press SPACE"
+        record_log.info(
+            "Keyboard (assistant): SPACE start / SPACE save (>= %.1f s) / "
+            "R reset same episode + home / Q finish session",
+            SPACE_SAVE_MIN_S,
+        )
     record_log.info(
         "\n"
         "┌─ HandUMI teleop recording "
@@ -815,6 +838,7 @@ def build_features(
     joint_names: list[str] | tuple[str, ...],
     camera_specs: list[dict[str, object]] | None = None,
     record_audio: bool = False,
+    sidecar_names: list[str] | None = None,
 ) -> dict[str, Any]:
     img_dtype = "video" if use_videos else "image"
     features: dict[str, Any] = {}
@@ -838,6 +862,7 @@ def build_features(
     features.update(camera_health_features(cam_names))
     if record_audio:
         features.update(audio_features())
+    features.update(sidecar_features(list(sidecar_names or [])))
     features["calibration_id"] = {
         "dtype": "int64",
         "shape": (1,),
@@ -994,6 +1019,18 @@ def _parse_record_args(argv: list[str] | None = None) -> argparse.Namespace:
     # The dataset stays at --fps (normally 30), while the real-teleop control
     # path gets its own cadence and interpolation delay.
     p.set_defaults(trajectory_delay_ms=None)
+    p.add_argument(
+        "--sidecar",
+        action="append",
+        default=None,
+        metavar="NAME=PORT",
+        help=(
+            "Record a head/hand process sent over UDP on 127.0.0.1:PORT "
+            f"(NAME in {sorted(SIDECAR_SPECS)}); repeatable. Default: the station "
+            "rig recording.sidecars."
+        ),
+    )
+    p.add_argument("--no-sidecars", action="store_true", help="Ignore recording.sidecars.")
     p.add_argument(
         "--num-episodes",
         type=int,
@@ -1179,6 +1216,7 @@ def record_episode(
     episode_number: int = 1,
     episode_total: str = "?",
     audio_recorder: PicoAudioRecorder | None = None,
+    sidecars: list[SidecarReceiver] | None = None,
     dashboard: _RecordingDashboard | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int, str, np.ndarray]:
     resolved_control_fps = float(fps if control_fps is None else control_fps)
@@ -1244,6 +1282,7 @@ def record_episode(
         sensor_loss_timeout_s=sensor_loss_timeout_s,
         task=task,
         audio_recorder=audio_recorder,
+        sidecars=sidecars,
     )
     timing_window_start_s = time.perf_counter()
     timing_control_max_s = 0.0
@@ -1370,8 +1409,32 @@ def record_episode(
                 immediate_widths.left_mm, immediate_widths.right_mm
             )
         start_sides: tuple[str, ...] = ()
+        # Keyboard episode control for an assistant (operator's hands busy):
+        # Space saves while recording, R resets the attempt, Q ends the session.
+        if space_listener.consume_key("q"):
+            record_log.info("Q pressed: discarding the active attempt and ending the session.")
+            status = "session_finished"
+            break
+        if space_listener.consume_key("r"):
+            record_log.info("R pressed: discarding this attempt and returning home.")
+            status = "reset"
+            break
         if space_listener.consume_space():
-            if phase is _EpisodePhase.READY:
+            if (
+                phase is _EpisodePhase.RECORDING
+                and recording_started_s is not None
+                and loop_start - recording_started_s < SPACE_SAVE_MIN_S
+            ):
+                record_log.info(
+                    "Space ignored: recording started %.1f s ago (save needs >= %.1f s).",
+                    loop_start - recording_started_s,
+                    SPACE_SAVE_MIN_S,
+                )
+            elif phase is _EpisodePhase.RECORDING:
+                record_log.info("Space pressed: saving episode %d.", episode_number)
+                status = "saved"
+                break
+            elif phase is _EpisodePhase.READY:
                 # With no HandUMI grippers, Space is the explicit arm-start
                 # fallback.  Otherwise it starts recording only; opening each
                 # gripper remains responsible for waking its parked arm.
@@ -1773,6 +1836,28 @@ def record_episode(
     return states, actions, n_frames, status, q
 
 
+def _resolve_sidecars(args: argparse.Namespace) -> dict[str, int]:
+    """CLI --sidecar entries win; otherwise the station rig recording.sidecars."""
+    if args.no_sidecars:
+        return {}
+    if args.sidecar:
+        return parse_sidecar_args(args.sidecar)
+    from motion_acq.config import load_rig_config
+
+    configured = (load_rig_config(args.rig_config).get("recording") or {}).get("sidecars") or {}
+    return parse_sidecar_args([f"{name}={port}" for name, port in configured.items()])
+
+
+def _start_sidecars(ports: dict[str, int]) -> list[SidecarReceiver]:
+    receivers = []
+    for name, port in ports.items():
+        receiver = SidecarReceiver(SIDECAR_SPECS[name](), port)
+        receiver.start()
+        receivers.append(receiver)
+        record_log.info("Sidecar %s: listening on 127.0.0.1:%d (required while recording).", name, port)
+    return receivers
+
+
 def _run_record() -> None:
     # Captured before any hardware/dataset setup so the dashboard's "program
     # runtime" reflects the whole run, not just the recording loop.
@@ -1857,6 +1942,7 @@ def _run_record() -> None:
         runtime=runtime,
         rig_config=args.rig_config,
         active_sides=enabled_sides,
+        fake=args.fake_robot,
     )
     gripper_pair = None
     grippers = None
@@ -1873,6 +1959,8 @@ def _run_record() -> None:
     dashboard: _RecordingDashboard | None = None
     dataset_log_handler: logging.FileHandler | None = None
     space_listener = KeyboardSpaceListener(enabled=args.space_start)
+    sidecar_ports = _resolve_sidecars(args)
+    sidecars = _start_sidecars(sidecar_ports)
     motion_config = TeleopMotionConfig.from_args(
         args,
         input_rate_hz=args.control_fps,
@@ -1903,7 +1991,12 @@ def _run_record() -> None:
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
     escape_listener = _EscapeStopListener(stop_event)
-    escape_listener.start()
+    if space_listener.enabled:
+        # The Space listener reads the terminal and handles Esc itself; a second
+        # reader would race it and drop Space/R/Q presses.
+        space_listener.stop_event = stop_event
+    else:
+        escape_listener.start()
 
     try:
         record_log.info("Starting tracking before moving real arms.")
@@ -2021,6 +2114,7 @@ def _run_record() -> None:
             layout.names,
             camera_specs=camera_specs,
             record_audio=bool(args.record_audio),
+            sidecar_names=list(sidecar_ports),
         )
         encoder_selection = None
         dataset_vcodec = _SOFTWARE_VIDEO_CODEC
@@ -2266,6 +2360,7 @@ def _run_record() -> None:
                     camera_width=args.cam_width,
                     camera_height=args.cam_height,
                     camera_stale_timeout_s=args.camera_stale_timeout_s,
+                    sidecars=sidecars,
                     episode_number=ep_num,
                     episode_total=ep_total,
                     audio_recorder=audio_recorder,
@@ -2409,6 +2504,12 @@ def _run_record() -> None:
             dataset.root,
             {
                 "recording_device": args.device,
+                "station": os.environ.get(STATION_ENV, ""),
+                "sidecars": {
+                    "schema": SIDECAR_SCHEMA,
+                    "streams": dict(sidecar_ports),
+                    "time_base": "CLOCK_MONOTONIC (t_mono_s), nearest record within max_sync_skew_s",
+                },
                 "ik_solver": args.ik_solver,
                 "control_rate_hz": args.control_fps,
                 "diagnostics_log": "logs/teleop_record.log",
@@ -2475,6 +2576,8 @@ def _run_record() -> None:
             dashboard.stop()
         escape_listener.stop()
         space_listener.close()
+        for sidecar in sidecars:
+            sidecar.close()
         try:
             command_stream.stop()
         finally:
