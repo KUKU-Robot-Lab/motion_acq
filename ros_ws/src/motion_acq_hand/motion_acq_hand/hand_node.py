@@ -26,9 +26,9 @@ from motion_acq_hand.common import (
     REPO_ROOT,
     check_side,
     declare,
+    declare_glove_topic,
     fake_isolated,
     glove_qos,
-    glove_topic,
     hand_ns,
     spin_node,
 )
@@ -49,8 +49,7 @@ class HandNode(Node):
     def __init__(self) -> None:
         super().__init__("motion_acq_hand")
         self.side = check_side(str(declare(self, "side", "right")))
-        serial = str(declare(self, "glove_serial", "0"))
-        topic = str(declare(self, "glove_topic", "")) or glove_topic(serial, self.side)
+        topic = declare_glove_topic(self, self.side)
         calibration = str(declare(self, "calibration", ""))
         retarget_path = Path(str(declare(self, "retarget_config", str(DEFAULT_RETARGET))))
         map_path = Path(str(declare(self, "hand_map", str(DEFAULT_MAP))))
@@ -155,7 +154,7 @@ class HandNode(Node):
         except OSError as exc:  # logging must never stop the control loop
             self.get_logger().warning(f"hand log/udp write failed: {exc}", throttle_duration_sec=5.0)
         self.status_pub.publish(String(data=json.dumps({
-            k: out.record[k] for k in ("mode", "state", "fault", "refusal", "glove_age_s", "glove_errors",
+            k: out.record[k] for k in ("mode", "state", "fault", "refusal", "glove_age_s", "glove_frozen", "glove_errors",
                                        "registers", "measured_registers")
         })))
 

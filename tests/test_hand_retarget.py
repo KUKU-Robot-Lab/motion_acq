@@ -58,7 +58,7 @@ def test_glove_state_parsing():
     names, positions = synthetic_state("left", POSE_ANGLES["fist"])
     assert tuple(names) == glove_joint_names("left") and len(names) == 20
     angles = angles_from_state(names, positions, "left")
-    assert angles["index_pip"] == pytest.approx(1.5)
+    assert angles["index_pip"] == pytest.approx(1.74)
     with pytest.raises(GloveDataError, match="not a right"):
         angles_from_state(names, positions, "right")
     with pytest.raises(GloveDataError, match="missing"):
@@ -173,3 +173,53 @@ def test_side_mismatch_and_unverified_axes():
     axes = tuple(dataclasses.replace(a, verified=a.name != "thumb_1") for a in HAND_MAP.axes)
     partial = dataclasses.replace(HAND_MAP, axes=axes, side_axes={})
     assert partial.to_registers(CONFIG.home_rad, side=None)[5] == LEAVE
+
+
+# -- Nova 2 gloves: serial and inventory -----------------------------------------
+
+def test_glove_serial_keeps_leading_zeros_and_rejects_numbers():
+    from motion_acq.hand.nova2 import check_serial, glove_topic
+
+    assert glove_topic("00782", "right") == "/senseglove/glove00782/rh/senseglove_states"
+    assert glove_topic("0", "left") == "/senseglove/glove0/lh/senseglove_states"
+    # what ROS (-p glove_serial:=00782) and unquoted YAML turn the serial into
+    for bad in (782.0, 782, "782.0", "", None, "00 782"):
+        with pytest.raises(GloveDataError, match="quoted digit string"):
+            check_serial(bad)
+
+
+def test_lab_glove_inventory():
+    from motion_acq.hand.nova2 import load_gloves
+
+    gloves = load_gloves()
+    assert set(gloves) == {"right", "left"}
+    assert gloves["right"].serial == "00782" and gloves["left"].serial == "00795"
+    assert gloves["right"].topic == "/senseglove/glove00782/rh/senseglove_states"
+    assert gloves["left"].name == "Nova 2-00795-L"
+
+
+def test_glove_inventory_validation(tmp_path):
+    from motion_acq.hand.nova2 import load_gloves
+
+    path = tmp_path / "gloves.yaml"
+    # unquoted 01001 is YAML 1.1 octal (513); unquoted 00782 happens to stay text
+    path.write_text('gloves:\n  right: {serial: 01001, mac: "E8:6B:EA:C8:16:B2", name: "Nova 2-01001-R"}\n')
+    with pytest.raises(GloveDataError, match="quoted"):
+        load_gloves(path)
+    path.write_text('gloves:\n  right: {serial: "00782", mac: "E8:6B:EA:C8:16", name: "Nova 2-00782-R"}\n')
+    with pytest.raises(GloveDataError, match="mac"):
+        load_gloves(path)
+    path.write_text('gloves:\n  right: {serial: "00782", mac: "E8:6B:EA:C8:16:B2", name: "Nova 2-00795-L"}\n')
+    with pytest.raises(GloveDataError, match="name"):
+        load_gloves(path)
+
+
+def test_features_follow_the_glove_joints_that_move():
+    """bumsu's Nova 2 teleop: pip per finger, pinky = ring (no sensor), thumb_brake rotates."""
+    assert {s.name: dict(s.weights) for s in CONFIG.features} == {
+        "index": {"index_pip": 1.0}, "middle": {"middle_pip": 1.0}, "ring": {"ring_pip": 1.0},
+        "pinky": {"ring_pip": 1.0}, "thumb_bend": {"thumb_pip": 1.0},
+        "thumb_opposition": {"thumb_brake": 1.0},
+    }
+    cal = make_calibration()
+    assert cal.ranges["thumb_opposition"].closed > cal.ranges["thumb_opposition"].open

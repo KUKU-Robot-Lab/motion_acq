@@ -49,9 +49,12 @@ class Rig:
         self.hand = list(HOME_R)
         self.sent: list = []
 
-    def step(self, angles=None, *, measured=True, subscribers=True):
+    def step(self, angles=None, *, measured=True, subscribers=True, jitter=True):
         self.t += DT
         if angles is not None:
+            if jitter:  # a worn glove never repeats exactly (frozen data means SenseCom died)
+                noise = 1e-5 if len(self.sent) % 2 else -1e-5
+                angles = {k: v + noise for k, v in angles.items()}
             self.ctl.on_glove(angles, self.t)
         if measured:
             self.ctl.on_measured(self.hand, self.hand_id, self.t)
@@ -249,3 +252,18 @@ def test_register_parity_with_sim2real():
             theirs = s2r.to_rad(regs, side=side)
             mine = HAND_MAP.to_rad(regs, side=side)
             assert all(math.isclose(mine[n], float(t)) for n, t in zip(HAND_MAP.joint_order, theirs, strict=True))
+
+
+def test_frozen_glove_holds_until_it_changes_again():
+    """Dead SenseCom: senseglove_ros republishes the last values on time (bumsu 09-22)."""
+    rig = Rig(make_controller())
+    rig.ctl.request_enable(True)
+    frozen = synthetic_angles(0.6, 0.3, 0.2)
+    for _ in range(int(0.9 / DT)):  # identical samples for 0.9 s: still RUNNING
+        out = rig.step(frozen, jitter=False)
+    assert out.record["state"] == "running" and not out.record["glove_frozen"]
+    for _ in range(int(0.3 / DT)):  # past glove_frozen_s (1.0 s): HOLD, nothing sent
+        out = rig.step(frozen, jitter=False)
+    assert out.record["state"] == "hold" and out.record["glove_frozen"] and out.angle is None
+    out = rig.step(synthetic_angles(0.61, 0.3, 0.2))
+    assert out.record["state"] == "running" and out.angle is not None

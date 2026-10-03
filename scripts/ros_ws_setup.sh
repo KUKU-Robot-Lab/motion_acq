@@ -54,5 +54,11 @@ else
 fi
 set -u
 cd "$WS"
+if [[ "$FULL" -eq 1 ]] && command -v rosdep >/dev/null; then
+  # senseglove_ros needs ros2_control, ros2_controllers, xacro (upstream README);
+  # report what is missing instead of installing it (apt needs sudo).
+  rosdep check --from-paths external/senseglove_ros --ignore-src --rosdistro "$DISTRO" \
+    || echo "warning: missing system deps above (sudo apt install ...); the build may fail" >&2
+fi
 colcon build --symlink-install --base-paths src external
 echo "done: source $WS/install/setup.bash"

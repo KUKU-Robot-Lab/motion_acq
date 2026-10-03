@@ -1,6 +1,6 @@
 """Record the calibration poses for one glove side and write the calibration YAML.
 
-    ros2 run motion_acq_hand calibrate --side right --user op1
+    ros2 run motion_acq_hand calibrate --side right --user op1   # lab glove of that side
     ros2 run motion_acq_hand calibrate --side right --user fake --fake --yes   # fake glove
 
 For each pose in configs/hands/nova2_to_rh56f1.yaml the operator holds still
@@ -17,7 +17,14 @@ import statistics
 import time
 from pathlib import Path
 
-from motion_acq_hand.common import REPO_ROOT, check_side, glove_qos, glove_topic, require_fake_isolation
+from motion_acq_hand.common import (
+    REPO_ROOT,
+    check_side,
+    glove_qos,
+    glove_topic,
+    load_gloves,
+    require_fake_isolation,
+)
 
 import rclpy
 from rclpy.node import Node
@@ -75,7 +82,8 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--side", required=True)
     ap.add_argument("--user", required=True)
-    ap.add_argument("--glove-serial", default="0")
+    ap.add_argument("--glove-serial", default=None,
+                    help="default: the side's glove in configs/hands/nova2_gloves.yaml (fake: 0)")
     ap.add_argument("--glove-topic", default="")
     ap.add_argument("--retarget-config", type=Path, default=DEFAULT_RETARGET)
     ap.add_argument("--out", type=Path, default=None)
@@ -86,7 +94,8 @@ def main(argv: list[str] | None = None) -> None:
     side = check_side(args.side)
     config = load_hand_retarget_config(args.retarget_config)
     out = args.out or REPO_ROOT / "configs" / "hands" / "calibration" / f"{args.user}_{side}.yaml"
-    topic = args.glove_topic or glove_topic(args.glove_serial, side)
+    serial = args.glove_serial or ("0" if args.fake else load_gloves()[side].serial)
+    topic = args.glove_topic or glove_topic(serial, side)
     if args.fake:
         require_fake_isolation("calibrate --fake")
 

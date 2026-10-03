@@ -33,12 +33,25 @@ def ensure_motion_acq_on_path() -> Path:
 
 REPO_ROOT = ensure_motion_acq_on_path()
 
-SIDE_TAG = {"right": "rh", "left": "lh"}
+from motion_acq.hand.nova2 import SIDE_TAG, GloveDataError, check_serial, glove_topic, load_gloves  # noqa: E402,F401
 
 
-def glove_topic(serial: str, side: str) -> str:
-    """senseglove_ros namespace: /senseglove/glove<serial>/<rh|lh>/senseglove_states."""
-    return f"/senseglove/glove{serial}/{SIDE_TAG[side]}/senseglove_states"
+def declare_glove_topic(node, side: str) -> str:
+    """glove_topic param, else the topic of the glove_serial param.
+
+    The serial is read raw: -p glove_serial:=00782 arrives as 782.0, which
+    must fail here rather than subscribe to a topic nobody publishes.
+    """
+    from rcl_interfaces.msg import ParameterDescriptor
+
+    topic = str(declare(node, "glove_topic", ""))
+    if topic:
+        return topic
+    serial = node.declare_parameter("glove_serial", "0", ParameterDescriptor(dynamic_typing=True)).value
+    try:
+        return glove_topic(serial, side)
+    except GloveDataError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def hand_ns(side: str) -> str:

@@ -137,13 +137,46 @@ scripts/ros_ws_setup.sh --full      # whole senseglove_ros for the real glove (S
 scripts/fake_hand_check.sh right 20 # fake calibration + fake chain with glove dropouts -> PASS/FAIL
 ```
 
+### Nova 2 gloves (real)
+
+One shared pair, `configs/hands/nova2_gloves.yaml`: right `00782`
+(E8:6B:EA:C8:16:B2), left `00795` (A0:B7:65:01:91:CE), firmware v2 (BLE).
+The recipe follows bumsu's working setup on arm5080 (Pumky-Robot
+connect_senseglove.py / monitor_glove.py, inspire_hand senseglove_teleop).
+
+```bash
+scripts/ros_ws_setup.sh --full                  # once per host: senseglove_ros + SenseCom 1.9.0
+scripts/nova2.sh up                             # desktop session: SenseCom connects both gloves
+source ros_ws/install/setup.bash
+ros2 launch motion_acq_hand nova2.launch.py     # glove driver, /senseglove/glove<serial>/<rh|lh>/
+ros2 run motion_acq_hand calibrate --side right --user op1   # then --side left
+scripts/nova2.sh status
+```
+
+- SenseCom makes the BLE connection; BlueZ only trusts the gloves (no pairing).
+  A glove keeps one connection and a running SenseCom keeps reconnecting it:
+  close SenseCom on the other station before using the pair here.
+- The driver (ros2_control per glove) refuses to start without SenseCom. If
+  SenseCom dies the driver keeps publishing the last values on time: the hand
+  node treats 1 s of exactly repeated angles as stale (HOLD).
+- Recalibrate after every SenseCom start or glove power cycle (the raw ranges
+  move); `macq station --real` rejects a calibration older than the running SenseCom.
+- Unworn gloves read 0.0 on every finger joint. Nova 2 has no little-finger
+  sensor: pinky follows ring.
+- SenseCom also probes serial ports (/dev/ttyUSB*). On arm4090 the head U2D2
+  is an FTDI port: check the head still runs cleanly with SenseCom up.
+- `-p glove_serial:=00782` reaches a ROS node as 782.0; pass
+  `glove_serial:="'00782'"` or `glove_topic:=...` (the station passes the topic).
+
 Mapping: `configs/hands/nova2_to_rh56f1.yaml` (features, poses, RH56F1 joint
-ends, filter, 2 rad/s limit, driver speed 2000 / force 600). RH56F1 rad ->
+ends, filter, 2 rad/s limit, driver speed 2000 / force 600). Features use the
+glove joints bumsu's teleop drove the same hand with: finger pip, ring for the
+little finger, thumb_pip for the bend, thumb_brake for the rotation. RH56F1 rad ->
 register: `configs/hands/rh56f1_hand_map.yaml`, a port of sim2real
 `rh56f1_map.py` (numerically identical; parity test runs when sim2real is
 checked out next to this repo; touch and mimic not ported). For the first real
-runs use a small `amplitude` and lower `driver_speed`/`driver_force`. Unverified until the glove is worn: which
-glove angle drives thumb opposition, and the opposed end of `thumb_1`.
+runs use a small `amplitude` and lower `driver_speed`/`driver_force`. Unverified until the glove is worn: the
+opposed end of `thumb_1` (bumsu kept the thumb rotation fixed for ease of operation).
 
 ## Recording (LeRobot): arms + head + hands in one dataset
 
@@ -185,7 +218,7 @@ MACQ_STATION=arm5080 macq station --real -- --num-episodes 10          # arms on
 Head and hands run in their own process groups (logs under `logs/station/`);
 `teleop-record` runs in the foreground for the assistant's keys. `--real`
 first checks, read-only: Quest USB forward, CAN up with FD 1M/5M and not held
-by an s2r bringup, head port free, RH56F1 driver and glove topics on the
-current ROS_DOMAIN_ID, hand calibration files. Any failure stops before
+by an s2r bringup, head port free, SenseCom running, RH56F1 driver and glove
+topics on the current ROS_DOMAIN_ID, hand calibrations taken since SenseCom started. Any failure stops before
 anything starts. Real hands start disabled and are enabled after Enter.
 `scripts/fake_record_check.py` drives `macq station --fake` end to end.

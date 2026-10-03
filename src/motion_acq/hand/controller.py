@@ -6,7 +6,7 @@ requests, calls tick() at the control rate and publishes what it returns.
 States
     DISABLED  nothing is published.
     ENABLED   streaming angle_set; RUNNING while the glove is fresh, HOLD
-              (nothing published) while it is stale.
+              (nothing published) while it is stale or frozen.
     FAULT     latched; nothing is published until a disable and a new enable.
 
 Enable needs: a fresh angle_actual whose six registers are plausible (no 0,
@@ -15,6 +15,11 @@ driver topic subscribed. The hand then starts from that measured pose;
 speed/force are sent at enable and re-sent every resend_s. Losing
 angle_actual for longer than measured_stale_s while enabled is a FAULT.
 Disable freezes the hand: the last measured registers are sent once.
+
+Frozen glove: when SenseCom dies, senseglove_ros keeps publishing its last
+values on time and without error (seen on bumsu's setup, 2026-09-22). A glove
+whose 20 angles have not changed at all for glove_frozen_s is therefore
+treated as stale; any change resumes it. A worn glove never repeats exactly.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ class Mode(str, Enum):
 @dataclass(frozen=True)
 class ControllerConfig:
     glove_stale_s: float = 0.2
+    glove_frozen_s: float = 1.0
     measured_stale_s: float = 0.5
     resend_s: float = 1.0
     driver_speed: int = 2000
@@ -91,6 +97,7 @@ class HandController:
         self.fault_reason: str | None = None
         self.want_enable = False
         self.glove: tuple[Mapping[str, float], float] | None = None
+        self._glove_changed_t = -math.inf  # last arrival whose angles differed from the previous
         self.glove_errors = 0
         self.measured: tuple[list[int], int, float] | None = None  # registers, hand_id, t
         self._last_resend = -math.inf
@@ -99,7 +106,12 @@ class HandController:
 
     # -- inputs -----------------------------------------------------------
     def on_glove(self, angles: Mapping[str, float], t: float) -> None:
+        if self.glove is None or dict(angles) != dict(self.glove[0]):
+            self._glove_changed_t = t
         self.glove = (angles, t)
+
+    def glove_frozen(self, t: float) -> bool:
+        return self.glove is not None and t - self._glove_changed_t > self.config.glove_frozen_s
 
     def on_glove_error(self) -> None:
         self.glove_errors += 1
@@ -172,7 +184,8 @@ class HandController:
                 out.speed = [self.config.driver_speed] * N_SLOTS
                 out.force = [self.config.driver_force] * N_SLOTS
             glove = self.glove
-            fresh = glove is not None and t - glove[1] <= self.config.glove_stale_s
+            fresh = (glove is not None and t - glove[1] <= self.config.glove_stale_s
+                     and not self.glove_frozen(t))
             step = self.retargeter.step(glove[0] if fresh and glove else None, t)
             if step.state is HandState.RUNNING and step.registers is not None:
                 out.angle = list(step.registers)
@@ -185,6 +198,7 @@ class HandController:
             "fault": self.fault_reason,
             "refusal": self.last_refusal if self.want_enable and self.mode is Mode.DISABLED else None,
             "glove_age_s": glove_age,
+            "glove_frozen": self.glove_frozen(t),
             "glove_errors": self.glove_errors,
             "features": step.features if step else None,
             "normalized": step.normalized if step else None,

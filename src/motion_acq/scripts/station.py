@@ -14,7 +14,8 @@ reaches it; everything after ``--`` is passed to it.
 --fake : mock Quest, fake head bus, fake hands (ROS domain 177, localhost),
          simulated OpenArm SDK. Nothing touches hardware.
 --real : read-only preflight first (Quest link, CAN up and not held by s2r,
-         head port free, RH56F1 driver and glove topics, calibration files);
+         head port free, SenseCom, RH56F1 driver and glove topics, hand
+         calibrations newer than the running SenseCom);
          any failure stops before a process starts. Hands start disabled and
          are enabled only after the operator presses Enter.
 """
@@ -33,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from motion_acq.config import STATION_ENV, load_rig_config, station_rig_config
+from motion_acq.hand.nova2 import Nova2Glove, load_gloves
 
 ROOT = Path(__file__).resolve().parents[3]
 VENV_BIN = Path(sys.executable).parent
@@ -84,6 +86,15 @@ def _run(cmd: list[str], timeout: float = 10.0) -> str:
         return ""
 
 
+def can_holders(pgrep_output: str) -> list[str]:
+    """s2r processes that may own the OpenArm CAN links (pgrep -af lines).
+
+    The Nova 2 driver is a ros2_control_node too, in the /senseglove/
+    namespace; it never touches CAN.
+    """
+    return [line for line in pgrep_output.splitlines() if line.strip() and "/senseglove/" not in line]
+
+
 def preflight(plan: Plan) -> list[str]:
     from motion_acq.head.config import load_head_config
     from motion_acq.head.dynamixel import port_holders
@@ -110,8 +121,8 @@ def preflight(plan: Plan) -> list[str]:
         up = "state UP" in details or ",UP," in details
         fd = "dbitrate 5000000" in details
         _check(up and fd, f"CAN {port}", "UP, FD 1M/5M" if up and fd else "down or not FD", problems)
-    holders = _run(["pgrep", "-af", "ros2_control_node|openarm.bimanual"]).strip()
-    _check(not holders, "CAN not held by s2r", "free" if not holders else holders.splitlines()[0], problems)
+    holders = can_holders(_run(["pgrep", "-af", "ros2_control_node|openarm.bimanual"]))
+    _check(not holders, "CAN not held by s2r", "free" if not holders else holders[0], problems)
     if "head" in plan.streams:
         head = load_head_config(station_rig_config(plan.station), allow_fake_default=False)
         held = port_holders(head.port) if Path(head.port).exists() else None
@@ -119,21 +130,56 @@ def preflight(plan: Plan) -> list[str]:
                ("missing" if held is None else f"held by PID {held}"), problems)
     if plan.hands:
         topics = _run(_ros_command("ros2 topic list", fake=False), timeout=20).split()
+        sensecom = sensecom_started_at()
+        _check(sensecom is not None, "SenseCom", "running" if sensecom else
+               "not running (scripts/nova2.sh up)", problems)
         for side in plan.hands:
             _check(f"/hand_{side}/angle_actual" in topics, f"RH56F1 {side} driver",
                    f"/hand_{side}/angle_actual", problems)
-            glove = _glove(plan, side)
-            serial = str(glove.get("glove_serial") or "")
-            topic = f"/senseglove/glove{serial}/{'rh' if side == 'right' else 'lh'}/senseglove_states"
-            _check(bool(serial) and topic in topics, f"Nova 2 {side} glove",
-                   topic if serial else "hands.<side>.glove_serial not set in the rig", problems)
+            topic = _glove(side).topic
+            _check(topic in topics, f"Nova 2 {side} glove", topic, problems)
             cal = _calibration(plan, side)
-            _check(cal.exists(), f"{side} hand calibration", str(cal), problems)
+            ok, detail = calibration_current(cal, sensecom)
+            _check(ok, f"{side} hand calibration", detail, problems)
     return problems
 
 
-def _glove(plan: Plan, side: str) -> dict:
-    return ((plan.rig.get("hands") or {}).get(side)) or {}
+def _process_start_epoch(pid: int) -> float | None:
+    """Wall-clock start of a process from /proc (stat field 22 + boot time)."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        boot = next(float(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines()
+                    if line.startswith("btime "))
+        return boot + int(fields[19]) / os.sysconf("SC_CLK_TCK")
+    except (OSError, IndexError, ValueError, StopIteration):
+        return None
+
+
+def sensecom_started_at() -> float | None:
+    """Start time of the newest SenseCom process, None if none runs."""
+    pids = [int(p) for p in _run(["pgrep", "-f", "SenseCom.x86_64"]).split() if p.isdigit()]
+    starts = [t for t in (_process_start_epoch(p) for p in pids) if t is not None]
+    return max(starts) if starts else None
+
+
+def calibration_current(path: Path, sensecom_start: float | None) -> tuple[bool, str]:
+    """A hand calibration is only valid for the SenseCom run it was taken in.
+
+    After a SenseCom restart the raw glove ranges shift (bumsu 09-22: four
+    fingers stayed bent until he recalibrated), so a file older than the
+    running SenseCom must be redone. A glove power cycle shifts them too, and
+    cannot be seen from here.
+    """
+    if not path.exists():
+        return False, f"{path} missing (ros2 run motion_acq_hand calibrate)"
+    if sensecom_start is not None and path.stat().st_mtime < sensecom_start:
+        return False, f"{path} predates the running SenseCom: recalibrate"
+    return True, str(path)
+
+
+def _glove(side: str) -> Nova2Glove:
+    """The lab glove for this side (configs/hands/nova2_gloves.yaml, shared pair)."""
+    return load_gloves()[side]
 
 
 def _calibration(plan: Plan, side: str) -> Path:
@@ -203,9 +249,9 @@ def start_producers(plan: Plan, group: Group, env: dict) -> None:
             cmd = (f"ros2 launch motion_acq_hand fake_hand.launch.py side:={side} calibration:={cal} "
                    f"udp_target:={udp}")
         else:
-            serial = _glove(plan, side).get("glove_serial")
+            # The topic, not the serial: -p glove_serial:=00782 would arrive as 782.0.
             cmd = (f"ros2 run motion_acq_hand hand_node --ros-args -r __node:=motion_acq_hand_{side} "
-                   f"-p side:={side} -p glove_serial:={serial} -p calibration:={cal} -p udp_target:={udp} "
+                   f"-p side:={side} -p glove_topic:={_glove(side).topic} -p calibration:={cal} -p udp_target:={udp} "
                    f"-p log_dir:={plan.log_dir}")
         group.start(f"hand_{side}", _ros_command(cmd, fake=fake), env)
 

@@ -14,16 +14,75 @@ A *feature* is a weighted sum of these angles (configs/hands/nova2_to_rh56f1.yam
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+import yaml
 
 FINGERS = ("thumb", "index", "middle", "ring", "pinky")
 PARTS = ("brake", "mcp", "pip", "dip")
 SIDE_PREFIX = {"right": "r", "left": "l"}
+SIDE_TAG = {"right": "rh", "left": "lh"}
+GLOVES_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "hands" / "nova2_gloves.yaml"
+_MAC = re.compile(r"[0-9A-F]{2}(:[0-9A-F]{2}){5}")
+_SERIAL = re.compile(r"[0-9]+")
 
 
 class GloveDataError(ValueError):
     pass
+
+
+def check_serial(value: Any) -> str:
+    """A Nova 2 serial is a digit string with its leading zeros ("00782").
+
+    senseglove_ros finds the glove by this text, and the namespace carries it.
+    An unquoted 00782 becomes 782 in YAML and 782.0 as a ROS -p parameter, so
+    anything but a digit string is refused instead of silently renamed.
+    """
+    if not isinstance(value, str) or not _SERIAL.fullmatch(value):
+        raise GloveDataError(
+            f"glove serial must be a quoted digit string like \"00782\", not {value!r}"
+            " (ROS: -p glove_serial:=\"'00782'\" or pass glove_topic)"
+        )
+    return value
+
+
+def glove_topic(serial: str, side: str) -> str:
+    """senseglove_ros state topic: hardware.launch.py namespace
+    /senseglove/glove<serial>/<rh|lh> + senseglove_state_broadcaster topic_name."""
+    return f"/senseglove/glove{check_serial(serial)}/{SIDE_TAG[side]}/senseglove_states"
+
+
+@dataclass(frozen=True)
+class Nova2Glove:
+    side: str
+    serial: str
+    mac: str  # BLE address (firmware v2): BlueZ trusts it, no pairing or bonding
+    name: str  # advertised name, "Nova 2-<serial>-<R|L>"
+
+    @property
+    def topic(self) -> str:
+        return glove_topic(self.serial, self.side)
+
+
+def load_gloves(path: Path = GLOVES_CONFIG) -> dict[str, Nova2Glove]:
+    """The lab's Nova 2 gloves by side (configs/hands/nova2_gloves.yaml)."""
+    raw = yaml.safe_load(Path(path).read_text()) or {}
+    gloves = {}
+    for side, entry in (raw.get("gloves") or {}).items():
+        if side not in SIDE_TAG:
+            raise GloveDataError(f"{path}: glove side must be right or left, not {side!r}")
+        glove = Nova2Glove(side=side, serial=check_serial(entry.get("serial")),
+                           mac=str(entry.get("mac", "")).upper(), name=str(entry.get("name", "")))
+        if not _MAC.fullmatch(glove.mac):
+            raise GloveDataError(f"{path}: {side} glove mac {glove.mac!r} is not AA:BB:CC:DD:EE:FF")
+        expected = f"Nova 2-{glove.serial}-{side[0].upper()}"
+        if glove.name != expected:
+            raise GloveDataError(f"{path}: {side} glove name {glove.name!r}, expected {expected!r}")
+        gloves[side] = glove
+    return gloves
 
 
 def glove_joint_names(side: str) -> tuple[str, ...]:

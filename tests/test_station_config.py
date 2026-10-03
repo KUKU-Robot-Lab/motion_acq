@@ -158,3 +158,33 @@ def test_prepare_never_repairs_when_station_forbids_it(
     )
     env.prepare(repair=requested)
     assert seen == {"ports": ["can3", "can2"], "repair": expected}
+
+
+def test_glove_driver_is_not_a_can_holder():
+    from motion_acq.scripts.station import can_holders
+
+    out = (
+        "4242 /opt/ros/humble/lib/controller_manager/ros2_control_node --ros-args "
+        "-r __ns:=/senseglove/glove00782/rh --params-file /tmp/x.yaml\n"
+        "17864 /usr/bin/python3 /opt/ros/humble/bin/ros2 launch openarm_bringup openarm.bimanual.launch.py\n"
+    )
+    assert can_holders(out) == [out.splitlines()[1]]
+    assert can_holders("") == []
+
+
+def test_hand_calibration_must_postdate_sensecom(tmp_path):
+    import os
+
+    from motion_acq.scripts.station import _process_start_epoch, calibration_current
+
+    cal = tmp_path / "op1_right.yaml"
+    assert not calibration_current(cal, None)[0]
+    cal.write_text("x")
+    os.utime(cal, (1000.0, 1000.0))
+    assert calibration_current(cal, None)[0]
+    assert calibration_current(cal, 999.0)[0]
+    ok, detail = calibration_current(cal, 1001.0)
+    assert not ok and "recalibrate" in detail
+    import time
+    start = _process_start_epoch(os.getpid())
+    assert start is not None and start <= time.time()

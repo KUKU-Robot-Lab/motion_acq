@@ -1,0 +1,10 @@
+# The lab's SenseGlove Nova 2 pair, shared by the stations until a second pair
+# arrives. Firmware v2 (BLE): BlueZ only needs to trust a glove (no pairing or
+# bonding). A glove holds one BLE connection: disconnect it on the other
+# host first. Serials must stay quoted (leading zeros); senseglove_ros selects
+# the glove by serial and names the topic /senseglove/glove<serial>/<rh|lh>/.
+# Source: bumsu's working setup on arm5080 (connect_senseglove.py,
+# senseglove_ros fork 0967514 gloves.yaml).
+gloves:
+  right: {serial: "00782", mac: "E8:6B:EA:C8:16:B2", name: "Nova 2-00782-R"}
+  left: {serial: "00795", mac: "A0:B7:65:01:91:CE", name: "Nova 2-00795-L"}

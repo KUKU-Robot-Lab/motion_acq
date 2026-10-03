@@ -14,7 +14,14 @@ from __future__ import annotations
 import math
 import time
 
-from motion_acq_hand.common import check_side, declare, glove_qos, glove_topic, require_fake_isolation, spin_node
+from motion_acq_hand.common import (
+    check_side,
+    declare,
+    declare_glove_topic,
+    glove_qos,
+    require_fake_isolation,
+    spin_node,
+)
 
 from geometry_msgs.msg import Quaternion
 from rclpy.node import Node
@@ -28,7 +35,7 @@ class FakeGlove(Node):
     def __init__(self) -> None:
         super().__init__("fake_glove")
         self.side = check_side(str(declare(self, "side", "right")))
-        serial = str(declare(self, "serial", "0"))
+        topic = declare_glove_topic(self, self.side)
         self.mode = str(declare(self, "mode", "cycle"))
         self.pose = str(declare(self, "pose", "open"))
         self.period_s = float(declare(self, "period_s", 6.0))
@@ -37,11 +44,11 @@ class FakeGlove(Node):
         rate_hz = float(declare(self, "rate_hz", 60.0))
         if self.mode not in ("cycle", "pose") or self.pose not in POSE_ANGLES:
             raise SystemExit(f"mode cycle|pose and pose in {sorted(POSE_ANGLES)}")
-        self.pub = self.create_publisher(SenseGloveState, glove_topic(serial, self.side), glove_qos())
+        self.pub = self.create_publisher(SenseGloveState, topic, glove_qos())
         self.create_subscription(String, f"/motion_acq/fake_glove/{self.side}/pose", self._on_pose, 10)
         self.t0 = time.monotonic()
         self.create_timer(1.0 / rate_hz, self._tick)
-        self.get_logger().info(f"fake {self.side} glove on {glove_topic(serial, self.side)} ({self.mode})")
+        self.get_logger().info(f"fake {self.side} glove on {topic} ({self.mode})")
 
     def _on_pose(self, msg: String) -> None:
         if msg.data in POSE_ANGLES:
@@ -52,7 +59,9 @@ class FakeGlove(Node):
 
     def _angles(self, t: float) -> dict[str, float]:
         if self.mode == "pose":
-            return POSE_ANGLES[self.pose]
+            # a worn glove never repeats exactly; the hand node holds on frozen data
+            jitter = 2e-4 * math.sin(2.0 * math.pi * 7.0 * t)
+            return {name: value + jitter for name, value in POSE_ANGLES[self.pose].items()}
         phase = 2.0 * math.pi * t / self.period_s
         curl = 0.5 - 0.5 * math.cos(phase)
         bend = 0.5 - 0.5 * math.cos(phase + 0.7)

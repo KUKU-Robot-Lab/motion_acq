@@ -7,15 +7,21 @@
 #    filtered and rate limited, then converted to registers with
 #    rh56f1_hand_map.yaml (per-side calibration).
 # Entries marked VERIFY are unconfirmed until the glove is worn (G6).
+#
+# Feature sources follow bumsu's working Nova 2 -> RH56F1 teleop on the same
+# gloves (inspire_hand senseglove_teleop mapping.py, calibrated 2026-10-02):
+# one joint per finger (pip), thumb_pip for the bend, thumb_brake for the
+# rotation. Nova 2 has no little-finger sensor, so pinky follows ring.
+# His measured open -> fist spans: finger pip ~1.67-1.70 rad, thumb_pip
+# 0.71 rad, thumb_brake 1.05 rad (rising toward opposition).
 
 features:
-  index: {index_mcp: 1.0, index_pip: 1.0, index_dip: 1.0}
-  middle: {middle_mcp: 1.0, middle_pip: 1.0, middle_dip: 1.0}
-  ring: {ring_mcp: 1.0, ring_pip: 1.0, ring_dip: 1.0}
-  pinky: {pinky_mcp: 1.0, pinky_pip: 1.0, pinky_dip: 1.0}
-  thumb_bend: {thumb_pip: 1.0, thumb_dip: 1.0}
-  # VERIFY: CMC flexion (thumb_mcp) vs CMC abduction (thumb_brake) for opposition.
-  thumb_opposition: {thumb_mcp: 1.0}
+  index: {index_pip: 1.0}
+  middle: {middle_pip: 1.0}
+  ring: {ring_pip: 1.0}
+  pinky: {ring_pip: 1.0}
+  thumb_bend: {thumb_pip: 1.0}
+  thumb_opposition: {thumb_brake: 1.0}
 
 # Calibration poses, recorded with the hand still for ~2 s each.
 poses:
