@@ -224,8 +224,8 @@ def arm(station: Station, mode: str, side: str, scale: float = DEFAULT_SCALE) ->
     argv = (MACQ, "teleop-real", *_arm_common(station, mode, side, scale))
     return Launch("arm", f"팔 원격조작 ({SIDE_KO[side]})", argv, _base_env(station), pty=True,
                   moves_robot=_real(mode),
-                  summary=f"{SIDE_KO[side]}: 차렷 → 저장 경로 → home 이동 후 Space 를 기다린다. "
-                          "정지하면 home → 차렷으로 돌아간 뒤 모터를 끈다.",
+                  summary=f"{SIDE_KO[side]}: 차렷이 벗어나 있으면 먼저 0.05 rad/s 로 기준 차렷에 맞추고, "
+                          "저장 경로로 home 에 간 뒤 Space 를 기다린다. 정지하면 home → 차렷으로 돌아간 뒤 모터를 끈다.",
                   stop_grace_s=120.0)
 
 

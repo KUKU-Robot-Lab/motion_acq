@@ -90,8 +90,10 @@ input[type="number"] { width: 78px; font-family: var(--mono); }
 .alert code { font: 12.5px var(--mono); }
 
 /* stage: body on the left, details on the right */
-#stage { display: grid; grid-template-columns: minmax(640px, 1fr) minmax(360px, 440px); gap: 14px; padding: 14px 18px 18px; align-items: start; }
-@media (max-width: 1150px) { #stage { grid-template-columns: 1fr; } }
+#stage { display: grid; grid-template-columns: minmax(520px, 1fr) minmax(300px, 420px); gap: 14px; padding: 14px 18px 18px; align-items: start; }
+@media (max-width: 860px) { #stage { grid-template-columns: 1fr; } }
+.pilot input { width: 140px; }
+.pilot input:placeholder-shown { border-color: var(--warn); }
 #body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .zone { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px 16px; }
 .zone-title { color: var(--faint); font-size: 12px; letter-spacing: .12em; margin-bottom: 10px; }

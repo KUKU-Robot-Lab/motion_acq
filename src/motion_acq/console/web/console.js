@@ -346,8 +346,7 @@ function detailGlove(s) {
   if (jobLine("glove")) rows.push(["최근", jobLine("glove"), job("glove").state === "failed" ? "bad" : ""]);
   const calib = ["calib_right", "calib_left"].find(running);
   return `<h3>장갑 · Nova 2</h3>${facts(rows)}
-    <div class="row"><label class="field">보정 사용자 <input type="text" id="user" maxlength="32" placeholder="이름 (예: op1) 입력 후 Enter" value="${esc(s.settings.user)}"></label></div>
-    <p class="hint">순서: 이름 입력 → [오른손 보정] → 화면 안내 자세마다 [Enter: 이 자세 기록] → [왼손 보정]. SenseCom 을 다시 켜면 다시 보정한다.</p>
+    <p class="hint">파일럿: <b>${esc(s.settings.user || "없음 (맨 위 오른쪽에 이름을 넣는다)")}</b>. 순서: [오른손 보정] → 화면 안내 자세마다 [Enter: 이 자세 기록] → [왼손 보정]. 보정은 파일럿마다 따로 저장되고, SenseCom 을 다시 켜면 다시 한다.</p>
     <div class="actions">${btn("오른손 보정", { "data-start": "calib_right" }, "small")}${btn("왼손 보정", { "data-start": "calib_left" }, "small")}
       ${btn("Enter: 이 자세 기록", { "data-key": calib || "", "data-text": "\n", disabled: !calib }, "key small")}
       ${btn("드라이버 정지", { "data-action": "glove_driver_stop", disabled: !(g.driver_pids || []).length }, "ghost small")}</div>
@@ -429,6 +428,8 @@ function renderDetail(s) {
 // ---------------------------------------------------------------- top, alerts, bar
 function renderTop(s) {
   $("#station").textContent = `${s.station.name} · ${s.station.robot}`;
+  const pilot = $("#user");
+  if (document.activeElement !== pilot && pilot.value !== (s.settings.user || "")) pilot.value = s.settings.user || "";
   document.body.classList.toggle("is-real", s.mode === "real");
   const busy = s.running.length > 0;
   $$("#top [data-mode]").forEach((b) => {
@@ -538,7 +539,7 @@ document.addEventListener("click", async (ev) => {
   else if (d.send) act("key", { key: d.send, text: d.text }, b, "입력 보냄");
   else if (d.action) act("action", { name: d.action }, b, "요청함");
   else if (d.log) openDrawer(d.log);
-  else if (d.select) { selected = d.select; if (S) render(S); setTimeout(() => $("#user")?.focus(), 50); }
+  else if (d.select) { selected = d.select; if (S) render(S); if (!S?.settings.user) setTimeout(() => $("#user")?.focus(), 50); }
   else if (d.left) act("action", { name: `left_behind_stop:${d.left}` }, b, "SIGINT 보냄");
 });
 

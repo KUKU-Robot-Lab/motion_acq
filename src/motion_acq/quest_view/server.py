@@ -16,7 +16,11 @@ The head process sends its records here with --udp-target 127.0.0.1:47121;
 the status line shows locked / following, the HMD offset from the anchor
 and the camera pan/tilt from home against the window.
 
-quest-view owns the head camera, so it also hands every frame to the recorder:
+The head camera is opened only while it is needed (user 10.04: no RealSense when
+the headset connects, the picture from the moment the neck starts): while head
+records arrive on UDP 47121 (macq head runs) or a recorder reads frames
+(--camera-on always keeps it open). quest-view owns the camera, so it also
+hands every frame to the recorder:
 TCP 127.0.0.1:47126 streams raw BGR frames (FRAME_HEADER + pixels) to each
 connected client (motion_acq.cameras.questview, camera type "quest-view").
 --test-pattern replaces the camera with a moving pattern and --no-pose-server
@@ -51,6 +55,7 @@ FRAME_HEADER = struct.Struct("<4sIQHHB")
 FRAME_MAGIC = b"MQVF"
 STATUS_PERIOD_S = 0.1
 NO_POSE_WARN_S = 10.0
+HEAD_FRESH_S = 2.0  # head records younger than this keep the camera open
 
 
 @dataclass
@@ -62,6 +67,7 @@ class Shared:
     frame: bytes | None = None  # raw BGR of the same frame, for the recorder
     frame_shape: tuple[int, int, int] = (0, 0, 0)
     frame_ns: int = 0
+    camera_on: bool = False
     head: dict | None = None
     frames_in: int = 0
     last_pose_at: float = 0.0
@@ -80,8 +86,14 @@ def _publish(shared: Shared, frame, params, captured_ns: int) -> None:
         shared.jpeg_seq += 1
 
 
+def _camera_off(shared: Shared) -> None:
+    with shared.lock:
+        shared.camera_on = False
+        shared.jpeg, shared.frame = None, None
+
+
 def test_pattern_thread(width: int, height: int, fps: float, quality: int, shared: Shared,
-                        stop: threading.Event) -> None:
+                        stop: threading.Event, want=lambda: True) -> None:
     """A moving pattern instead of the camera (fake runs: recording with video, no hardware)."""
     import cv2
     import numpy as np
@@ -90,6 +102,12 @@ def test_pattern_thread(width: int, height: int, fps: float, quality: int, share
     period = 1.0 / max(fps, 1.0)
     n = 0
     while not stop.is_set():
+        if not want():
+            if shared.camera_on:
+                _camera_off(shared)
+            stop.wait(0.1)
+            continue
+        shared.camera_on = True
         frame = np.zeros((height, width, 3), np.uint8)
         frame[:, :, 1] = 40
         x = int((n * 7) % width)
@@ -101,20 +119,35 @@ def test_pattern_thread(width: int, height: int, fps: float, quality: int, share
 
 
 def camera_thread(index: int, width: int, height: int, fps: float, quality: int,
-                  shared: Shared, stop: threading.Event) -> None:
+                  shared: Shared, stop: threading.Event, want=lambda: True) -> None:
+    """Open the camera while want() (the neck runs or a recorder reads), release it otherwise."""
     import cv2
 
-    cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    cap.set(cv2.CAP_PROP_FPS, fps)
-    if not cap.isOpened():
-        log.error("camera %d did not open: no video in the headset", index)
-        return
-    log.info("camera %d: %dx%d @ %g fps", index, width, height, fps)
     params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    cap = None
     try:
         while not stop.is_set():
+            if not want():
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                    _camera_off(shared)
+                    log.info("camera %d closed (neck stopped, no recorder)", index)
+                stop.wait(0.2)
+                continue
+            if cap is None:
+                cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                cap.set(cv2.CAP_PROP_FPS, fps)
+                if not cap.isOpened():
+                    log.error("camera %d did not open: no video in the headset; retrying", index)
+                    cap.release()
+                    cap = None
+                    stop.wait(2.0)
+                    continue
+                shared.camera_on = True
+                log.info("camera %d open: %dx%d @ %g fps", index, width, height, fps)
             ok, frame = cap.read()
             captured_ns = time.monotonic_ns()
             if not ok:
@@ -122,7 +155,8 @@ def camera_thread(index: int, width: int, height: int, fps: float, quality: int,
                 continue
             _publish(shared, frame, params, captured_ns)
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
 
 
 class FrameServer:
@@ -267,20 +301,30 @@ async def _push(ws: web.WebSocketResponse, shared: Shared, video_fps: float) -> 
             next_status = now + STATUS_PERIOD_S
             head = shared.head
             age = None if head is None else now - head.get("received_at", 0.0)
-            await ws.send_str(json.dumps({"type": "status", "head": head, "head_age_s": age}))
+            await ws.send_str(json.dumps({"type": "status", "head": head, "head_age_s": age,
+                                          "camera_on": shared.camera_on}))
         await asyncio.sleep(period)
 
 
 async def serve(args: argparse.Namespace) -> None:
     shared = Shared()
     stop = threading.Event()
+    frames = FrameServer(shared)
+
+    def want_camera() -> bool:
+        if args.camera_on == "always" or frames.clients > 0:
+            return True
+        head = shared.head
+        return head is not None and time.monotonic() - float(head.get("received_at", 0.0)) < HEAD_FRESH_S
+
     if args.test_pattern:
         threading.Thread(target=test_pattern_thread, daemon=True, name="quest-view-pattern",
-                         args=(args.width, args.height, args.fps, args.jpeg_quality, shared, stop)).start()
+                         args=(args.width, args.height, args.fps, args.jpeg_quality, shared, stop, want_camera)
+                         ).start()
     elif args.camera >= 0:
         threading.Thread(target=camera_thread, daemon=True, name="quest-view-camera",
-                         args=(args.camera, args.width, args.height, args.fps, args.jpeg_quality, shared, stop)
-                         ).start()
+                         args=(args.camera, args.width, args.height, args.fps, args.jpeg_quality, shared, stop,
+                               want_camera)).start()
     poses = PoseBroadcast()
     loop = asyncio.get_running_loop()
     tcp = None
@@ -291,7 +335,6 @@ async def serve(args: argparse.Namespace) -> None:
             raise SystemExit(f"TCP 127.0.0.1:{args.tcp_port} is taken ({exc}); remove the HandUMI forward: "
                              f"adb forward --remove tcp:{args.tcp_port}") from exc
         await loop.create_datagram_endpoint(SyncResponder, local_addr=("127.0.0.1", args.sync_port))
-    frames = FrameServer(shared)
     frame_tcp = await asyncio.start_server(frames.handle, "127.0.0.1", args.frame_port)
     await loop.create_datagram_endpoint(lambda: HeadStatus(shared), local_addr=("127.0.0.1", args.head_status_port))
     runner = web.AppRunner(build_app(shared, poses, video_fps=args.fps), shutdown_timeout=1.0)
@@ -334,6 +377,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--jpeg-quality", type=int, default=70)
     p.add_argument("--frame-port", type=int, default=FRAME_PORT, help="raw frames for the recorder")
     p.add_argument("--test-pattern", action="store_true", help="moving pattern instead of the camera (fake)")
+    p.add_argument("--camera-on", choices=("demand", "always"), default="demand",
+                   help="demand: only while the neck runs or a recorder reads (default)")
     p.add_argument("--no-pose-server", action="store_true",
                    help="no TCP 65432 / sync (the mock sender serves poses; fake recording with video)")
     return p.parse_args(argv)

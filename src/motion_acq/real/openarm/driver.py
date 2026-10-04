@@ -20,6 +20,7 @@ from motion_acq.real.openarm.home_path import (
     MAX_PATH_SPEED_RAD_S,
     PATH_START_TOLERANCE_RAD,
     REST_ALIGN_SPEED_RAD_S,
+    rest_align_timeout_s,
     HomePath,
     HomePathError,
     classify_start,
@@ -631,8 +632,8 @@ class OpenArmCanEnvironment:
         try:
             self.streamer.set_targets({side: np.zeros(ARM_DOF, dtype=np.float32) for side in sides},
                                       {side: 0.0 for side in sides})
-            self.streamer.wait_until_targets(timeout_s=self.settings.home_timeout_s,
-                                             tolerance_rad=PATH_START_TOLERANCE_RAD)
+            timeout = max(self.settings.home_timeout_s, max(rest_align_timeout_s(initial[s]) for s in sides))
+            self.streamer.wait_until_targets(timeout_s=timeout, tolerance_rad=PATH_START_TOLERANCE_RAD)
         finally:
             self.streamer.set_max_speed(self.settings.max_joint_speed_rad_s)
 

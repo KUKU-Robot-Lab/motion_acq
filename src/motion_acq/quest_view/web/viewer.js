@@ -24,6 +24,9 @@ function connect() {
       const msg = JSON.parse(ev.data);
       if (msg.type === "status") {
         headStatus = msg.head; headAge = msg.head_age_s;
+        if (msg.camera_on === false && latestImage) {  // the camera closed: no stale picture
+          latestImage.close(); latestImage = null; imageSeq += 1;
+        }
         if (!xrSession) {  // page preview: keep the status visible even without camera frames
           if (!latestImage) { previewCtx.fillStyle = "#000"; previewCtx.fillRect(0, 0, preview.width, preview.height); }
           else previewCtx.drawImage(latestImage, 0, 0, preview.width, preview.height);
@@ -46,7 +49,7 @@ function fmt(v) { return (v === null || v === undefined) ? "-" : (v >= 0 ? "+" :
 
 function statusLines() {
   const h = headStatus;
-  if (!h || headAge === null || headAge > 1.0) return ["머리 프로세스 없음 (macq head --udp-target 127.0.0.1:47121)", ""];
+  if (!h || headAge === null || headAge > 1.0) return ["목을 시작하면 영상이 나온다 (상황판: 목 [시작])", ""];
   const pan = h.meas_pan_deg === null ? null : h.meas_pan_deg - h.home_pan_deg;
   const tilt = h.meas_tilt_deg === null ? null : h.meas_tilt_deg - h.home_tilt_deg;
   const w = h.window_deg || [0, 0, 0, 0];  // pan right, pan left, tilt down, tilt up
@@ -220,9 +223,10 @@ function onXRFrame(time, frame) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
   gl.clearColor(0.02, 0.03, 0.05, 1.0);
   gl.clear(gl.COLOR_BUFFER_BIT);
-  if (latestImage && uploadedSeq !== imageSeq) {
+  if (uploadedSeq !== imageSeq) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, latestImage);
+    if (latestImage) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, latestImage);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
     uploadedSeq = imageSeq;
   }
   overlayCtx.clearRect(0, 0, overlay.width, overlay.height);

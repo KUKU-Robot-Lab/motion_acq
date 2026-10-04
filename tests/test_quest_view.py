@@ -192,3 +192,54 @@ def test_frame_header_round_trip():
 
     raw = FRAME_HEADER.pack(FRAME_MAGIC, 7, 123456789, 640, 480, 3)
     assert parse_header(raw) == (7, 123456789, 640, 480, 3)
+
+
+def test_camera_opens_only_while_the_neck_runs():
+    """No camera when the headset connects; head records on the status port open it, silence closes it."""
+    import json as _json
+
+    import websockets.sync.client
+
+    from motion_acq.quest_view import server as qv
+
+    ports = {"port": free_port(), "head": free_port(socket.SOCK_DGRAM), "frames": free_port()}
+    args = qv.parse_args(["--port", str(ports["port"]), "--head-status-port", str(ports["head"]),
+                          "--frame-port", str(ports["frames"]), "--test-pattern", "--no-pose-server"])
+    loop = asyncio.new_event_loop()
+    task = loop.create_task(qv.serve(args))
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+
+    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    def last_camera_flag(ws, seconds: float, *, neck: bool) -> bool | None:
+        """Read the page stream for `seconds` (sending neck records if neck) -> the last camera_on seen."""
+        flag, end, next_send = None, time.time() + seconds, 0.0
+        while time.time() < end:
+            if neck and time.time() >= next_send:
+                udp.sendto(_json.dumps({"state": "locked", "locked": True}).encode(), ("127.0.0.1", ports["head"]))
+                next_send = time.time() + 0.1
+            try:
+                msg = ws.recv(timeout=0.1)
+            except TimeoutError:
+                continue
+            if isinstance(msg, str):
+                flag = bool(_json.loads(msg).get("camera_on"))
+        return flag
+
+    try:
+        time.sleep(0.5)
+        with websockets.sync.client.connect(f"ws://127.0.0.1:{ports['port']}/ws") as ws:
+            assert last_camera_flag(ws, 1.0, neck=False) is False  # headset connected, neck off: no camera
+            assert last_camera_flag(ws, 1.5, neck=True) is True  # the neck runs
+            assert last_camera_flag(ws, qv.HEAD_FRESH_S + 1.5, neck=False) is False  # the neck stopped
+    finally:
+        async def shutdown():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run_coroutine_threadsafe(shutdown(), loop).result(timeout=5)
+        loop.call_soon_threadsafe(loop.stop)

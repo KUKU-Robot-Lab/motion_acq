@@ -50,6 +50,25 @@ def test_start_is_rest_or_home_and_nothing_else():
         classify_start(np.zeros(7), path, home + 0.2, 0.10)
 
 
+def test_free_roll_joints_are_aligned_further_than_the_held_ones():
+    path = load_home_path(PATHS / "home_rh56f1_right.npz", "right")
+    home = home_of("right")
+    later = np.deg2rad([-2.9, -0.2, 6.4, 0.0, -15.5, -0.0, 3.9])  # 10.04 right arm, refused before
+    assert classify_start(later, path, home, 0.10) == "near_rest"
+    rolled = np.deg2rad([0.0, 0.0, 50.0, 0.0, -50.0, 15.0, -15.0])  # j3/j5 vertical at rest, nothing holds them
+    assert classify_start(rolled, path, home, 0.10) == "near_rest"
+    with pytest.raises(HomePathError, match="j4"):  # the elbow is held by gravity: bent = not hanging
+        classify_start(np.deg2rad([0.0, 0.0, 0.0, 20.0, 0.0, 0.0, 0.0]), path, home, 0.10)
+    with pytest.raises(HomePathError, match="j5"):
+        classify_start(np.deg2rad([0.0, 0.0, 0.0, 0.0, 70.0, 0.0, 0.0]), path, home, 0.10)
+
+
+def test_rest_align_timeout_covers_the_slow_walk():
+    from motion_acq.real.openarm.home_path import REST_ALIGN_SPEED_RAD_S, rest_align_timeout_s
+
+    assert rest_align_timeout_s(np.deg2rad([0, 0, 0, 0, 57, 0, 0])) >= np.deg2rad(57) / REST_ALIGN_SPEED_RAD_S
+
+
 def test_wrong_side_file_is_refused():
     with pytest.raises(HomePathError, match="expected"):
         load_home_path(PATHS / "home_rh56f1_right.npz", "left")
