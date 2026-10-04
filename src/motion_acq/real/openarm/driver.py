@@ -26,6 +26,7 @@ from motion_acq.real.openarm.home_path import (
     classify_start,
     load_home_path,
 )
+from motion_acq.real.openarm.trace import CommandTrace, following_error_report
 from motion_acq.real.streamer import (
     JointStreamer,
     next_periodic_deadline,
@@ -334,6 +335,7 @@ class OpenArmJointStreamer(JointStreamer):
         self._last_target_at = time.monotonic()
         self._max_speed = settings.max_joint_speed_rad_s
         self._waiting_for_targets = False
+        self._trace = CommandTrace()  # streamer thread only
 
     def set_max_speed(self, value: float) -> None:
         with self._lock:
@@ -443,6 +445,7 @@ class OpenArmJointStreamer(JointStreamer):
                             side: q.copy() for side, q in self._commanded.items()
                         }
                     max_step = self._max_speed * period
+                    targets = {side: self._targets[side].copy() for side in self.arms}
                     commands = {
                         side: step_toward(
                             self._commanded[side], self._targets[side], max_step
@@ -460,15 +463,16 @@ class OpenArmJointStreamer(JointStreamer):
                     tau = None if model is None else model(last_feedback[side])
                     arm.send(commands[side], grippers[side], tau)
                     feedback[side] = arm.read_q()
+                self._trace.add(now, commands, feedback, targets)
+                for side in self.arms:
                     joint_errors = np.abs(feedback[side] - commands[side])
                     joint = int(np.argmax(joint_errors))
-                    error = float(joint_errors[joint])
-                    if error > self.settings.following_error_rad:
-                        raise RuntimeError(
-                            f"OpenArm {side} joint{joint + 1} following error "
-                            f"{error:.3f} rad exceeds "
-                            f"{self.settings.following_error_rad:.3f} rad."
-                        )
+                    if joint_errors[joint] > self.settings.following_error_rad:
+                        raise RuntimeError(following_error_report(
+                            self._trace, side, joint, float(commands[side][joint]),
+                            float(feedback[side][joint]), self.settings.following_error_rad,
+                            float(targets[side][joint]),
+                        ))
                 with self._lock:
                     self._feedback = feedback
                 now = time.monotonic()

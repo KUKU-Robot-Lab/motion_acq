@@ -174,6 +174,11 @@ class JointStreamer:
             self._thread.join(timeout=2.0)
         self.raise_if_failed()
 
+    @property
+    def error(self) -> BaseException | None:
+        """What stopped the streamer thread, or None while it runs."""
+        return self._error
+
     def raise_if_failed(self) -> None:
         if self._error is not None:
             raise RuntimeError(f"{type(self).__name__} failed") from self._error

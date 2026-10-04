@@ -505,3 +505,27 @@ def test_direction_describe():
     assert describe(np.array([0.12, 0.01, 0.0]))["main"] == "앞 12 cm"
     assert describe(np.array([0.0, -0.05, 0.01]))["main"] == "오른 5 cm"
     assert describe(np.array([0.0, 0.0, 0.005]))["main"] == "거의 그대로"
+
+
+STREAMER_FAILURE_10_04 = """[21:24:17] ERROR - OpenArm command streamer failed: OpenArm right joint7 following error 0.351 rad exceeds 0.350 rad.
+[21:24:17] ERROR - Arms not returned home (streamer failed: OpenArmJointStreamer failed).
+Traceback (most recent call last):
+  File "/home/user/rl_ws/motion_acq/src/motion_acq/real/openarm/driver.py", line 467, in _run
+    raise RuntimeError(
+RuntimeError: OpenArm right joint7 following error 0.351 rad exceeds 0.350 rad.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/user/rl_ws/motion_acq/src/motion_acq/real/streamer.py", line 179, in raise_if_failed
+    raise RuntimeError(f"{type(self).__name__} failed") from self._error
+RuntimeError: OpenArmJointStreamer failed""".splitlines()
+
+
+def test_error_line_is_the_root_cause_of_a_chained_traceback():
+    """10.04: the console showed 'OpenArmJointStreamer failed' instead of the following error."""
+    assert phases.error_line(STREAMER_FAILURE_10_04) == "OpenArm right joint7 following error 0.351 rad exceeds 0.350 rad."
+    single = ["Traceback (most recent call last):", '  File "x.py", line 1, in <module>',
+              "motion_acq.real.openarm.home_path.HomePathError: right j5 15.5 deg from rest"]
+    assert phases.error_line(single) == "right j5 15.5 deg from rest"
+    assert phases.error_line(["SystemExit: no glove samples"]) == "no glove samples"

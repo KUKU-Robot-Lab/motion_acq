@@ -101,7 +101,20 @@ ERROR_LINE = re.compile(r"(?:[A-Za-z_.]+Error|SystemExit|RuntimeError): (.+)$")
 
 
 def error_line(lines: list[str]) -> str | None:
-    """The last 'SomethingError: message' line of a program that stopped on an error."""
+    """The 'SomethingError: message' of a program that stopped on an error.
+
+    In a chained traceback the first one is the cause ("The above exception was
+    the direct cause"), so the first error after the first Traceback header wins;
+    without a header, the last error line.
+    """
+    first_tb = next((i for i, line in enumerate(lines) if line.startswith("Traceback (most recent call last)")), None)
+    if first_tb is not None:
+        for line in lines[first_tb + 1:]:
+            if line.startswith(" "):  # File "..." / source lines of the traceback
+                continue
+            match = ERROR_LINE.search(line)
+            if match:
+                return match.group(1)[:400]
     for line in reversed(lines):
         match = ERROR_LINE.search(line)
         if match:
