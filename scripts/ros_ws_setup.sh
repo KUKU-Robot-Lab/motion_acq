@@ -61,5 +61,17 @@ if [[ "$FULL" -eq 1 ]] && command -v rosdep >/dev/null; then
   rosdep check --from-paths external/senseglove_ros --ignore-src --rosdistro "$DISTRO" --skip-keys ament_python \
     || echo "warning: missing system deps above (sudo apt install ...); the build may fail" >&2
 fi
+# A package once built without --symlink-install keeps a copied site-packages
+# directory that shadows the symlinked sources: nodes would run stale code
+# after every git pull (arm4090 10.03). Drop such a copy before building.
+for pkg_dir in "$WS"/src/*/; do
+  pkg="$(basename "$pkg_dir")"
+  for copied in "$WS"/install/"$pkg"/lib/python3*/site-packages/"$pkg"; do
+    if [[ -d "$copied" && ! -L "$copied" ]]; then
+      echo "removing the copied (non-symlink) install of $pkg: $copied"
+      rm -rf "$WS/build/$pkg" "$WS/install/$pkg"
+    fi
+  done
+done
 colcon build --symlink-install --base-paths src external
 echo "done: source $WS/install/setup.bash"
