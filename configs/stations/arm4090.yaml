@@ -66,6 +66,7 @@ head:
     id: 2
     home_deg: 71.8
     range_deg: 15.0
+    range_up_deg: 30.0  # 10.04 user: look up further (home looks ~19 deg down; +30 = ~11 deg up)
     sign: -1          # verified 10.04 (scripts/head_direction_check.py): encoder + looks down
   motor:
     model_number: 1240        # XC330-M288-T

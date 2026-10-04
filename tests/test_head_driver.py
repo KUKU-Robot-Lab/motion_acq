@@ -128,7 +128,7 @@ def test_station_head_config_loads():
     config = load_head_config(station_rig_config("arm4090"), allow_fake_default=False)
     assert config.port.endswith("FT763P8T-if00-port0")
     assert config.pan_window == pytest.approx(PAN_WINDOW)
-    assert config.tilt_window == pytest.approx(TILT_WINDOW)
+    assert config.tilt_window == pytest.approx((41.8, 86.8))  # 30 deg up (encoder -), 15 deg down
     assert (config.hardware.pan_id, config.hardware.tilt_id) == (1, 2)
 
 
@@ -438,7 +438,7 @@ def test_direction_check_reads_the_image_shift():
 
 def test_key_unlock_follows_from_the_current_direction_and_locks_again():
     """10.04 user: the operator cannot match the home pose, so the head waits locked
-    at home; Space anchors at wherever they look, Space again holds."""
+    at home; Space anchors at wherever they look, Space again returns it to home."""
     bus = fake_bus()
     driver = make_driver(bus)
     driver.start()
@@ -467,12 +467,13 @@ def test_key_unlock_follows_from_the_current_direction_and_locks_again():
     pan = tick_to_deg(bus.present_ticks[1])
     assert pan == pytest.approx(-2.9 + 10.0, abs=0.2)  # followed the +10 deg turn only
     session.toggle_lock()
-    for _ in range(30):  # locked: the HMD swings back 35 deg, the head stays
+    for _ in range(30):  # locked: back to home at 20 deg/s (10 deg in 0.5 s), whatever the HMD does
         session.tick()
-    assert tick_to_deg(bus.present_ticks[1]) == pytest.approx(pan, abs=0.01)
-    session.toggle_lock()  # unlock again: continues from where the head is, no jump
+    assert not session.returning
+    assert tick_to_deg(bus.present_ticks[1]) == pytest.approx(-2.9, abs=0.1)
+    session.toggle_lock()  # unlock again: anchors at home and this HMD direction, no jump
     session.tick()
-    assert tick_to_deg(bus.present_ticks[1]) == pytest.approx(pan, abs=0.2)
+    assert tick_to_deg(bus.present_ticks[1]) == pytest.approx(-2.9, abs=0.2)
     for _ in range(59):
         session.tick()
-    assert tick_to_deg(bus.present_ticks[1]) == pytest.approx(pan + 10.0, abs=0.3)
+    assert tick_to_deg(bus.present_ticks[1]) == pytest.approx(-2.9 + 10.0, abs=0.3)

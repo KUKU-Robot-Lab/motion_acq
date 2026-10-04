@@ -52,11 +52,15 @@ def _axis(data: dict[str, Any], name: str) -> tuple[int, AxisConfig]:
         raise SystemExit(f"head.{name} must be a mapping with id, home_deg, range_deg.")
     try:
         dxl_id = int(raw["id"])
+        pos_key, neg_key = {"pan": ("range_left_deg", "range_right_deg"),
+                            "tilt": ("range_up_deg", "range_down_deg")}[name]
         axis = AxisConfig(
             home_deg=float(raw["home_deg"]),
             range_deg=float(raw["range_deg"]),
             sign=float(raw.get("sign", 1.0)),
             scale=float(raw.get("scale", 1.0)),
+            range_pos_deg=float(raw[pos_key]) if pos_key in raw else None,
+            range_neg_deg=float(raw[neg_key]) if neg_key in raw else None,
         )
     except (KeyError, ValueError) as exc:
         raise SystemExit(f"Invalid head.{name}: {exc}") from exc

@@ -64,22 +64,38 @@ class AxisConfig:
     range_deg: float
     sign: float = 1.0
     scale: float = 1.0
+    # Optional asymmetric window, in operator terms: range_pos_deg toward the HMD
+    # positive side (pan left, tilt up), range_neg_deg toward the other (pan right,
+    # tilt down). Both default to range_deg. The encoder window follows the sign.
+    range_pos_deg: float | None = None
+    range_neg_deg: float | None = None
 
     def __post_init__(self) -> None:
         if self.range_deg <= 0.0:
             raise ValueError("range_deg must be positive.")
+        for value in (self.range_pos_deg, self.range_neg_deg):
+            if value is not None and value <= 0.0:
+                raise ValueError("range_pos_deg / range_neg_deg must be positive.")
         if self.sign not in (-1.0, 1.0):
             raise ValueError("sign must be +1 or -1.")
         if self.scale <= 0.0:
             raise ValueError("scale must be positive.")
 
     @property
+    def pos_range_deg(self) -> float:
+        return self.range_deg if self.range_pos_deg is None else self.range_pos_deg
+
+    @property
+    def neg_range_deg(self) -> float:
+        return self.range_deg if self.range_neg_deg is None else self.range_neg_deg
+
+    @property
     def lower_deg(self) -> float:
-        return self.home_deg - self.range_deg
+        return self.home_deg - (self.pos_range_deg if self.sign < 0 else self.neg_range_deg)
 
     @property
     def upper_deg(self) -> float:
-        return self.home_deg + self.range_deg
+        return self.home_deg + (self.neg_range_deg if self.sign < 0 else self.pos_range_deg)
 
     def clamp(self, value: float) -> float:
         return float(np.clip(value, self.lower_deg, self.upper_deg))

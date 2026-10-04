@@ -49,8 +49,9 @@ function statusLines() {
   if (!h || headAge === null || headAge > 1.0) return ["머리 프로세스 없음 (macq head --udp-target 127.0.0.1:47121)", ""];
   const pan = h.meas_pan_deg === null ? null : h.meas_pan_deg - h.home_pan_deg;
   const tilt = h.meas_tilt_deg === null ? null : h.meas_tilt_deg - h.home_tilt_deg;
-  const win = h.window_deg || [0, 0];
-  const cam = `카메라 home 대비 pan ${fmt(pan)}° / tilt ${fmt(tilt)}°  (범위 ±${win[0]} / ±${win[1]})`;
+  const w = h.window_deg || [0, 0, 0, 0];  // pan right, pan left, tilt down, tilt up
+  const cam = `카메라 home 대비 pan ${fmt(pan)}° / tilt ${fmt(tilt)}°  (좌 ${w[1]} 우 ${w[0]} · 위 ${w[3]} 아래 ${w[2]})`;
+  if (h.locked && h.returning) return ["잠김: home 으로 돌아가는 중", cam];
   if (h.locked) return ["잠김: 보조자가 Space 를 누르면 지금 보는 방향에서 따라갑니다", cam];
   if (h.state === "hold") return ["멈춤: HMD 추적 끊김", cam];
   if (h.state === "idle") return ["기준 잡는 중...", cam];

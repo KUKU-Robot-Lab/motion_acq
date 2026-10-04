@@ -57,6 +57,7 @@ class HeadSession:
         udp_target: tuple[str, int] | None = None,
         udp_targets: tuple[tuple[str, int], ...] = (),
         unlock: str = "auto",
+        home_speed_deg_s: float = 20.0,
     ) -> None:
         """unlock "auto": anchor after auto_start_delay_s of HMD tracking (fake, station).
         unlock "key": start locked at home; toggle_lock() (Space) unlocks, anchoring at
@@ -81,6 +82,10 @@ class HeadSession:
         self._udp = (socket.socket(socket.AF_INET, socket.SOCK_DGRAM), targets) if targets else None
         self.unlock_mode = unlock
         self.locked = unlock == "key"
+        self.home_speed_deg_s = float(home_speed_deg_s)
+        self.returning = False  # locked and still walking back to home
+        self._return_cmd: list[float] | None = None
+        self._last_tick_t: float | None = None
         self._toggle_requests = 0
         self._toggle_lock = threading.Lock()
 
@@ -100,9 +105,29 @@ class HeadSession:
             log.info("Head unlocked: anchoring at the current HMD direction.")
         else:
             self.locked = True
-            self.retargeter.state = HeadState.IDLE  # stop commanding; the motors hold the last goal
-            log.info("Head locked at pan %s / tilt %s deg.", *(
-                f"{v:.1f}" if v is not None else "-" for v in (self.measured or (None, None))))
+            self.retargeter.state = HeadState.IDLE
+            # 10.04 user: a lock brings the head back to home (as the start and the end do)
+            self.returning = True
+            self._return_cmd = list(self.retargeter.command_deg)
+            log.info("Head locked: returning to home.")
+
+    def _step_return(self, now: float) -> None:
+        """While locked: walk the command to home at home_speed_deg_s, then stop sending."""
+        if not self.returning or self._return_cmd is None:
+            return
+        dt = 0.0 if self._last_tick_t is None else min(max(now - self._last_tick_t, 0.0), 0.1)
+        home = (self.retargeter.config.pan.home_deg, self.retargeter.config.tilt.home_deg)
+        step = self.home_speed_deg_s * dt
+        self._return_cmd = [c + max(-step, min(step, h - c)) for c, h in zip(self._return_cmd, home, strict=True)]
+        try:
+            self._last_sent = self.driver.command(*self._return_cmd)
+            self.stats.commands += 1
+        except HeadBusError as exc:
+            self._fault(exc, "return home")
+            return
+        if all(abs(c - h) < 1e-6 for c, h in zip(self._return_cmd, home, strict=True)):
+            self.returning = False
+            log.info("Head back at home (locked).")
 
     @property
     def anchored(self) -> bool:
@@ -185,6 +210,8 @@ class HeadSession:
         self._check_hardware(now)
         self._apply_toggles()
         if self.locked:
+            self._step_return(now)
+            self._last_tick_t = now
             self._read_measured()
             self._write_log(now, sample, None)
             self._end_tick()
@@ -194,6 +221,7 @@ class HeadSession:
             self._write_log(now, sample, None)
             self._end_tick()
             return None
+        self._last_tick_t = now
         step = self.retargeter.step(
             np.asarray(sample.device_hmd_pose), bool(sample.hmd_tracked), now
         )
@@ -223,7 +251,10 @@ class HeadSession:
             "locked": self.locked,
             "home_pan_deg": self.retargeter.config.pan.home_deg,
             "home_tilt_deg": self.retargeter.config.tilt.home_deg,
-            "window_deg": [self.retargeter.config.pan.range_deg, self.retargeter.config.tilt.range_deg],
+            "returning": self.returning,
+            # window around home in operator terms: [pan right, pan left, tilt down, tilt up] deg
+            "window_deg": [self.retargeter.config.pan.neg_range_deg, self.retargeter.config.pan.pos_range_deg,
+                           self.retargeter.config.tilt.neg_range_deg, self.retargeter.config.tilt.pos_range_deg],
             "reanchored": bool(step.reanchored) if step else False,
             "rel_yaw_deg": step.rel_yaw_deg if step else None,
             "rel_pitch_deg": step.rel_pitch_deg if step else None,

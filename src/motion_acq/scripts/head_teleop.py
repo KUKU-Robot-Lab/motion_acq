@@ -166,6 +166,7 @@ def main(argv: list[str] | None = None) -> None:
             log_file=log_file,
             udp_targets=tuple(t for t in (_udp_target(x) for x in args.udp_target) if t),
             unlock=unlock,
+            home_speed_deg_s=config.home_speed_deg_s,
         )
         _run(session, rate_hz, args.duration_s)
     except HeadBusError as exc:

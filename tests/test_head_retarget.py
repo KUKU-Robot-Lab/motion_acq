@@ -249,3 +249,16 @@ def test_rate_limiter_target_reversal_keeps_limits():
     assert np.max(others) <= 300.0 + 1e-6
     assert np.max(np.abs(a)) <= 300.0 * 1.15
     assert min(positions) >= -20.0 - 1e-9 and positions[-1] == pytest.approx(-20.0)
+
+
+
+def test_asymmetric_window_follows_the_sign():
+    """arm4090 tilt: sign -1 (encoder + looks down), 30 deg up, 15 deg down."""
+    from motion_acq.head.retarget import AxisConfig
+
+    tilt = AxisConfig(home_deg=71.8, range_deg=15.0, sign=-1.0, range_pos_deg=30.0)
+    assert (tilt.lower_deg, tilt.upper_deg) == pytest.approx((41.8, 86.8))
+    pan = AxisConfig(home_deg=0.0, range_deg=20.0, sign=1.0, range_pos_deg=25.0, range_neg_deg=10.0)
+    assert (pan.lower_deg, pan.upper_deg) == pytest.approx((-10.0, 25.0))
+    with pytest.raises(ValueError):
+        AxisConfig(home_deg=0.0, range_deg=20.0, range_neg_deg=0.0)
