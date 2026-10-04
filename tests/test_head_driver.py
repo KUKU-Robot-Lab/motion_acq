@@ -424,9 +424,10 @@ def test_direction_check_reads_the_image_shift():
     spec.loader.exec_module(hdc)
     rng = np.random.default_rng(0)
     base = (rng.random((240, 320, 3)) * 255).astype(np.uint8)
-    base = cv2.GaussianBlur(base, (9, 9), 3)
-    right = np.roll(base, 12, axis=1)  # scene moved right: camera turned left
-    up = np.roll(base, -10, axis=0)  # scene moved up: camera looked down
+    base = cv2.GaussianBlur(base, (5, 5), 1)
+    # 10.04: auto exposure brightened the moved frame and fooled phase correlation
+    right = cv2.convertScaleAbs(np.roll(base, 12, axis=1), alpha=1.6, beta=30)  # scene right: camera left
+    up = cv2.convertScaleAbs(np.roll(base, -10, axis=0), alpha=0.6, beta=-10)  # scene up: camera down
     dx, _ = hdc.image_shift(base, right)
     _, dy = hdc.image_shift(base, up)
     assert dx == pytest.approx(12, abs=1) and dy == pytest.approx(-10, abs=1)

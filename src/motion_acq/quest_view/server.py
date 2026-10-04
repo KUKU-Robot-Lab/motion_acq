@@ -40,6 +40,7 @@ _PING = struct.Struct("<BQ")  # HandUMI time-sync (motion_acq.tracking.meta_ques
 _PONG = struct.Struct("<BQQ")
 HEAD_STATUS_PORT = 47121
 STATUS_PERIOD_S = 0.1
+NO_POSE_WARN_S = 10.0
 
 
 @dataclass
@@ -212,13 +213,19 @@ async def serve(args: argparse.Namespace) -> None:
     await web.TCPSite(runner, "127.0.0.1", args.port).start()
     log.info("page http://localhost:%d (Quest: scripts/quest_usb.sh view); poses -> TCP 127.0.0.1:%d; "
              "head status <- UDP %d", args.port, args.tcp_port, args.head_status_port)
+    started = time.monotonic()
     try:
         while True:
             await asyncio.sleep(5.0)
-            age = time.monotonic() - shared.last_pose_at if shared.last_pose_at else None
+            now = time.monotonic()
+            age = now - shared.last_pose_at if shared.last_pose_at else None
             log.info("poses in %d (last %s ago), tracking clients %d, camera frames %d",
                      shared.frames_in, f"{age:.1f} s" if age is not None else "never",
                      len(poses.writers), shared.jpeg_seq)
+            if (age if age is not None else now - started) > NO_POSE_WARN_S:
+                log.warning("no headset poses for %.0f s: VR not started, or a USB re-plug dropped the adb "
+                            "reverse; run scripts/quest_usb.sh view (or vr) again",
+                            age if age is not None else now - started)
     finally:
         stop.set()
         tcp.close()

@@ -5,13 +5,14 @@
 
 Moves the real head (approval first): home, then pan home+step, back, tilt
 home+step, back, at 10 deg/s, and grabs a camera frame at each pose. The
-image shift between home and each move (phase correlation) says where the
+image shift between home and each move (median ORB feature motion) says where the
 camera looked:
     scene moves right in the image -> camera turned left
     scene moves up in the image    -> camera looked down
 and from that the head.pan/tilt.sign that makes HMD yaw left -> camera left
 and HMD pitch up -> camera up (the retargeter: HMD left/up = positive
 command). Nothing else moves; the head ends at home, torque on.
+logs/head/dir_<axis>_pair.jpg (home | moved) is kept for a look by eye.
 """
 
 from __future__ import annotations
@@ -31,16 +32,29 @@ from motion_acq.head.config import load_head_config  # noqa: E402
 from motion_acq.head.dynamixel import HeadDriver, SdkHeadBus  # noqa: E402
 
 MIN_SHIFT_PX = 3.0  # a 5 deg turn moves a 640 px / ~69 deg image by ~45 px
+MIN_MATCHES = 20
 
 
 def image_shift(before: np.ndarray, after: np.ndarray) -> tuple[float, float]:
-    """(dx, dy) in pixels of the scene from before to after (+x right, +y down)."""
+    """(dx, dy) in pixels of the scene from before to after (+x right, +y down).
+
+    Median displacement of ORB keypoint matches on CLAHE-equalised grey images:
+    the RealSense auto exposure changes brightness between the two frames, which
+    made phase correlation report the wrong direction (10.04 pan).
+    """
     import cv2
 
-    a = cv2.cvtColor(before, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    b = cv2.cvtColor(after, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    window = cv2.createHanningWindow(a.shape[::-1], cv2.CV_32F)
-    (dx, dy), _ = cv2.phaseCorrelate(a, b, window)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    grey = [clahe.apply(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)) for img in (before, after)]
+    orb = cv2.ORB_create(nfeatures=2000)
+    (kp_a, des_a), (kp_b, des_b) = (orb.detectAndCompute(g, None) for g in grey)
+    if des_a is None or des_b is None:
+        raise ValueError("no features in one of the frames")
+    matches = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(des_a, des_b)
+    if len(matches) < MIN_MATCHES:
+        raise ValueError(f"only {len(matches)} feature matches; scene too plain or moved too far")
+    shifts = np.array([np.subtract(kp_b[m.trainIdx].pt, kp_a[m.queryIdx].pt) for m in matches])
+    dx, dy = np.median(shifts, axis=0)
     return float(dx), float(dy)
 
 
@@ -104,6 +118,7 @@ def main() -> int:
             measured = driver.move_to(*target, speed_deg_s=speed, tolerance_deg=tol)
             moved = grab(cap)
             cv2.imwrite(str(args.save_dir / f"dir_{axis}.jpg"), moved)
+            cv2.imwrite(str(args.save_dir / f"dir_{axis}_pair.jpg"), np.hstack([home, moved]))  # home | moved
             results[axis] = (measured, image_shift(home, moved))
             driver.move_to(pan0, tilt0, speed_deg_s=speed, tolerance_deg=tol)
     finally:

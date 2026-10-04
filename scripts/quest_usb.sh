@@ -5,7 +5,8 @@
 #   scripts/quest_usb.sh install   # install the pinned APK (first time per Quest)
 #   scripts/quest_usb.sh forward   # adb forward tcp:65432 -> Quest 65432
 #   scripts/quest_usb.sh launch    # (re)start the app in the headset over adb
-#   scripts/quest_usb.sh view      # head camera page instead of the app (macq quest-view runs)
+#   scripts/quest_usb.sh view      # head camera page instead of the app (macq quest-view runs), enters VR
+#   scripts/quest_usb.sh vr        # (re)enter VR on the open page from the PC; vr --status = page state
 #   scripts/quest_usb.sh app       # back to the HandUMI app (forward + launch)
 #
 # With the forward active, the station rig uses quest_ip 127.0.0.1. Only TCP is
@@ -13,6 +14,8 @@
 # receive time (clock_synced=false). USB latency keeps that error small.
 # Do not run the mock Quest sender at the same time: both use local port 65432.
 set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 ADB="${ADB:-$(command -v adb || echo "$HOME/opt/platform-tools/adb")}"
 APK="${QUEST_APK:-$HOME/opt/handumi-quest-app/handumi-quest-app-v0.2.1.apk}"
@@ -83,7 +86,14 @@ cmd_view() {
   "$ADB" reverse "tcp:$VIEW_PORT" "tcp:$VIEW_PORT"
   "$ADB" shell am force-stop "$PACKAGE" || true
   "$ADB" shell am start -a android.intent.action.VIEW -d "http://localhost:$VIEW_PORT" com.oculus.browser >/dev/null
-  echo "Quest Browser opened http://localhost:$VIEW_PORT; press 'VR 시작' in the headset."
+  echo "Quest Browser opened http://localhost:$VIEW_PORT; entering VR from here ..."
+  cmd_vr || echo "VR did not start from the PC; press 'VR 시작' in the headset (first time: allow VR)."
+}
+
+cmd_vr() {
+  # WebXR needs a user gesture in the page; the browser devtools give it to the PC.
+  one_device
+  "$ROOT/.venv/bin/python" -m motion_acq.quest_view.devtools --view-port "$VIEW_PORT" "$@"
 }
 
 cmd_app() {
@@ -99,6 +109,7 @@ case "${1:-status}" in
   forward) cmd_forward ;;
   launch) cmd_launch ;;
   view) cmd_view ;;
+  vr) shift; cmd_vr "$@" ;;
   app) cmd_app ;;
-  *) die "usage: $0 {status|install|forward|launch|view|app}" ;;
+  *) die "usage: $0 {status|install|forward|launch|view|vr|app}" ;;
 esac

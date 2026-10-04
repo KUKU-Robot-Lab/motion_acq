@@ -60,7 +60,8 @@ head:
     id: 1
     home_deg: -2.9
     range_deg: 20.0   # STEP 2 first window; widen after verification
-    sign: -1          # verified 10.04 (scripts/head_direction_check.py): encoder + turns the camera right
+    sign: 1           # verified 10.04 in the headset and on the frames: encoder + turns the camera left
+                      # (the first direction check misread it: auto exposure broke phase correlation)
   tilt:
     id: 2
     home_deg: 71.8

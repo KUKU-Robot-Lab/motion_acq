@@ -84,27 +84,55 @@ overlay.width = 1024; overlay.height = 160;
 const overlayCtx = overlay.getContext("2d");
 let lastTime = null;
 
+// Read-only state for the PC (scripts/quest_usb.sh vr --status over the browser devtools).
+window.macqView = { xrSupported: null, xrActive: false, posesSent: 0, lastError: null };
+
+// The button is enabled whenever WebXR exists: on 10.04 the Quest Browser answered
+// isSessionSupported() = false at page load (XR runtime not ready yet) and the button
+// stayed disabled. The check only feeds the status now, and is retried.
+function checkSupport() {
+  if (!navigator.xr) return;
+  navigator.xr.isSessionSupported("immersive-vr")
+    .then((ok) => { window.macqView.xrSupported = ok; if (!ok) setTimeout(checkSupport, 2000); })
+    .catch((e) => { window.macqView.lastError = String(e); setTimeout(checkSupport, 2000); });
+}
 if (navigator.xr) {
-  navigator.xr.isSessionSupported("immersive-vr").then((ok) => {
-    enterBtn.disabled = !ok;
-    if (!ok) statusEl.textContent += " (이 브라우저는 VR 을 지원하지 않습니다)";
-  });
+  enterBtn.disabled = false;
+  checkSupport();
 } else {
   statusEl.textContent += " (WebXR 없음: 미리보기만)";
 }
 
-enterBtn.addEventListener("click", async () => {
-  xrSession = await navigator.xr.requestSession("immersive-vr", { optionalFeatures: ["local-floor"] });
-  xrSession.addEventListener("end", () => { xrSession = null; enterBtn.disabled = false; });
-  const canvas = document.createElement("canvas");
-  gl = canvas.getContext("webgl", { xrCompatible: true });
-  setupGl();
-  await xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
-  try { refSpace = await xrSession.requestReferenceSpace("local-floor"); }
-  catch (e) { refSpace = await xrSession.requestReferenceSpace("local"); }
-  enterBtn.disabled = true;
-  xrSession.requestAnimationFrame(onXRFrame);
-});
+// Starts the immersive session. Called by the button (headset) or by the PC through the
+// browser devtools with userGesture (scripts/quest_usb.sh vr), so the assistant can do it.
+window.macqStartVr = async function () {
+  if (xrSession) return "already";
+  if (!navigator.xr) return "no webxr";
+  try {
+    xrSession = await navigator.xr.requestSession("immersive-vr", { optionalFeatures: ["local-floor"] });
+    xrSession.addEventListener("end", () => {
+      xrSession = null; window.macqView.xrActive = false; enterBtn.disabled = false;
+    });
+    const canvas = document.createElement("canvas");
+    gl = canvas.getContext("webgl", { xrCompatible: true });
+    setupGl();
+    await xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
+    try { refSpace = await xrSession.requestReferenceSpace("local-floor"); }
+    catch (e) { refSpace = await xrSession.requestReferenceSpace("local"); }
+    enterBtn.disabled = true;
+    window.macqView.xrActive = true;
+    window.macqView.lastError = null;
+    xrSession.requestAnimationFrame(onXRFrame);
+    return "started";
+  } catch (e) {
+    xrSession = null;
+    window.macqView.lastError = String(e);
+    statusEl.textContent = `VR 시작 실패: ${e}`;
+    return `error: ${e}`;
+  }
+};
+
+enterBtn.addEventListener("click", () => { window.macqStartVr(); });
 
 function setupGl() {
   const vs = `attribute vec2 a; uniform mat4 m; varying vec2 uv;
@@ -183,7 +211,7 @@ function onXRFrame(time, frame) {
     }
     msg[src.handedness] = pose;
   }
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(msg)); window.macqView.posesSent += 1; }
 
   // head camera head-locked 1.2 m ahead, status strip under it
   if (!viewer) return;

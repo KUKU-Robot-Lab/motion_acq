@@ -88,6 +88,28 @@ The UDP time-sync is not tunnelled, so frames carry the PC receive time
 (`clock_synced=false`). Enable Developer Mode on the Quest first; do not start
 Quest Link.
 
+### Head camera in the headset: `macq quest-view`
+
+The HandUMI app shows nothing in the headset. To see the head camera, switch
+the Quest to the quest-view page (WebXR in the Quest Browser, over USB):
+
+```bash
+MACQ_STATION=arm4090 macq quest-view          # terminal A, keep running
+scripts/quest_usb.sh view                     # opens the page and enters VR from the PC
+MACQ_STATION=arm4090 macq head --backend real --udp-target 127.0.0.1:47121   # terminal B
+scripts/quest_usb.sh vr [--status]            # re-enter VR / show the page state
+scripts/quest_usb.sh app                      # back to the HandUMI app
+```
+
+The page shows the head RealSense image head-locked with a status line
+(locked / following, HMD offset from the anchor, camera pan/tilt from home)
+and sends the HMD and controller poses; quest-view republishes them as the
+HandUMI stream on TCP 65432, so head, arm and recorder connect unchanged.
+The head starts locked at home; Space in terminal B follows from the
+direction you look at that moment and locks again. A USB re-plug drops the
+adb reverse: run `scripts/quest_usb.sh view` again (quest-view warns).
+The first time, allow VR in the browser prompt in the headset.
+
 ## STEP 2: head (Meta Quest HMD -> Dynamixel pan/tilt)
 
 `macq head` runs as its own process, independent of the arms. It anchors after
