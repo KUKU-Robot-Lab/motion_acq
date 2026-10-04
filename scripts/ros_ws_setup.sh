@@ -61,9 +61,9 @@ if [[ "$FULL" -eq 1 ]] && command -v rosdep >/dev/null; then
   rosdep check --from-paths external/senseglove_ros --ignore-src --rosdistro "$DISTRO" --skip-keys ament_python \
     || echo "warning: missing system deps above (sudo apt install ...); the build may fail" >&2
 fi
-# A package once built without --symlink-install keeps a copied site-packages
-# directory that shadows the symlinked sources: nodes would run stale code
-# after every git pull (arm4090 10.03). Drop such a copy before building.
+# A package built as a copy keeps a site-packages directory that shadows the
+# symlinked sources: nodes would run stale code after every git pull
+# (arm4090 10.03). Drop such a copy before building.
 for pkg_dir in "$WS"/src/*/; do
   pkg="$(basename "$pkg_dir")"
   for copied in "$WS"/install/"$pkg"/lib/python3*/site-packages/"$pkg"; do
@@ -73,5 +73,8 @@ for pkg_dir in "$WS"/src/*/; do
     fi
   done
 done
-colcon build --symlink-install --base-paths src external
+# setuptools >= 80 (a pip --user install on arm4090: 84) dropped `develop`, so
+# colcon silently copies ament_python packages even with --symlink-install.
+# Build against the system setuptools (no user site) to keep real symlinks.
+PYTHONNOUSERSITE=1 colcon build --symlink-install --base-paths src external
 echo "done: source $WS/install/setup.bash"
