@@ -19,6 +19,7 @@ ARM_RULES: tuple[Rule, ...] = (
     ("Space pressed; starting", "live", "따라가는 중"),
     ("arm anchored", "live", "따라가는 중"),
     ("Tracking lost", "warn", "트래킹 끊김: 팔 정지"),
+    ("Headset not tracked", "warn", "헤드셋 추적 안 됨: 팔 시작 안 함 (헤드셋 쓰고 로봇 쪽을 보며 Space 다시)"),
     ("Tracking recovered", "live", "트래킹 복구"),
     ("Stopping.", "live", "정지: home → 차렷 이동 중"),
     ("Arms at home", "live", "home 도착: 차렷으로 이동"),
@@ -51,6 +52,7 @@ RECORD_RULES: tuple[Rule, ...] = (
     ("Done. Recorded", "ok", "녹화 끝: home → 차렷"),
     ("Arms ready to disable", "ok", "차렷 도착: 모터 끔"),
     ("Tracking lost", "warn", "트래킹 끊김"),
+    ("Headset not tracked", "warn", "헤드셋 추적 안 됨: 팔 시작 안 함 (헤드셋 쓰고 로봇 쪽을 보며 Space 다시)"),
     ("Traceback", "bad", "오류로 멈춤 (로그 확인)"),
 )
 
@@ -100,21 +102,44 @@ def prompt(lines: list[str], partial: str) -> str | None:
 ERROR_LINE = re.compile(r"(?:[A-Za-z_.]+Error|SystemExit|RuntimeError): (.+)$")
 
 
+TRACEBACK = "Traceback (most recent call last)"
+CHAINED = ("The above exception was the direct cause", "During handling of the above exception")
+
+
+def _first_error(lines: list[str]) -> str | None:
+    """First unindented 'SomethingError: message' (indented lines are File / source lines)."""
+    for line in lines:
+        if line.startswith(" "):
+            continue
+        match = ERROR_LINE.search(line)
+        if match:
+            return match.group(1)[:400]
+    return None
+
+
 def error_line(lines: list[str]) -> str | None:
     """The 'SomethingError: message' of a program that stopped on an error.
 
-    In a chained traceback the first one is the cause ("The above exception was
-    the direct cause"), so the first error after the first Traceback header wins;
-    without a header, the last error line.
+    Only the last traceback group counts (an earlier caught-and-logged traceback
+    is history). In a chained group the first exception is the cause ("The above
+    exception was the direct cause"), also when the tail starts inside it; without
+    any traceback, the last error line.
     """
-    first_tb = next((i for i, line in enumerate(lines) if line.startswith("Traceback (most recent call last)")), None)
-    if first_tb is not None:
-        for line in lines[first_tb + 1:]:
-            if line.startswith(" "):  # File "..." / source lines of the traceback
-                continue
-            match = ERROR_LINE.search(line)
-            if match:
-                return match.group(1)[:400]
+    headers = [i for i, line in enumerate(lines) if line.startswith(TRACEBACK)]
+    if headers:
+        start = headers[-1]
+        while True:
+            before = [i for i in range(start - 1, -1, -1) if lines[i].strip()]
+            if not before or not lines[before[0]].startswith(CHAINED):
+                break
+            earlier = [h for h in headers if h < before[0]]
+            if not earlier:  # the tail starts inside the cause: its error line is above
+                cause = _first_error(lines[before[0] - 1::-1])  # nearest above the chain note
+                return cause if cause is not None else _first_error(lines[start + 1:])
+            start = earlier[-1]
+        found = _first_error(lines[start + 1:])
+        if found is not None:
+            return found
     for line in reversed(lines):
         match = ERROR_LINE.search(line)
         if match:

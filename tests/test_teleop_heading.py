@@ -67,9 +67,24 @@ def test_without_heading_the_workspace_axes_are_used(runtime):
     np.testing.assert_allclose(robot_step(ctl, hmd, np.array([0.0, 0.05, 0.0])), [0.0, 0.05, 0.0], atol=2e-4)
 
 
-def test_untracked_headset_falls_back_to_the_workspace(runtime):
+def test_untracked_headset_does_not_start_the_arm(runtime, caplog):
+    """Falling back to the workspace axes would be the 10.04 console heading again."""
     ctl = controller(runtime, heading=True)
-    np.testing.assert_allclose(robot_step(ctl, None, np.array([0.05, 0.0, 0.0])), [0.05, 0.0, 0.0], atol=2e-4)
+    start = yaw_pose7([0.4, -0.2, -0.3], 0.0)
+    with caplog.at_level("WARNING"):
+        assert ctl.anchor({"left": start, "right": start}, TRACKED, ("right",), hmd_pose7=None) == ()
+    assert ctl.anchors["right"] is None
+    assert "Headset not tracked" in caplog.text
+    nan_hmd = np.full(7, np.nan, dtype=np.float32)
+    assert ctl.anchor({"left": start, "right": start}, TRACKED, ("right",), hmd_pose7=nan_hmd) == ()
+
+
+def test_the_anchor_logs_the_heading_it_took(runtime, caplog):
+    ctl = controller(runtime, heading=True)
+    start = yaw_pose7([0.4, -0.2, -0.3], 0.0)
+    with caplog.at_level("INFO"):
+        ctl.anchor({"left": start, "right": start}, TRACKED, ("right",), hmd_pose7=yaw_pose7([0, 0, 0], 30.0))
+    assert "right" in caplog.text and "+30 deg" in caplog.text
 
 
 def test_an_arm_already_following_keeps_its_heading(runtime):
@@ -110,3 +125,19 @@ def test_session_inputs_carry_the_headset_only_when_tracked():
     lost = Sample()
     lost.hmd_tracked = False
     assert TeleopSession.inputs(lost, Widths()).hmd_pose7 is None
+
+
+def test_anchor_headings_are_kept_per_arm_for_the_dataset(runtime):
+    """Review: the recorded workspace poses need each arm's anchor heading to be re-targeted later."""
+    from motion_acq.dataset.raw import anchor_heading_features
+
+    ctl = controller(runtime, heading=True)
+    assert np.isnan(ctl.anchor_headings()).all()
+    start = yaw_pose7([0.4, -0.2, -0.3], 0.0)
+    ctl.anchor({"left": start, "right": start}, TRACKED, ("right",), hmd_pose7=yaw_pose7([0, 0, 0], 30.0))
+    left, right = ctl.anchor_headings()
+    assert np.isnan(left) and right == pytest.approx(math.radians(30.0), abs=1e-6)
+    ctl.park(("right",))
+    assert np.isnan(ctl.anchor_headings()).all()
+    spec = anchor_heading_features()["observation.tracking.anchor_heading_rad"]
+    assert spec["shape"] == (2,) and spec["names"] == ["left", "right"]

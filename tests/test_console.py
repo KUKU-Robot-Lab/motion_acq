@@ -529,3 +529,22 @@ def test_error_line_is_the_root_cause_of_a_chained_traceback():
               "motion_acq.real.openarm.home_path.HomePathError: right j5 15.5 deg from rest"]
     assert phases.error_line(single) == "right j5 15.5 deg from rest"
     assert phases.error_line(["SystemExit: no glove samples"]) == "no glove samples"
+
+
+def test_untracked_headset_at_space_is_shown():
+    lines = ["Space pressed; starting right.",
+             "[22:30:01] WARNING - Headset not tracked: right not started (robot forward comes from the headset heading)."]
+    assert phases.phase("arm", lines) == ("warn", "헤드셋 추적 안 됨: 팔 시작 안 함 (헤드셋 쓰고 로봇 쪽을 보며 Space 다시)")
+
+
+def test_error_line_ignores_an_earlier_caught_traceback():
+    caught = ["[21:22:56] ERROR - Rerun logging failed", "Traceback (most recent call last):",
+              '  File "record.py", line 964, in log', "ConnectionError: rerun viewer closed",
+              "[21:23:00] INFO - Teleop timer started."]
+    assert phases.error_line(caught + STREAMER_FAILURE_10_04) == (
+        "OpenArm right joint7 following error 0.351 rad exceeds 0.350 rad.")
+
+
+def test_error_line_finds_the_cause_when_the_tail_starts_inside_it():
+    cut = STREAMER_FAILURE_10_04[STREAMER_FAILURE_10_04.index("    raise RuntimeError("):]
+    assert phases.error_line(cut) == "OpenArm right joint7 following error 0.351 rad exceeds 0.350 rad."

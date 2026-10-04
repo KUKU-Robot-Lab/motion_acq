@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+import logging
 import math
 
 import numpy as np
@@ -17,6 +18,7 @@ from motion_acq.robots.registry import RobotRuntime
 from motion_acq.tracking.transforms import heading_yaw
 
 SIDES: tuple[str, str] = ("left", "right")
+log = logging.getLogger(__name__)
 
 
 def heading_world_map(world_map: np.ndarray, hmd_pose7: np.ndarray) -> np.ndarray:
@@ -151,13 +153,24 @@ class TeleopController:
     ) -> tuple[str, ...]:
         """Start the requested arms from their current hand poses.
 
-        With heading_from_hmd and a tracked headset, robot forward is where the
-        headset faces now; else the workspace axes. Arms already following keep
-        the mapping of their own anchor.
+        With heading_from_hmd robot forward is where the headset faces now, and
+        no arm starts while the headset is untracked (the workspace axes would be
+        wherever the headset pointed when the teleop started). Arms already
+        following keep the mapping of their own anchor.
         """
         world_map = self.source_world_to_robot_world
-        if self.heading_from_hmd and _usable_pose7(hmd_pose7):
-            world_map = heading_world_map(world_map, np.asarray(hmd_pose7))
+        heading = float("nan")  # yaw (rad) of the headset in the workspace, when it set forward
+        wanted = [s for s in requested_sides if s in self.enabled_sides and side_tracked[s]]
+        if self.heading_from_hmd and wanted:
+            if not _usable_pose7(hmd_pose7):
+                log.warning("Headset not tracked: %s not started (robot forward comes from the headset "
+                            "heading). Wear the headset facing the robot, then start again.", "/".join(wanted))
+                return ()
+            hmd = np.asarray(hmd_pose7)
+            world_map = heading_world_map(world_map, hmd)
+            heading = heading_yaw(np.asarray(hmd, dtype=np.float64)[3:7])
+            log.info("%s: robot forward = headset heading, %+.0f deg from the workspace x.",
+                     "/".join(wanted), math.degrees(heading))
         anchored: list[str] = []
         for side in requested_sides:
             if side not in self.enabled_sides or not side_tracked[side]:
@@ -170,10 +183,16 @@ class TeleopController:
                     self.anchor_ref[side],
                     source_world_to_robot_world=world_map,
                 ),
+                "heading": np.float32(heading),
             }
             self.tracking_hold_sides.discard(side)
             anchored.append(side)
         return tuple(anchored)
+
+    def anchor_headings(self) -> np.ndarray:
+        """[left, right] headset yaw (rad, workspace) each following arm took as forward; NaN otherwise."""
+        return np.array([np.nan if self.anchors[side] is None else self.anchors[side]["heading"]
+                         for side in SIDES], dtype=np.float32)
 
     def step(
         self,

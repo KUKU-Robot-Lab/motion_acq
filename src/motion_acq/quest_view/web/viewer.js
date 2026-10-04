@@ -114,41 +114,58 @@ if (navigator.xr) {
 
 // Starts the immersive session. Called by the button (headset) or by the PC through the
 // browser devtools with userGesture (scripts/quest_usb.sh vr), so the assistant can do it.
+let xrStarting = false;  // a start is in flight: a second tap or the PC must not start another
 window.macqStartVr = async function () {
   if (xrSession) return "already";
+  if (xrStarting) return "starting";
   if (!navigator.xr) return "no webxr";
+  xrStarting = true;
+  enterBtn.disabled = true;
+  let session = null;
   try {
     // passthrough first; the first mode the browser grants wins
     const refused = [];
-    for (const mode of SESSION_MODES) {
+    let mode = null;
+    for (const m of SESSION_MODES) {
       try {
-        xrSession = await navigator.xr.requestSession(mode, { optionalFeatures: ["local-floor"] });
-        xrMode = mode;
+        session = await navigator.xr.requestSession(m, { optionalFeatures: ["local-floor"] });
+        mode = m;
         break;
-      } catch (e) { refused.push(`${mode}: ${e}`); }
+      } catch (e) { refused.push(`${m}: ${e}`); }
     }
-    if (!xrSession) throw new Error(refused.join("; "));
-    window.macqView.mode = xrMode;
-    xrSession.addEventListener("end", () => {
-      xrSession = null; xrMode = null; window.macqView.xrActive = false; window.macqView.mode = null;
+    if (!session) throw new Error(refused.join("; "));
+    if (!gl) {  // one GL context for every session
+      const canvas = document.createElement("canvas");
+      gl = canvas.getContext("webgl", { xrCompatible: true });
+      setupGl();
+    } else if (gl.makeXRCompatible) {
+      await gl.makeXRCompatible();
+    }
+    await session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+    let space;
+    try { space = await session.requestReferenceSpace("local-floor"); }
+    catch (e) { space = await session.requestReferenceSpace("local"); }
+    session.addEventListener("end", () => {
+      if (xrSession === session) {
+        xrSession = null; xrMode = null; window.macqView.xrActive = false; window.macqView.mode = null;
+      }
       enterBtn.disabled = false;
     });
-    const canvas = document.createElement("canvas");
-    gl = canvas.getContext("webgl", { xrCompatible: true });
-    setupGl();
-    await xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
-    try { refSpace = await xrSession.requestReferenceSpace("local-floor"); }
-    catch (e) { refSpace = await xrSession.requestReferenceSpace("local"); }
-    enterBtn.disabled = true;
+    xrSession = session; xrMode = mode; refSpace = space;
+    uploadedSeq = -1;  // new session: upload the current picture again
+    window.macqView.mode = mode;
     window.macqView.xrActive = true;
     window.macqView.lastError = null;
-    xrSession.requestAnimationFrame(onXRFrame);
+    session.requestAnimationFrame(onXRFrame);
     return "started";
   } catch (e) {
-    xrSession = null;
+    if (session) { try { await session.end(); } catch (_) { /* already ended */ } }
     window.macqView.lastError = String(e);
     statusEl.textContent = `VR 시작 실패: ${e}`;
+    enterBtn.disabled = false;
     return `error: ${e}`;
+  } finally {
+    xrStarting = false;
   }
 };
 

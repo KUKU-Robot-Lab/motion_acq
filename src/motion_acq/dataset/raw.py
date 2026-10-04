@@ -110,6 +110,16 @@ def raw_tracking_features() -> dict[str, Any]:
     return features
 
 
+def anchor_heading_features() -> dict[str, Any]:
+    """Per arm, the workspace headset yaw that became robot forward at its anchor (NaN: idle/none).
+
+    Robot motion = world map @ Rz(-heading) @ workspace motion; with it the
+    recorded workspace poses can be re-targeted offline (teleop.core).
+    """
+    return {"observation.tracking.anchor_heading_rad": {"dtype": "float32", "shape": (2,),
+                                                         "names": ["left", "right"]}}
+
+
 def feetech_features() -> dict[str, Any]:
     """Common Feetech gripper encoder schema."""
     features: dict[str, Any] = {}

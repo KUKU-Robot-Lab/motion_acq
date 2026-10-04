@@ -263,20 +263,22 @@ class WorkspaceCalibration:
         return self.workspace_from_quest.compose(pose_quest)
 
 
-MIN_HEADING_NORM = 0.1  # forward axis within ~84 deg of vertical still gives a heading
+MIN_HEADING_NORM = 0.02  # forward axis up to ~89 deg from level still gives the heading
 
 
 def heading_yaw(quaternion: npt.ArrayLike) -> float:
     """Yaw (rad, about +z = gravity up) of where the forward (+x) axis points.
 
-    The forward axis is projected on the floor plane; when it is (nearly)
-    vertical, the twist about +z is used instead.
+    The forward axis is projected on the floor plane (roll does not move it).
+    Only within ~1 deg of straight down / up, where it has no direction, the
+    head-top axis is used: it points forward when looking down, back when up.
     """
-    q = quat_normalize(quaternion)
-    forward = quat_to_matrix(q)[:, 0]
+    m = quat_to_matrix(quat_normalize(quaternion))
+    forward, top = m[:, 0], m[:, 2]
     if math.hypot(forward[0], forward[1]) >= MIN_HEADING_NORM:
         return math.atan2(forward[1], forward[0])
-    return 2.0 * math.atan2(q[2], q[3])
+    sign = 1.0 if forward[2] < 0.0 else -1.0
+    return math.atan2(sign * top[1], sign * top[0])
 
 
 def heading_only(pose: Pose) -> Pose:

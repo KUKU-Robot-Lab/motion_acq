@@ -93,6 +93,7 @@ from motion_acq.dataset.capture import (
 )
 from motion_acq.dataset.raw import (
     HANDUMI_CAPTURE_SCHEMA,
+    anchor_heading_features,
     camera_health_features,
     capture_timing_features,
     feetech_features,
@@ -866,6 +867,7 @@ def build_features(
     features["action"] = dict(state_action)
     features.update(feetech_features())
     features.update(raw_tracking_features())
+    features.update(anchor_heading_features())
     features.update(capture_timing_features())
     features.update(camera_health_features(cam_names))
     if record_audio:
@@ -1810,7 +1812,10 @@ def record_episode(
                     record_time_ns=record_time_ns,
                     tracking_time_ns=tracking_time_ns,
                     submitted_s=time.perf_counter(),
-                    tracking=sample.tracking_frame(),
+                    tracking={
+                        **sample.tracking_frame(),
+                        "observation.tracking.anchor_heading_rad": controller.anchor_headings(),
+                    },
                 )
             )
         except DatasetWriteError as exc:

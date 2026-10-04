@@ -80,3 +80,26 @@ def test_page_loads_view_mode_before_viewer_both_versioned():
     mode_at = html.index("/static/view_mode.js?v=")
     viewer_at = html.index("/static/viewer.js?v=")
     assert mode_at < viewer_at
+
+
+def _viewer_start(scenario: str) -> dict:
+    assert NODE is not None
+    harness = Path(__file__).resolve().parent / "js" / "viewer_start.js"
+    out = subprocess.run([NODE, str(harness), scenario, str(WEB)], capture_output=True, text=True,
+                         timeout=20, check=True)
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_double_start_makes_one_session():
+    """Review 10.04: tap + tap (or tap + quest_usb.sh vr) started two sessions, one without a frame loop."""
+    run = _viewer_start("double")
+    assert sorted(run["results"]) == ["started", "starting"]
+    assert run["requested"] == 1 and run["frameLoops"] == 1 and run["active"]
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_a_failed_start_ends_its_session_and_can_retry():
+    run = _viewer_start("fail")
+    assert run["first"].startswith("error") and run["ended"] == 1
+    assert run["retry"] == "started" and run["active"] and run["frameLoops"] == 1

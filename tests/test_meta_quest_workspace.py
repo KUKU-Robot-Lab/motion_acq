@@ -76,3 +76,21 @@ def test_looking_straight_down_still_gives_a_level_workspace():
     workspace = workspace_from_hmd(hmd)
     up = np.array([0.0, 1.0, 0.0])
     np.testing.assert_allclose(workspace_step(workspace, np.zeros(3), 0.1 * up), [0.0, 0.0, 0.1], atol=1e-9)
+
+
+def test_heading_of_a_steep_rolled_head_is_its_yaw():
+    """Review 10.04: below 84 deg the twist fallback returned yaw +- roll; forward is roll-free."""
+    from motion_acq.tracking.transforms import heading_yaw
+
+    def handumi_quat(yaw_deg, pitch_down_deg, roll_deg):
+        def ax(i, deg):
+            q = np.zeros(4)
+            q[i] = math.sin(math.radians(deg) / 2)
+            q[3] = math.cos(math.radians(deg) / 2)
+            return q
+        return quat_multiply(ax(2, yaw_deg), quat_multiply(ax(1, pitch_down_deg), ax(0, roll_deg)))
+
+    for pitch in (80.0, 85.0, 88.0):
+        assert math.degrees(heading_yaw(handumi_quat(30.0, pitch, 20.0))) == pytest.approx(30.0, abs=1e-6)
+    for pitch in (90.0, -90.0):  # straight down / up, no roll: the head top gives the heading
+        assert math.degrees(heading_yaw(handumi_quat(30.0, pitch, 0.0))) == pytest.approx(30.0, abs=1e-6)
