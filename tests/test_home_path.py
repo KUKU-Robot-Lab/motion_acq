@@ -41,6 +41,8 @@ def test_start_is_rest_or_home_and_nothing_else():
     path = load_home_path(PATHS / "home_rh56f1_right.npz", "right")
     home = home_of("right")
     assert classify_start(np.full(7, 0.03), path, home, 0.10) == "rest"
+    drifted = np.deg2rad([-1.0, 0.6, -2.5, 2.0, 6.4, -4.5, 4.0])  # 10.04 right arm, power off at rest
+    assert classify_start(drifted, path, home, 0.10) == "near_rest"
     assert classify_start(home + 0.05, path, home, 0.10) == "home"
     with pytest.raises(HomePathError, match="neither"):
         classify_start(home * 0.5, path, home, 0.10)

@@ -135,3 +135,16 @@ def test_power_off_away_from_rest_holds_and_warns(monkeypatch, caplog):
     with caplog.at_level("ERROR"):
         backend.disconnect()
     assert "away from rest" in caplog.text and "will drop" in caplog.text
+
+
+def test_wrist_drift_at_rest_is_aligned_before_the_path(monkeypatch):
+    """10.04 third run: j5 6.4, j6 -4.5, j7 4.0 deg after hanging unpowered; align, then the path."""
+    backend, env, home = fake_right(monkeypatch, feedforward=True)
+    drifted = np.deg2rad([-1.0, 0.6, -2.5, 2.0, 6.4, -4.5, 4.0]).tolist()
+    backend.fake_sdk.start_q_by_port[env.settings.right_port] = drifted
+    backend.connect()
+    try:
+        backend.home(home)
+        assert np.abs(env.streamer.feedback()["right"] - HOME["right"]).max() < 0.02
+    finally:
+        backend.disconnect()

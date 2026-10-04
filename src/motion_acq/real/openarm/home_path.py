@@ -25,6 +25,11 @@ import numpy as np
 
 ARM_DOF = 7
 PATH_START_TOLERANCE_RAD = 0.05  # sim2real check_path_start
+# An unpowered arm hanging at rest drifts a few degrees on the wrist (10.04 right:
+# j5 6.4, j6 -4.5, j7 4.0 deg). Within this of rest it is first brought to exact
+# rest slowly, then the path starts; beyond it the start is refused.
+REST_ALIGN_MAX_RAD = 0.15
+REST_ALIGN_SPEED_RAD_S = 0.05
 MAX_PATH_SPEED_RAD_S = 0.35  # refuse files faster than the planned 0.3 rad/s (+ margin)
 _PREFIX = {"right": "r_aj_", "left": "l_aj_"}
 
@@ -74,18 +79,22 @@ def load_home_path(path: Path, side: str) -> HomePath:
 
 
 def classify_start(measured: np.ndarray, path: HomePath, home: np.ndarray, home_tolerance_rad: float) -> str:
-    """'rest' (play the path), 'home' (only settle) or raise if neither."""
+    """'rest' (play the path), 'near_rest' (align slowly, then the path), 'home' (only settle)
+    or raise if neither."""
     measured = np.asarray(measured, dtype=np.float64)
     if not np.allclose(path.home, home, atol=1e-3):
         raise HomePathError(f"{path.side} path ends at {np.round(path.home, 4).tolist()}, "
                             f"not at the home pose {np.round(home, 4).tolist()}; replan it in sim2real")
-    if np.abs(measured - path.rest).max() <= PATH_START_TOLERANCE_RAD:
+    off_rest = float(np.abs(measured - path.rest).max())
+    if off_rest <= PATH_START_TOLERANCE_RAD:
         return "rest"
+    if off_rest <= REST_ALIGN_MAX_RAD:
+        return "near_rest"
     if np.abs(measured - home).max() <= home_tolerance_rad:
         return "home"
     raise HomePathError(
         f"OpenArm {side_label(path.side)} is at {np.round(np.rad2deg(measured), 1).tolist()} deg: neither "
-        f"rest (all 0, within {np.rad2deg(PATH_START_TOLERANCE_RAD):.1f} deg) nor home. Bring it to rest "
+        f"rest (all 0, within {np.rad2deg(REST_ALIGN_MAX_RAD):.1f} deg) nor home. Bring it to rest "
         "or home with the sim2real home step first; motion_acq only moves along the stored path."
     )
 

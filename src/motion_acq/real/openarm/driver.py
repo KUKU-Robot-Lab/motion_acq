@@ -19,6 +19,7 @@ from motion_acq.real.openarm.gravity import ArmGravity, GravityModelError, load_
 from motion_acq.real.openarm.home_path import (
     MAX_PATH_SPEED_RAD_S,
     PATH_START_TOLERANCE_RAD,
+    REST_ALIGN_SPEED_RAD_S,
     HomePath,
     HomePathError,
     classify_start,
@@ -606,9 +607,12 @@ class OpenArmCanEnvironment:
                      ", ".join(f"{side} at {mode}" for side, mode in modes.items()))
         self.streamer = OpenArmJointStreamer(self.arms, self.settings, initial)
         self.streamer.start()
-        from_rest = {side: paths[side].q for side, mode in modes.items() if mode == "rest"}
+        from_rest = {side: paths[side].q for side, mode in modes.items() if mode in ("rest", "near_rest")}
         self._path_progress = {}
         try:
+            near = [side for side, mode in modes.items() if mode == "near_rest"]
+            if near:
+                self._align_to_rest(near, initial)
             if from_rest:
                 self._play_paths(from_rest, next(iter(paths.values())).dt, "rest -> home")
             self.move_home(q, joint_names)
@@ -616,6 +620,21 @@ class OpenArmCanEnvironment:
             if paths:
                 self._retreat_to_rest(paths, exc)
             raise
+
+    def _align_to_rest(self, sides: list[str], initial: dict[str, np.ndarray]) -> None:
+        """Slowly to exact rest (a few degrees of wrist drift) before the stored path starts."""
+        assert self.streamer is not None
+        for side in sides:
+            log.info("OpenArm %s %s deg from rest: aligning to rest at %.2f rad/s before the path.",
+                     side, np.round(np.rad2deg(initial[side]), 1).tolist(), REST_ALIGN_SPEED_RAD_S)
+        self.streamer.set_max_speed(REST_ALIGN_SPEED_RAD_S)
+        try:
+            self.streamer.set_targets({side: np.zeros(ARM_DOF, dtype=np.float32) for side in sides},
+                                      {side: 0.0 for side in sides})
+            self.streamer.wait_until_targets(timeout_s=self.settings.home_timeout_s,
+                                             tolerance_rad=PATH_START_TOLERANCE_RAD)
+        finally:
+            self.streamer.set_max_speed(self.settings.max_joint_speed_rad_s)
 
     def _retreat_to_rest(self, paths: dict[str, HomePath], cause: BaseException) -> None:
         """A start that failed after leaving rest goes back along the path it came.
