@@ -60,12 +60,12 @@ head:
     id: 1
     home_deg: -2.9
     range_deg: 20.0   # STEP 2 first window; widen after verification
-    sign: 1           # VERIFY with --axes pan: HMD yaw left must turn the camera left
+    sign: -1          # verified 10.04 (scripts/head_direction_check.py): encoder + turns the camera right
   tilt:
     id: 2
     home_deg: 71.8
     range_deg: 15.0
-    sign: 1           # VERIFY with --axes tilt: HMD pitch up must raise the camera
+    sign: -1          # verified 10.04 (scripts/head_direction_check.py): encoder + looks down
   motor:
     model_number: 1240        # XC330-M288-T
     operating_mode: 3         # position control
