@@ -1,0 +1,8 @@
+# Identity controller-to-TCP offset: the controller frame is taken as the TCP
+# frame. Only for first motion tests with the controller held in the hand
+# (not mounted); replace with a measured calibration for data collection.
+calibration:
+  frame_convention: pose7=[x,y,z,qx,qy,qz,qw], meters, xyzw quaternion
+  controller_to_gripper_tcp:
+    left: {position: [0.0, 0.0, 0.0], quaternion: [0.0, 0.0, 0.0, 1.0]}
+    right: {position: [0.0, 0.0, 0.0], quaternion: [0.0, 0.0, 0.0, 1.0]}
