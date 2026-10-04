@@ -534,10 +534,27 @@ class Console:
         if self._wait_exit(self._spawn_task(units.glove_task(self.station, self.mode, "up")), 90) != 0:
             raise RuntimeError("장갑이 연결되지 않았다(전원·LED, 다른 PC 의 SenseCom 확인): 로그 확인")
         if self.probe("gloves").get("driver_pids"):
-            return "장갑 연결됨, 드라이버는 이미 실행 중"
+            missing = self._missing_glove_topics()
+            if not missing:
+                return "장갑 연결됨, 드라이버는 이미 실행 중"
+            # e.g. one glove's ros2_control_node died (libsgcore aborts on a sensor string it cannot parse)
+            self.event("warn", f"장갑 드라이버가 떠 있지만 {', '.join(missing)} 데이터가 없다: 드라이버를 다시 시작")
+            if self._wait_exit(self._spawn_task(units.glove_task(self.station, self.mode, "stop")), 30) != 0:
+                raise RuntimeError("장갑 드라이버를 내리지 못했다: 로그 확인")
         if self._wait_exit(self._spawn_task(units.glove_task(self.station, self.mode, "driver")), 40) != 0:
             raise RuntimeError("장갑 드라이버가 뜨지 않았다: 로그 확인")
+        missing = self._missing_glove_topics()
+        if missing:
+            raise RuntimeError(f"장갑 드라이버는 떴지만 {', '.join(missing)} 데이터가 없다: 드라이버 로그 확인")
         return "장갑 연결 + 드라이버 실행"
+
+    def _missing_glove_topics(self) -> list[str]:
+        """Glove sides whose senseglove_states is not on the domain right now (read directly)."""
+        ros = ros_state(self.station, self.mode)
+        if "error" in ros:
+            return list(self.station.hands)
+        topics = ros.get("glove_topics") or {}
+        return [side for side in self.station.hands if not topics.get(side)]
 
     def _direction(self, arg: str) -> dict:
         if arg == "on":

@@ -159,7 +159,8 @@ cmd_driver() {
   setsid -f bash -c "echo \$\$ > '$DRIVER_PID'; source /opt/ros/$distro/setup.bash && source '$ROOT/ros_ws/install/setup.bash' && exec $pin ros2 launch motion_acq_hand nova2.launch.py" \
     >"$log" 2>&1 < /dev/null
   local deadline=$((SECONDS + 15))
-  until grep -q "Configured and activated senseglove_state_broadcaster" "$log" 2>/dev/null; do
+  # humble-dev colours its log ("activated \e[1msenseglove_state_broadcaster"): strip the codes first
+  until sed 's/\x1b\[[0-9;]*m//g' "$log" 2>/dev/null | grep -q "Configured and activated senseglove_state_broadcaster"; do
     (( SECONDS >= deadline )) && { echo "glove driver not confirmed yet; see $log" >&2; return 1; }
     sleep 1
   done
