@@ -20,6 +20,8 @@ import argparse
 import logging
 import os
 import signal
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -40,6 +42,7 @@ from motion_acq.head.dynamixel import (
 )
 from motion_acq.head.retarget import HeadRetargeter
 from motion_acq.head.session import HeadSession, open_log
+from motion_acq.teleop.common import KeyboardSpaceListener
 from motion_acq.robots.utils import IDENTITY_POSE7
 from motion_acq.tracking.meta_quest import MetaQuestConfig, MetaQuestTrackingProvider
 
@@ -74,8 +77,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--log-dir", type=Path, default=Path("logs/head"))
     p.add_argument("--no-log", action="store_true")
     p.add_argument(
-        "--udp-target", default=None, metavar="HOST:PORT",
-        help="Also send each cycle to the recorder (teleop-record --sidecar head=PORT).",
+        "--udp-target", action="append", default=[], metavar="HOST:PORT",
+        help="Also send each cycle here (recorder sidecar, quest-view overlay); repeatable.",
+    )
+    p.add_argument(
+        "--unlock", choices=("auto", "key"), default=None,
+        help="key: start locked at home, Space toggles follow/lock (default on a terminal); "
+             "auto: anchor after --auto-start-delay-s of HMD tracking (default otherwise).",
     )
     p.add_argument("--torque-off-on-exit", action="store_true")
     return p.parse_args(argv)
@@ -141,6 +149,7 @@ def main(argv: list[str] | None = None) -> None:
     tracker = build_tracker(args)
     log_file = None if args.no_log else open_log(args.log_dir, os.environ.get(STATION_ENV, ""))
     signal.signal(signal.SIGTERM, _sigterm_to_interrupt)
+    unlock = args.unlock or ("key" if sys.stdin.isatty() else "auto")
     tracker.start()
     alert = False
     try:
@@ -155,7 +164,8 @@ def main(argv: list[str] | None = None) -> None:
             auto_start_delay_s=args.auto_start_delay_s,
             max_consecutive_faults=config.max_consecutive_faults,
             log_file=log_file,
-            udp_target=_udp_target(args.udp_target),
+            udp_targets=tuple(t for t in (_udp_target(x) for x in args.udp_target) if t),
+            unlock=unlock,
         )
         _run(session, rate_hz, args.duration_s)
     except HeadBusError as exc:
@@ -194,16 +204,31 @@ def _return_home(driver: HeadDriver, config: HeadConfig, rate_hz: float, *, aler
 def _run(session: HeadSession, rate_hz: float, duration_s: float) -> None:
     period = 1.0 / rate_hz
     start = last_status = time.monotonic()
-    while duration_s <= 0.0 or time.monotonic() - start < duration_s:
+    stop = threading.Event()
+    keys = KeyboardSpaceListener(enabled=session.unlock_mode == "key", stop_event=stop)
+    if keys.enabled:
+        log.info("Head locked at home. Space: follow the HMD from where you look now / lock again. "
+                 "Esc or Ctrl+C: home and stop.")
+        keys.start()
+    try:
+        _loop(session, period, start, last_status, duration_s, keys, stop)
+    finally:
+        keys.close()
+    s = session.stats
+    log.info("Head done: %d cycles, %d commands, %d hold cycles, %d re-anchors, %d faults.",
+             s.cycles, s.commands, s.holds, s.reanchors, s.faults)
+
+
+def _loop(session, period, start, last_status, duration_s, keys, stop) -> None:
+    while (duration_s <= 0.0 or time.monotonic() - start < duration_s) and not stop.is_set():
         cycle = time.monotonic()
+        if keys.consume_space():
+            session.toggle_lock()
         step = session.tick()
         if cycle - last_status >= STATUS_PERIOD_S:
             last_status = cycle
             _status(session, step)
         time.sleep(max(period - (time.monotonic() - cycle), 0.0))
-    s = session.stats
-    log.info("Head done: %d cycles, %d commands, %d hold cycles, %d re-anchors, %d faults.",
-             s.cycles, s.commands, s.holds, s.reanchors, s.faults)
 
 
 def _status(session: HeadSession, step) -> None:

@@ -44,7 +44,7 @@ log = logging.getLogger(__name__)
 # RH56F1 joint order of the hand map (configs/hands/rh56f1_hand_map.yaml joint_order).
 HAND_JOINTS = ("thumb_1", "thumb_2", "index_1", "middle_1", "ring_1", "pinky_1")
 STATUS_MISSING = -1
-_HEAD_STATUS = {"idle": 0, "running": 1, "hold": 2}
+_HEAD_STATUS = {"idle": 0, "locked": 0, "running": 1, "hold": 2}
 _HAND_STATUS = {"idle": 0, "running": 1, "hold": 2, "homing": 4}
 
 

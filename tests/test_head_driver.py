@@ -433,3 +433,45 @@ def test_direction_check_reads_the_image_shift():
     assert hdc.sign_from_shift("pan", 5, (dx, 0.0))[0] == 1
     assert hdc.sign_from_shift("tilt", 5, (0.0, dy))[0] == -1
     assert hdc.sign_from_shift("pan", 5, (0.5, 0.0))[0] is None
+
+
+def test_key_unlock_follows_from_the_current_direction_and_locks_again():
+    """10.04 user: the operator cannot match the home pose, so the head waits locked
+    at home; Space anchors at wherever they look, Space again holds."""
+    bus = fake_bus()
+    driver = make_driver(bus)
+    driver.start()
+    # each block has one extra sample: the tick right after a toggle anchors on it
+    poses = iter([pose_from_yaw_pitch(35, -15)] * 31 + [pose_from_yaw_pitch(45, -15)] * 59
+                 + [pose_from_yaw_pitch(10, -15)] * 31 + [pose_from_yaw_pitch(20, -15)] * 59)
+
+    class Tracker:
+        def latest(self):
+            return FakeSample(next(poses), True)
+
+    session = HeadSession(
+        Tracker(), driver,
+        HeadRetargeter(make_config(max_velocity_deg_s=60.0, max_acceleration_deg_s2=300.0)),
+        auto_start_delay_s=2.0, max_consecutive_faults=3, clock=Clock(), unlock="key",
+    )
+    writes = goal_writes(bus)
+    for _ in range(30):  # HMD tracked and turned 35 deg away: still locked, nothing sent
+        session.tick()
+    assert session.locked and goal_writes(bus) == writes
+    session.toggle_lock()  # unlock while looking 35 deg left: that direction is the anchor
+    session.tick()
+    for _ in range(59):
+        session.tick()
+    assert not session.locked
+    pan = tick_to_deg(bus.present_ticks[1])
+    assert pan == pytest.approx(-2.9 + 10.0, abs=0.2)  # followed the +10 deg turn only
+    session.toggle_lock()
+    for _ in range(30):  # locked: the HMD swings back 35 deg, the head stays
+        session.tick()
+    assert tick_to_deg(bus.present_ticks[1]) == pytest.approx(pan, abs=0.01)
+    session.toggle_lock()  # unlock again: continues from where the head is, no jump
+    session.tick()
+    assert tick_to_deg(bus.present_ticks[1]) == pytest.approx(pan, abs=0.2)
+    for _ in range(59):
+        session.tick()
+    assert tick_to_deg(bus.present_ticks[1]) == pytest.approx(pan + 10.0, abs=0.3)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -54,7 +55,14 @@ class HeadSession:
         log_file: IO[str] | None = None,
         clock: Callable[[], float] = time.monotonic,
         udp_target: tuple[str, int] | None = None,
+        udp_targets: tuple[tuple[str, int], ...] = (),
+        unlock: str = "auto",
     ) -> None:
+        """unlock "auto": anchor after auto_start_delay_s of HMD tracking (fake, station).
+        unlock "key": start locked at home; toggle_lock() (Space) unlocks, anchoring at
+        the HMD pose of that moment, and locks again (the head holds where it is)."""
+        if unlock not in ("auto", "key"):
+            raise ValueError(f"unlock must be auto or key, not {unlock!r}")
         self.tracker = tracker
         self.driver = driver
         self.retargeter = retargeter
@@ -69,9 +77,32 @@ class HeadSession:
         self._last_sent: tuple[float, float] | None = None
         self._last_hw_check = 0.0
         self.measured: tuple[float, float] | None = None
-        self._udp = None
-        if udp_target is not None:
-            self._udp = (socket.socket(socket.AF_INET, socket.SOCK_DGRAM), udp_target)
+        targets = tuple(udp_targets) + ((udp_target,) if udp_target is not None else ())
+        self._udp = (socket.socket(socket.AF_INET, socket.SOCK_DGRAM), targets) if targets else None
+        self.unlock_mode = unlock
+        self.locked = unlock == "key"
+        self._toggle_requests = 0
+        self._toggle_lock = threading.Lock()
+
+    def toggle_lock(self) -> None:
+        """Thread-safe request (keyboard thread); applied at the next tick."""
+        with self._toggle_lock:
+            self._toggle_requests += 1
+
+    def _apply_toggles(self) -> None:
+        with self._toggle_lock:
+            requests, self._toggle_requests = self._toggle_requests, 0
+        if requests % 2 == 0:
+            return
+        if self.locked:
+            self.locked = False
+            self._tracked_since = None
+            log.info("Head unlocked: anchoring at the current HMD direction.")
+        else:
+            self.locked = True
+            self.retargeter.state = HeadState.IDLE  # stop commanding; the motors hold the last goal
+            log.info("Head locked at pan %s / tilt %s deg.", *(
+                f"{v:.1f}" if v is not None else "-" for v in (self.measured or (None, None))))
 
     @property
     def anchored(self) -> bool:
@@ -112,7 +143,8 @@ class HeadSession:
             self._tracked_since = now
             log.info("HMD tracked. Anchoring in %.1f s; keep the head still.",
                      self.auto_start_delay_s)
-        if now - self._tracked_since < self.auto_start_delay_s:
+        delay = self.auto_start_delay_s if self.unlock_mode == "auto" else 0.0
+        if now - self._tracked_since < delay:
             return
         measured = self._read_measured()
         if measured is None:
@@ -151,6 +183,12 @@ class HeadSession:
         self.stats.cycles += 1
         sample = self.tracker.latest()
         self._check_hardware(now)
+        self._apply_toggles()
+        if self.locked:
+            self._read_measured()
+            self._write_log(now, sample, None)
+            self._end_tick()
+            return None
         if not self.anchored:
             self._maybe_anchor(sample, now)
             self._write_log(now, sample, None)
@@ -181,7 +219,11 @@ class HeadSession:
             "t_mono_s": round(now, 6),
             "hmd_quat_xyzw": [round(float(v), 6) for v in np.asarray(sample.device_hmd_pose)[3:7]],
             "hmd_tracked": bool(sample.hmd_tracked),
-            "state": (step.state.value if step else self.retargeter.state.value),
+            "state": "locked" if self.locked else (step.state.value if step else self.retargeter.state.value),
+            "locked": self.locked,
+            "home_pan_deg": self.retargeter.config.pan.home_deg,
+            "home_tilt_deg": self.retargeter.config.tilt.home_deg,
+            "window_deg": [self.retargeter.config.pan.range_deg, self.retargeter.config.tilt.range_deg],
             "reanchored": bool(step.reanchored) if step else False,
             "rel_yaw_deg": step.rel_yaw_deg if step else None,
             "rel_pitch_deg": step.rel_pitch_deg if step else None,
@@ -197,7 +239,8 @@ class HeadSession:
             if self.log_file is not None:
                 self.log_file.write(line + "\n")
             if self._udp is not None:
-                self._udp[0].sendto(line.encode("utf-8"), self._udp[1])
+                for target in self._udp[1]:
+                    self._udp[0].sendto(line.encode("utf-8"), target)
         except OSError as exc:  # logging must never stop the head loop
             log.warning("head log/udp write failed: %s", exc)
 
