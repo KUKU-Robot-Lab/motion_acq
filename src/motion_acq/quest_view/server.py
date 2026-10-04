@@ -47,6 +47,7 @@ from motion_acq.quest_view.convert import handumi_frame
 log = logging.getLogger("motion_acq.quest_view")
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+PAGE_SCRIPTS = ("view_mode.js", "viewer.js")  # loaded by index.html, in this order
 _PING = struct.Struct("<BQ")  # HandUMI time-sync (motion_acq.tracking.meta_quest)
 _PONG = struct.Struct("<BQQ")
 HEAD_STATUS_PORT = 47121
@@ -284,11 +285,12 @@ def build_app(shared: Shared, poses: PoseBroadcast, *, video_fps: float) -> web.
     app = web.Application()
 
     async def index(_request):
-        # The Quest Browser caches scripts hard; version the script by its mtime and
-        # never cache the page, so an updated viewer.js is always loaded.
-        version = int((WEB_DIR / "viewer.js").stat().st_mtime)
+        # The Quest Browser caches scripts hard; version each script by its mtime and
+        # never cache the page, so updated scripts are always loaded.
         html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
-        html = html.replace("/static/viewer.js", f"/static/viewer.js?v={version}")
+        for script in PAGE_SCRIPTS:
+            version = int((WEB_DIR / script).stat().st_mtime)
+            html = html.replace(f"/static/{script}", f"/static/{script}?v={version}")
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
 
     async def websocket(request):

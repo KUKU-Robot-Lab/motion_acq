@@ -89,15 +89,20 @@ const overlayCtx = overlay.getContext("2d");
 let lastTime = null;
 
 // Read-only state for the PC (scripts/quest_usb.sh vr --status over the browser devtools).
-window.macqView = { xrSupported: null, xrActive: false, posesSent: 0, lastError: null };
+window.macqView = { xrSupported: null, xrActive: false, mode: null, posesSent: 0, lastError: null };
+let xrMode = null;  // the SESSION_MODES entry that started (view_mode.js)
 
 // The button is enabled whenever WebXR exists: on 10.04 the Quest Browser answered
 // isSessionSupported() = false at page load (XR runtime not ready yet) and the button
 // stayed disabled. The check only feeds the status now, and is retried.
 function checkSupport() {
   if (!navigator.xr) return;
-  navigator.xr.isSessionSupported("immersive-vr")
-    .then((ok) => { window.macqView.xrSupported = ok; if (!ok) setTimeout(checkSupport, 2000); })
+  Promise.all(SESSION_MODES.map((m) => navigator.xr.isSessionSupported(m)))
+    .then((oks) => {
+      const ok = oks.some(Boolean);
+      window.macqView.xrSupported = ok;
+      if (!ok) setTimeout(checkSupport, 2000);
+    })
     .catch((e) => { window.macqView.lastError = String(e); setTimeout(checkSupport, 2000); });
 }
 if (navigator.xr) {
@@ -113,9 +118,20 @@ window.macqStartVr = async function () {
   if (xrSession) return "already";
   if (!navigator.xr) return "no webxr";
   try {
-    xrSession = await navigator.xr.requestSession("immersive-vr", { optionalFeatures: ["local-floor"] });
+    // passthrough first; the first mode the browser grants wins
+    const refused = [];
+    for (const mode of SESSION_MODES) {
+      try {
+        xrSession = await navigator.xr.requestSession(mode, { optionalFeatures: ["local-floor"] });
+        xrMode = mode;
+        break;
+      } catch (e) { refused.push(`${mode}: ${e}`); }
+    }
+    if (!xrSession) throw new Error(refused.join("; "));
+    window.macqView.mode = xrMode;
     xrSession.addEventListener("end", () => {
-      xrSession = null; window.macqView.xrActive = false; enterBtn.disabled = false;
+      xrSession = null; xrMode = null; window.macqView.xrActive = false; window.macqView.mode = null;
+      enterBtn.disabled = false;
     });
     const canvas = document.createElement("canvas");
     gl = canvas.getContext("webgl", { xrCompatible: true });
@@ -154,7 +170,8 @@ function setupGl() {
   videoTex = makeTexture();
   overlayTex = makeTexture();
   gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  // alpha written as-is: over the transparent passthrough clear the status strip stays 82 %
+  gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 }
 
 function makeTexture() {
@@ -217,11 +234,13 @@ function onXRFrame(time, frame) {
   }
   if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(msg)); window.macqView.posesSent += 1; }
 
-  // head camera head-locked 1.2 m ahead, status strip under it
+  // head camera head-locked 1.2 m ahead, status strip under it. Without camera frames
+  // (neck not started) passthrough: only the status strip over the room.
   if (!viewer) return;
+  const look = frameLook(xrMode, latestImage !== null);
   const layer = session.renderState.baseLayer;
   gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
-  gl.clearColor(0.02, 0.03, 0.05, 1.0);
+  gl.clearColor(...look.clear);
   gl.clear(gl.COLOR_BUFFER_BIT);
   if (uploadedSeq !== imageSeq) {
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
@@ -236,7 +255,7 @@ function onXRFrame(time, frame) {
   for (const view of viewer.views) {
     const vp = layer.getViewport(view);
     gl.viewport(vp.x, vp.y, vp.width, vp.height);
-    drawQuad(videoTex, quadMatrix(view.projectionMatrix, 0, 0.05, -1.2, 0.6, 0.45));
+    if (look.camera) drawQuad(videoTex, quadMatrix(view.projectionMatrix, 0, 0.05, -1.2, 0.6, 0.45));
     drawQuad(overlayTex, quadMatrix(view.projectionMatrix, 0, -0.48, -1.2, 0.6, 0.094));
   }
 }
