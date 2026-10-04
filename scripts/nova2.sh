@@ -4,6 +4,7 @@
 #   scripts/nova2.sh up [both|right|left]      # start SenseCom, wait for the gloves
 #   scripts/nova2.sh status                    # adapter, gloves, SenseCom, glove topics
 #   scripts/nova2.sh driver                    # glove driver (nova2.launch.py) in the background, logged
+#   scripts/nova2.sh stop                      # stop that driver (its whole process group)
 #   scripts/nova2.sh connect [both|right|left] # fallback: BlueZ connect (bumsu's connect_senseglove.py)
 #   scripts/nova2.sh disconnect [both|right|left]
 #
@@ -27,6 +28,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$ROOT/.venv/bin/python"
 SENSECOM="$ROOT/ros_ws/install/senseglove_com/share/senseglove_com/Linux/SenseCom_Linux_Latest/SenseCom.x86_64"
 LOG_DIR="$ROOT/logs/nova2"
+DRIVER_PID="$LOG_DIR/driver.pid"
 CONNECT_TIMEOUT_S="${NOVA2_CONNECT_TIMEOUT_S:-10}"
 UP_TIMEOUT_S="${NOVA2_UP_TIMEOUT_S:-60}"
 PLAYER_LOG="$HOME/.config/unity3d/SenseGlove/SenseCom 1.9.0/Player.log"
@@ -143,6 +145,7 @@ cmd_sensecom() {
 
 cmd_driver() {
   if pgrep -f "motion_acq_hand nova2.launch.py" >/dev/null; then echo "glove driver already running"; return 0; fi
+  mkdir -p "$LOG_DIR"
   [[ -n "$(sensecom_pids)" ]] || die "SenseCom is not running (scripts/nova2.sh up first)"
   local distro="${ROS_DISTRO:-}"
   [[ -n "$distro" ]] || for d in humble jazzy; do [[ -f "/opt/ros/$d/setup.bash" ]] && distro="$d" && break; done
@@ -150,14 +153,33 @@ cmd_driver() {
   mkdir -p "$LOG_DIR"
   local log; log="$LOG_DIR/driver_$(date +%Y%m%d_%H%M%S).log"
   local pin; pin="$(general_cores)"
-  setsid bash -c "source /opt/ros/$distro/setup.bash && source '$ROOT/ros_ws/install/setup.bash' && exec $pin ros2 launch motion_acq_hand nova2.launch.py" \
-    >"$log" 2>&1 < /dev/null &
-  sleep 8
-  if grep -q "Configured and activated senseglove_state_broadcaster" "$log"; then
-    echo "glove driver up (log $log); stop it with Ctrl+C in its terminal or kill the ros2 launch PID"
-  else
-    echo "glove driver not confirmed yet; see $log" >&2
+  # setsid -f, not "&": a background job of a script has SIGINT ignored, so the launch could
+  # not pass a stop on to its nodes (10.04: SIGTERM left orphaned ros2_control_node).
+  # The launch writes its PID (= its process group) for "stop".
+  setsid -f bash -c "echo \$\$ > '$DRIVER_PID'; source /opt/ros/$distro/setup.bash && source '$ROOT/ros_ws/install/setup.bash' && exec $pin ros2 launch motion_acq_hand nova2.launch.py" \
+    >"$log" 2>&1 < /dev/null
+  local deadline=$((SECONDS + 15))
+  until grep -q "Configured and activated senseglove_state_broadcaster" "$log" 2>/dev/null; do
+    (( SECONDS >= deadline )) && { echo "glove driver not confirmed yet; see $log" >&2; return 1; }
+    sleep 1
+  done
+  echo "glove driver up (PID $(cat "$DRIVER_PID" 2>/dev/null), log $log); stop: $0 stop"
+}
+
+cmd_stop() {
+  # The driver's whole process group (launch + ros2_control_node + robot_state_publisher), by its PID file.
+  [[ -f "$DRIVER_PID" ]] || { echo "no glove driver PID file ($DRIVER_PID)"; return 0; }
+  local pid; pid="$(cat "$DRIVER_PID")"
+  if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "nova2.launch.py"; then
+    echo "PID $pid is not the glove driver (already gone?); removing the PID file"; rm -f "$DRIVER_PID"; return 0
   fi
+  kill -INT -- "-$pid" 2>/dev/null || true
+  local deadline=$((SECONDS + 10))
+  while kill -0 -- "-$pid" 2>/dev/null && (( SECONDS < deadline )); do sleep 0.5; done
+  if kill -0 -- "-$pid" 2>/dev/null; then kill -TERM -- "-$pid" 2>/dev/null || true; sleep 2; fi
+  kill -0 -- "-$pid" 2>/dev/null && die "glove driver group $pid still alive"
+  rm -f "$DRIVER_PID"
+  echo "glove driver stopped (group $pid)"
 }
 
 cmd_up() {
@@ -185,6 +207,7 @@ case "${1:-status}" in
   disconnect) cmd_disconnect "$which" ;;
   sensecom) cmd_sensecom ;;
   driver) cmd_driver ;;
+  stop) cmd_stop ;;
   up) cmd_up "$which" ;;
-  *) die "usage: $0 {up|driver|status|sensecom|connect|disconnect} [both|right|left]" ;;
+  *) die "usage: $0 {up|driver|stop|status|sensecom|connect|disconnect} [both|right|left]" ;;
 esac

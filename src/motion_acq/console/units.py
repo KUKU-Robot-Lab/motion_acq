@@ -346,7 +346,8 @@ def calibrate(station: Station, mode: str, side: str, user: str) -> Launch:
 
 QUEST_TASKS = {"status": "Quest 상태", "app": "HandUMI 앱 모드", "view": "헤드셋 영상 열기 + VR",
                "page": "헤드셋에 영상 페이지 열기", "vr": "VR 시작", "launch": "HandUMI 앱 다시 시작"}
-GLOVE_TASKS = {"up": "SenseCom 시작 + 장갑 연결", "driver": "장갑 드라이버 시작", "status": "장갑 상태"}
+GLOVE_TASKS = {"up": "SenseCom 시작 + 장갑 연결", "driver": "장갑 드라이버 시작", "stop": "장갑 드라이버 정지",
+               "status": "장갑 상태"}
 
 
 def quest_task(station: Station, name: str) -> Launch:
@@ -363,7 +364,7 @@ def glove_task(station: Station, mode: str, name: str) -> Launch:
         raise UnitError(f"{station.name} has no hands")
     argv = ("bash", str(ROOT / "scripts" / "nova2.sh"), name) + (("both",) if name == "up" else ())
     env = _ros_env(station, "real") if name in ("driver", "status") else _base_env(station)
-    if not _real(mode) and name != "status":
+    if not _real(mode) and name not in ("status", "stop"):
         raise UnitError("glove tasks touch the real gloves: switch the console to real mode")
     return Launch(f"task_glove_{name}", GLOVE_TASKS[name], argv, env, stop_grace_s=3.0)
 

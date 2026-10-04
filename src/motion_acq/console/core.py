@@ -14,7 +14,6 @@ import collections
 import json
 import os
 import secrets
-import signal
 import string
 import threading
 import time
@@ -23,8 +22,7 @@ from pathlib import Path
 from motion_acq.console import gates, phases, units
 from motion_acq.console.direction import DirectionCheck
 from motion_acq.console.probes import LatestUdp, Probes, adb_path, ros_state, run
-from motion_acq.console.supervisor import Supervisor, _same_process, left_behind, process_start_epoch, \
-    stop_left_behind
+from motion_acq.console.supervisor import Supervisor, _same_process, left_behind, stop_left_behind
 from motion_acq.console.units import ROOT, Launch, Station, UnitError
 
 SPACE_UNITS = ("record", "arm", "head")
@@ -587,23 +585,10 @@ class Console:
         return items
 
     def _stop_glove_driver(self) -> dict:
-        from motion_acq.console.probes import GLOVE_DRIVER_PATTERN
-
-        stopped = []
-        for pid in (self.probe("gloves").get("driver_pids") or []):
-            try:
-                cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-            except OSError:
-                continue
-            if GLOVE_DRIVER_PATTERN.split()[0] not in cmdline or process_start_epoch(pid) is None:
-                continue
-            try:
-                os.killpg(pid, signal.SIGINT)
-                stopped.append(pid)
-            except (ProcessLookupError, PermissionError):
-                continue
-        self.intent("glove_driver_stop", pids=stopped)
-        return {"ok": bool(stopped), "error": "" if stopped else "장갑 드라이버가 안 보인다"}
+        """nova2.sh stop: the driver's whole process group (a background ros2 launch ignores SIGINT)."""
+        if any(self.sup.is_running(f"hand_{side}") for side in self.station.hands):
+            return {"ok": False, "error": "로봇 손을 먼저 끌 것: 장갑이 멈추면 손이 그 자리에서 멈춘다"}
+        return self._spawn(units.glove_task(self.station, self.mode, "stop"))
 
     def _stop_left_behind(self, pid: int) -> dict:
         entry = next((e for e in self.left_behind if e["pid"] == pid), None)
