@@ -412,3 +412,24 @@ def test_home_tolerance_covers_the_arm4090_pan_static_error():
     measured = driver.move_to(*config.home, speed_deg_s=20.0, tolerance_deg=config.home_tolerance_deg,
                               sleep=clock.sleep, clock=clock.clock)
     assert measured == pytest.approx((-1.4, 71.9), abs=0.1)
+
+
+def test_direction_check_reads_the_image_shift():
+    import importlib.util
+
+    import cv2
+
+    spec = importlib.util.spec_from_file_location("hdc", ROOT / "scripts" / "head_direction_check.py")
+    hdc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hdc)
+    rng = np.random.default_rng(0)
+    base = (rng.random((240, 320, 3)) * 255).astype(np.uint8)
+    base = cv2.GaussianBlur(base, (9, 9), 3)
+    right = np.roll(base, 12, axis=1)  # scene moved right: camera turned left
+    up = np.roll(base, -10, axis=0)  # scene moved up: camera looked down
+    dx, _ = hdc.image_shift(base, right)
+    _, dy = hdc.image_shift(base, up)
+    assert dx == pytest.approx(12, abs=1) and dy == pytest.approx(-10, abs=1)
+    assert hdc.sign_from_shift("pan", 5, (dx, 0.0))[0] == 1
+    assert hdc.sign_from_shift("tilt", 5, (0.0, dy))[0] == -1
+    assert hdc.sign_from_shift("pan", 5, (0.5, 0.0))[0] is None
