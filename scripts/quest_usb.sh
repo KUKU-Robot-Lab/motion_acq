@@ -5,6 +5,8 @@
 #   scripts/quest_usb.sh install   # install the pinned APK (first time per Quest)
 #   scripts/quest_usb.sh forward   # adb forward tcp:65432 -> Quest 65432
 #   scripts/quest_usb.sh launch    # (re)start the app in the headset over adb
+#   scripts/quest_usb.sh view      # head camera page instead of the app (macq quest-view runs)
+#   scripts/quest_usb.sh app       # back to the HandUMI app (forward + launch)
 #
 # With the forward active, the station rig uses quest_ip 127.0.0.1. Only TCP is
 # tunnelled; the UDP time-sync (42000) is not, so frames are stamped with the PC
@@ -71,10 +73,32 @@ cmd_launch() {
   fi
 }
 
+VIEW_PORT="${QUEST_VIEW_PORT:-8787}"
+
+cmd_view() {
+  # The page reaches macq quest-view as http://localhost (adb reverse: a secure
+  # context for WebXR, no certificate); quest-view itself serves port 65432.
+  one_device
+  "$ADB" forward --remove "tcp:$TCP_PORT" 2>/dev/null || true
+  "$ADB" reverse "tcp:$VIEW_PORT" "tcp:$VIEW_PORT"
+  "$ADB" shell am force-stop "$PACKAGE" || true
+  "$ADB" shell am start -a android.intent.action.VIEW -d "http://localhost:$VIEW_PORT" com.oculus.browser >/dev/null
+  echo "Quest Browser opened http://localhost:$VIEW_PORT; press 'VR 시작' in the headset."
+}
+
+cmd_app() {
+  one_device
+  "$ADB" reverse --remove "tcp:$VIEW_PORT" 2>/dev/null || true
+  cmd_forward
+  cmd_launch
+}
+
 case "${1:-status}" in
   status) cmd_status ;;
   install) cmd_install ;;
   forward) cmd_forward ;;
   launch) cmd_launch ;;
-  *) die "usage: $0 {status|install|forward|launch}" ;;
+  view) cmd_view ;;
+  app) cmd_app ;;
+  *) die "usage: $0 {status|install|forward|launch|view|app}" ;;
 esac

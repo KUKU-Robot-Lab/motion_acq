@@ -40,6 +40,10 @@ COMMANDS = {
         "motion_acq.scripts.station",
         "Bring up a station: head + hands + recorder (--fake | --real)",
     ),
+    ("quest-view",): Command(
+        "motion_acq.quest_view.server",
+        "Head camera in the Quest (WebXR page) and its poses as the HandUMI stream",
+    ),
     ("head",): Command(
         "motion_acq.scripts.head_teleop",
         "Meta Quest HMD -> Dynamixel pan/tilt head (fake bus by default)",

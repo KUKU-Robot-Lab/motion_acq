@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>motion_acq head view</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0f172a; color: #e2e8f0; font-family: system-ui, "Noto Sans KR", sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+  h1 { font-size: 26px; margin: 0; }
+  button { font-size: 22px; padding: 16px 28px; border-radius: 12px; border: 0; background: #2563eb; color: #fff;
+           cursor: pointer; min-height: 56px; }
+  button:disabled { background: #475569; cursor: default; }
+  #status { font-size: 18px; color: #cbd5e1; min-height: 1.5em; }
+  canvas { width: 100%; background: #000; border-radius: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>머리 카메라 보기 (motion_acq)</h1>
+  <button id="enter" disabled>VR 시작</button>
+  <div id="status">서버 연결 중...</div>
+  <canvas id="preview" width="640" height="480" aria-label="머리 카메라 미리보기"></canvas>
+</main>
+<script src="/static/viewer.js"></script>
+</body>
+</html>
