@@ -424,17 +424,69 @@ def test_webxr_arm_needs_the_direction_check(console, monkeypatch):
     assert any("방향 확인" in b for b in console.blockers("arm"))
 
 
-def test_hand_on_asks_once_for_node_and_enable(console, monkeypatch):
+def test_hand_on_asks_once_for_driver_node_and_enable(console, monkeypatch):
     console.set_mode("real")
-    monkeypatch.setattr(console, "blockers", lambda key: [])
+    monkeypatch.setattr(console, "_hand_precheck", lambda side: [])
+    monkeypatch.setattr(console, "_hand_driver_present", lambda side: False)
     console.update_settings({"user": "op1"})
     jobs = []
     monkeypatch.setattr(console, "_job", lambda name, fn: jobs.append(name) or {"ok": True})
     reply = console.action("hand_on:right")
     assert reply["need_confirm"] and jobs == []
-    assert "hand_node" in reply["command"] and "enable" in reply["command"]
+    lines = reply["command"].split("\n")
+    assert "rh56f1_driver.py --side right" in lines[0] and "hand_node" in lines[1] and "enable" in lines[2]
+    assert reply["summary"].startswith("드라이버 → 노드 → 켜기")
     assert console.action("hand_on:right", confirm=True, token=reply["token"]) == {"ok": True}
     assert jobs == ["hand_right"]
+
+
+def test_hand_on_uses_a_running_driver(console, monkeypatch):
+    console.set_mode("real")
+    monkeypatch.setattr(console, "_hand_precheck", lambda side: [])
+    monkeypatch.setattr(console, "_hand_driver_present", lambda side: True)
+    console.update_settings({"user": "op1"})
+    reply = console.action("hand_on:left")
+    assert "rh56f1_driver.py" not in reply["command"] and reply["summary"].startswith("노드 → 켜기")
+
+
+def test_hand_driver_command_matches_s2r(tmp_path):
+    launch = units.hand_driver(ARM4090, "real", "left")
+    assert launch.key == "ecat_left" and launch.moves_robot and launch.env["ROS_DOMAIN_ID"] == "126"
+    assert launch.argv[-1].endswith("rh56f1_driver.py --side left")
+    with pytest.raises(units.UnitError):
+        units.hand_driver(ARM4090, "fake", "left")
+
+
+def test_driver_off_refused_while_the_hand_node_runs(console, monkeypatch):
+    console.set_mode("real")
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key in ("hand_right", "ecat_right"))
+    assert "끄기" in console.action("driver_off:right")["error"]
+
+
+def test_stop_all_stops_hands_only_after_the_arms(console, monkeypatch):
+    import threading as _threading
+
+    state = {"arm": True, "hand_right": True, "ecat_right": True, "head": True}
+    signals = []
+
+    def stop(key):
+        signals.append(key)
+        if key.startswith("hand_"):
+            state[key] = False  # the node opens the hand and exits
+        return True
+
+    monkeypatch.setattr(console.sup, "running", lambda: [k for k, v in state.items() if v])
+    monkeypatch.setattr(console.sup, "is_running", lambda key: state.get(key, False))
+    monkeypatch.setattr(console.sup, "stop", stop)
+    started = []
+    monkeypatch.setattr(_threading, "Thread", lambda target, **kw: started.append(target) or
+                        type("T", (), {"start": lambda self: None})())
+    reply = console.stop_all()
+    assert set(reply["stopped"]) == {"arm", "head"} and set(reply["later"]) == {"hand_right", "ecat_right"}
+    assert "hand_right" not in signals
+    state.update(arm=False, head=False)  # the arm reached rest
+    started[0]()
+    assert signals[-2:] == ["hand_right", "ecat_right"]
 
 
 def test_record_checklist_lists_every_stream(console, monkeypatch):

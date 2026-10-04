@@ -35,6 +35,8 @@ DEFAULT_SETTINGS = {"user": "", "arm_side": "right", "scale": units.DEFAULT_SCAL
                     "webxr_arm_ok": ""}  # set once by the direction check: arms may follow the headset view
 SENSECOM = ROOT / "ros_ws/install/senseglove_com/share/senseglove_com/Linux/SenseCom_Linux_Latest/SenseCom.x86_64"
 HAND_NODE_VISIBLE_S = 20.0
+HAND_DRIVER_UP_S = 30.0  # EtherCAT: OP and the first /hand_<side>/angle_actual
+ARM_UNITS = ("arm", "record")
 
 
 def same_commands(a: list[Launch], b: list[Launch]) -> bool:
@@ -167,6 +169,8 @@ class Console:
                                 task=str(s["task"]), episodes=int(s["episodes"]), output_dir=out, cameras=cameras)
         if key.startswith("hand_"):
             return units.hand(st, mode, key[5:], str(s["user"]), self.session_dir / "hand")
+        if key.startswith("ecat_"):
+            return units.hand_driver(st, mode, key[5:])
         if key.startswith("calib_"):
             return units.calibrate(st, mode, key[6:], str(s["user"]))
         raise UnitError(f"unknown unit {key!r}")
@@ -266,10 +270,32 @@ class Console:
         return {"ok": True}
 
     def stop_all(self) -> dict:
-        stopped = [key for key in self.sup.running() if self.sup.stop(key)]
-        self.intent("stop_all", keys=stopped)
-        self.event("warn", "모두 정지 요청: " + (", ".join(stopped) or "없음"))
-        return {"ok": True, "stopped": stopped}
+        """One SIGINT each, in order: arms, head, Quest, gloves first; the robot hands only once the
+        arms are back at rest (the stored paths assume the hand as it is, not opened on the way);
+        the hand drivers last, after the hand nodes have opened the hands."""
+        running = self.sup.running()
+        first = [k for k in running if not (k.startswith("hand_") or k.startswith("ecat_"))]
+        stopped = [key for key in first if self.sup.stop(key)]
+        later = [k for k in running if k.startswith("hand_") or k.startswith("ecat_")]
+        if later:
+            threading.Thread(target=self._stop_hands_after_arms, daemon=True, name="console-stop-hands").start()
+        self.intent("stop_all", keys=stopped, later=later)
+        self.event("warn", "모두 정지 요청: " + (", ".join(stopped + later) or "없음")
+                   + (" (손은 팔이 차렷에 간 뒤)" if later else ""))
+        return {"ok": True, "stopped": stopped, "later": later}
+
+    def _stop_hands_after_arms(self) -> None:
+        deadline = time.time() + 180
+        while any(self.sup.is_running(k) for k in ARM_UNITS) and time.time() < deadline:
+            time.sleep(0.3)
+        hands = [k for k in self.sup.running() if k.startswith("hand_")]
+        for key in hands:
+            self.sup.stop(key)
+        deadline = time.time() + 30
+        while any(self.sup.is_running(k) for k in hands) and time.time() < deadline:
+            time.sleep(0.3)
+        for key in [k for k in self.sup.running() if k.startswith("ecat_")]:
+            self.sup.stop(key)
 
     def set_space_target(self, key: str | None) -> dict:
         if key is not None and key not in SPACE_UNITS:
@@ -303,51 +329,99 @@ class Console:
             return self._hand_on(units.check_side(arg), confirm=confirm, token=token)
         if kind == "hand_off":
             return self.stop(f"hand_{units.check_side(arg)}")  # SIGINT: the node walks the hand open, exits
+        if kind == "driver_off":
+            side = units.check_side(arg)
+            if self.sup.is_running(f"hand_{side}"):
+                return {"ok": False, "error": "손을 먼저 끌 것([끄기]): 드라이버가 먼저 내려가면 손이 그 자리에서 멈춘다"}
+            return self.stop(f"ecat_{side}")
         return {"ok": False, "error": f"unknown action {name!r}"}
 
-    # -- robot hand: node + enable in one confirmed step -------------------------------------------
+    # -- robot hand: driver + node + enable in one confirmed step ------------------------------------
+    def _hand_driver_present(self, side: str) -> bool:
+        ros = gates.fresh_ros(self, self.probe("ros"))
+        return bool(self.sup.is_running(f"ecat_{side}") or gates.driver_running_elsewhere(self, side)
+                    or (ros and ((ros.get("hands") or {}).get(side) or {}).get("driver")))
+
+    def _hand_precheck(self, side: str) -> list[str]:
+        """What stops [켜기] before anything starts (the driver may still be off: it starts first)."""
+        if self.closing:
+            return ["콘솔이 종료 중이다"]
+        out = []
+        cal = self.calibration().get(side) or {}
+        if not cal.get("ok"):
+            out.append(f"장갑 보정이 필요하다: {cal.get('detail', '?')} (장갑 > 보정)")
+        if self.mode == "real":
+            ros = gates.fresh_ros(self, self.probe("ros"))
+            if ros is None:
+                out.append("ROS 상태 확인 중: 잠시 뒤 다시")
+            else:
+                if not (ros.get("glove_topics") or {}).get(side):
+                    out.append("장갑 토픽 없음: 장갑 [연결] 먼저")
+                nodes = ((ros.get("hands") or {}).get(side) or {}).get("angle_set_publisher_nodes") or []
+                foreign = [n for n in nodes if n != f"motion_acq_hand_{side}"]
+                if foreign:
+                    out.append(f"/hand_{side}/angle_set 을 다른 노드({', '.join(foreign)})가 발행 중: 그쪽 손 제어를 먼저 끌 것")
+        return out
+
     def _hand_on(self, side: str, *, confirm: bool, token: str) -> dict:
         key = f"hand_{side}"
         with self.lock:
-            node_running = self.sup.is_running(key)
-            if not node_running:
-                problems = self.blockers(key)
-                if problems:
-                    return {"ok": False, "error": " / ".join(problems)}
-            launches = ([] if node_running else [self.build(key)]) + [
-                units.hand_enable(self.station, self.mode, side, True)]
+            problems = self._hand_precheck(side)
+            if problems:
+                return {"ok": False, "error": " / ".join(problems)}
+            launches = []
+            if self.mode == "real" and not self._hand_driver_present(side):
+                launches.append(units.hand_driver(self.station, self.mode, side))
+            if not self.sup.is_running(key):
+                launches.append(self.build(key))
+            launches.append(units.hand_enable(self.station, self.mode, side, True))
             side_ko = "오른손" if side == "right" else "왼손"
+            steps = " → ".join(["드라이버" if item.key.startswith("ecat_") else "노드" if item.key == key else "켜기"
+                                for item in launches])
             reply, approved = self._approve(f"hand_on_{side}", launches, title=f"로봇 {side_ko} 켜기",
-                                            summary=f"{side_ko} 노드를 띄우고(필요하면) 켠다: home(펼침) 뒤 장갑을 따라간다.",
+                                            summary=f"{steps}: home(펼침)으로 간 뒤 장갑을 따라간다.",
                                             confirm=confirm, token=token)
             if reply is not None:
                 return reply
-        return self._job(f"hand_{side}", lambda: self._hand_on_job(side, approved))
+        return self._job(key, lambda: self._hand_on_job(side, approved))
 
-    def _hand_on_job(self, side: str, launches: list[Launch]) -> str:
-        key = f"hand_{side}"
-        for launch in launches[:-1]:  # the node, if it was not running
-            result = self._spawn(launch, confirmed=True)
-            if not result.get("ok"):
-                raise RuntimeError(result.get("error", "hand node"))
-        deadline = time.time() + HAND_NODE_VISIBLE_S
-        while True:  # our node must be visible on the domain before the enable is sent
-            if not self.sup.is_running(key):
+    def _wait_hand(self, side: str, *, starting: bool, need_node: bool, timeout_s: float) -> None:
+        deadline = time.time() + timeout_s
+        while True:
+            if need_node and not self.sup.is_running(f"hand_{side}"):
                 raise RuntimeError("손 노드가 끝났다: 로그 확인")
+            if self.mode == "real" and f"ecat_{side}" in self.sup.children and not self.sup.is_running(f"ecat_{side}") \
+                    and not gates.driver_running_elsewhere(self, side):
+                raise RuntimeError("손 드라이버가 끝났다: 손 전원·랜선, 드라이버 로그 확인")
             ros = ros_state(self.station, self.mode)
             ros["at"] = time.time()
-            problems = gates.hand_blockers(self, side, ros, starting=False)
+            problems = gates.hand_blockers(self, side, ros, starting=starting)
             if not problems:
-                break
+                return
             if time.time() > deadline:
                 raise RuntimeError(" / ".join(problems))
             time.sleep(1.0)
-        result = self._spawn(launches[-1], confirmed=launches[-1].moves_robot)
-        if not result.get("ok"):
-            raise RuntimeError(result.get("error", "enable"))
-        if self._wait_exit(launches[-1].key, 30) != 0:
+
+    def _hand_on_job(self, side: str, launches: list[Launch]) -> str:
+        enable = launches[-1]
+        for launch in launches[:-1]:
+            if launch.key.startswith("ecat_"):
+                self._spawn_task_checked(launch)
+                self._wait_hand(side, starting=True, need_node=False, timeout_s=HAND_DRIVER_UP_S)
+            else:  # the node: real = the driver is up and nobody else commands this hand
+                if self.mode == "real":  # (fake: the node's launch brings its own fake driver)
+                    self._wait_hand(side, starting=True, need_node=False, timeout_s=5.0)
+                self._spawn_task_checked(launch)
+        self._wait_hand(side, starting=False, need_node=True, timeout_s=HAND_NODE_VISIBLE_S)
+        self._spawn_task_checked(enable)
+        if self._wait_exit(enable.key, 30) != 0:
             raise RuntimeError("켜기 토픽 발행 실패: 로그 확인")
         return "켬: home(펼침) 뒤 장갑을 따라간다"
+
+    def _spawn_task_checked(self, launch: Launch) -> None:
+        result = self._spawn(launch, confirmed=launch.moves_robot)
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error", launch.key))
 
     def _job(self, name: str, fn) -> dict:
         with self.lock:
@@ -547,7 +621,7 @@ class Console:
         keys = ["quest_view"] + (["mock_quest"] if self.mode == "fake" else [])
         keys += (["head"] if self.station.has_head else []) + ["arm", "record"]
         for side in self.station.hands:
-            keys += [f"hand_{side}", f"calib_{side}"]
+            keys += [f"hand_{side}", f"calib_{side}"] + ([f"ecat_{side}"] if self.mode == "real" else [])
         return keys
 
     def _unit(self, key: str) -> dict:

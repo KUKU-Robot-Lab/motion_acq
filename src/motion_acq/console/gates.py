@@ -62,6 +62,8 @@ def blockers(console, key: str) -> list[str]:
             out += _head_blockers(console)
         if key.startswith("hand_"):
             out += hand_blockers(console, key[5:], console.probe("ros"), starting=True)
+        if key.startswith("ecat_"):
+            out += driver_blockers(console, key[5:])
         if key.startswith("calib_"):
             ros = fresh_ros(console, console.probe("ros"))
             if ros is None or not (ros.get("glove_topics") or {}).get(key[6:]):
@@ -108,6 +110,22 @@ def _head_blockers(console) -> list[str]:
         return [f"머리 포트 없음: {port.get('path', '?')}"]
     if port.get("holders"):
         return [f"머리 포트를 PID {port['holders']} 가 사용 중(s2r 머리 노드?)"]
+    return []
+
+
+def driver_running_elsewhere(console, side: str) -> list[int]:
+    """PIDs of an RH56F1 driver for this hand that this console did not start (s2r)."""
+    if console.sup.is_running(f"ecat_{side}"):
+        return []
+    return list((console.probe("hand_drivers") or {}).get(side) or [])
+
+
+def driver_blockers(console, side: str) -> list[str]:
+    elsewhere = driver_running_elsewhere(console, side)
+    if elsewhere:
+        return [f"{side} 손 드라이버가 이미 떠 있다(PID {elsewhere}, s2r 콘솔?): 그대로 쓴다"]
+    if console.mode != "real":
+        return ["fake 에서는 손 노드가 가짜 드라이버를 같이 띄운다"]
     return []
 
 

@@ -81,6 +81,12 @@ class Station:
         return tuple(str(name) for name in (self.rig.get("cameras") or {}))
 
     @property
+    def hand_driver(self) -> Path | None:
+        """The RH56F1 EtherCAT driver script (s2r's rh56f1_driver.py), if the rig names one."""
+        value = (self.rig.get("hands") or {}).get("driver")
+        return None if not value else Path(str(value)).expanduser()
+
+    @property
     def can_auto_repair(self) -> bool:
         robot = (self.rig.get("robots") or {}).get(self.robot) or {}
         return bool((robot.get("can") or {}).get("auto_repair", True))
@@ -286,6 +292,30 @@ def hand(station: Station, mode: str, side: str, user: str, log_dir: Path) -> La
     side_ko = "오른손" if side == "right" else "왼손"
     return Launch(f"hand_{side}", f"{side_ko} 노드", ros_argv(command), _ros_env(station, mode),
                   summary=f"{side_ko}: 꺼진 채로 뜬다(손은 안 움직인다). 켜기는 따로 승인.", stop_grace_s=15.0)
+
+
+def hand_driver(station: Station, mode: str, side: str) -> Launch:
+    """RH56F1 EtherCAT driver of one hand, exactly as s2r runs it (rh56f1_driver.py --side <side>).
+
+    It goes to OP and holds the fingers where they are until the first command; SIGINT
+    takes the master back to INIT (s2r rh56f1_hand_down.sh does the same)."""
+    side = check_side(side)
+    if not _real(mode):
+        raise UnitError("fake: 손 노드가 가짜 드라이버를 같이 띄운다")
+    script = station.hand_driver
+    if script is None or not script.exists():
+        raise UnitError(f"손 드라이버 없음: hands.driver ({script}) 를 확인할 것")
+    import os
+
+    rc_ws = os.environ.get("ROBOT_CONTROL_WS", str(Path.home() / "rl_ws/robot_control/ros_ws/install"))
+    distro = os.environ.get("ROS_DISTRO") or next(
+        (d for d in ("humble", "jazzy") if Path(f"/opt/ros/{d}/setup.bash").exists()), "humble")
+    command = (f"set +u; source /opt/ros/{distro}/setup.bash; source {rc_ws}/setup.bash; "
+               f"exec python3 {script} --side {side}")
+    side_ko = "오른손" if side == "right" else "왼손"
+    return Launch(f"ecat_{side}", f"로봇 {side_ko} 드라이버(EtherCAT)", ("bash", "-c", command), _ros_env(station, mode),
+                  moves_robot=True, summary=f"{side_ko} EtherCAT 드라이버: OP 로 올라가고, 첫 명령 전에는 손가락이 제자리.",
+                  stop_grace_s=10.0)
 
 
 def hand_enable(station: Station, mode: str, side: str, on: bool) -> Launch:

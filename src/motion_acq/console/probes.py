@@ -231,6 +231,19 @@ def glove_state(station: Station) -> dict:
             "driver_pids": [int(line.split()[0]) for line in driver]}
 
 
+def external_hand_drivers() -> dict[str, list[int]]:
+    """RH56F1 EtherCAT drivers not started by this console (s2r console / rh56f1_hand_up.sh), by side."""
+    out: dict[str, list[int]] = {}
+    for line in run(["pgrep", "-af", "rh56f1_ecat_node.py --side"], timeout=3).splitlines():
+        parts = line.split()
+        if not parts or not parts[0].isdigit() or "pgrep" in line:
+            continue
+        for side in SIDES:
+            if f"--side {side}" in line:
+                out.setdefault(side, []).append(int(parts[0]))
+    return out
+
+
 def ros_state(station: Station, mode: str) -> dict:
     """Hand driver topics and who commands them, on the domain the hand nodes use."""
     from motion_acq.console.units import UnitError, ros_argv
@@ -296,6 +309,8 @@ class Probes:
             self._guard("can_holders", can_holders)
             self._guard("head_port", lambda: head_port(self.station))
             self._guard("gloves", lambda: glove_state(self.station))
+            if self.station.hands:
+                self._guard("hand_drivers", external_hand_drivers)
             self.data["fast_at"] = time.time()
             self._stop.wait(FAST_PERIOD_S)
 

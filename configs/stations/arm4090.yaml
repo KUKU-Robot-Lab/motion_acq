@@ -100,3 +100,6 @@ head:
 # nodes, the glove driver and the calibration join that domain.
 hands:
   ros_domain_id: 126
+  # The RH56F1 EtherCAT driver the s2r console runs (one per hand, config/rh56f1_ports.yaml
+  # of sim2real); macq console starts it the same way unless s2r already runs it.
+  driver: ~/rl_ws/sim2real/deploy/policy_control/tools/rh56f1_driver.py

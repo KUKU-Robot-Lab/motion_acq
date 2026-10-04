@@ -10,7 +10,8 @@ let drawerKey = null;
 let lastEventT = Date.now() / 1000;
 const SIDE_KO = { right: "오른", left: "왼" };
 const UNIT_KO = { quest_view: "영상 서버", mock_quest: "가짜 Quest", head: "목", arm: "팔", record: "녹화",
-  hand_right: "로봇 오른손", hand_left: "로봇 왼손", calib_right: "오른손 보정", calib_left: "왼손 보정" };
+  hand_right: "로봇 오른손", hand_left: "로봇 왼손", calib_right: "오른손 보정", calib_left: "왼손 보정",
+  ecat_right: "로봇 오른손 드라이버", ecat_left: "로봇 왼손 드라이버" };
 const unitName = (k) => UNIT_KO[k] || k.replace(/^task_/, "작업 ");
 const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmt = (v, d = 1) => (typeof v === "number" && isFinite(v) ? v.toFixed(d) : "-");
@@ -172,6 +173,15 @@ function nodeArm(s, side) {
            state: inUse ? "대기 (선택됨)" : "사용 안 함", sub: canText, actions: pick };
 }
 
+function driverText(s, side) {
+  if (!real()) return "fake: 켜면 가짜 드라이버·장갑과 함께 뜬다";
+  const ext = ((s.probes || {}).hand_drivers || {})[side] || [];
+  const h = (((s.probes || {}).ros || {}).hands || {})[side] || {};
+  if (running(`ecat_${side}`)) return h.driver ? "드라이버 켜짐 (이 콘솔)" : "드라이버 올라오는 중";
+  if (ext.length) return `드라이버: s2r 쪽 (PID ${ext.join(",")})`;
+  return h.driver ? "드라이버 있음" : "드라이버는 [켜기] 때 같이 켠다";
+}
+
 function nodeHand(s, side) {
   const key = `hand_${side}`;
   const h = (((s.probes || {}).ros || {}).hands || {})[side] || {};
@@ -182,10 +192,8 @@ function nodeHand(s, side) {
   if (!running(key)) {
     const st = unitState(key);
     const failed = job(key).state === "failed" ? job(key).text : "";
-    const driverText = !real() ? "fake: 켜면 가짜 드라이버·장갑과 함께 뜬다"
-      : h.driver ? "EtherCAT 드라이버 있음" : "드라이버 없음: s2r 콘솔에서 켤 것";
-    return { ...n, tone: st ? st[0] : failed ? "bad" : h.driver || !real() ? "mute" : "warn", state: st ? st[1] : "꺼짐",
-             sub: failed || driverText, actions: on };
+    return { ...n, tone: st ? st[0] : failed ? "bad" : "mute", state: st ? st[1] : "꺼짐",
+             sub: failed || driverText(s, side), actions: on };
   }
   let st = ["ok", "노드 실행 (손 꺼짐)"];
   if (rec?.fault) st = ["bad", `FAULT ${rec.fault}`];
@@ -360,7 +368,7 @@ function detailHand(s, side) {
   const h = (ros.hands || {})[side] || {};
   const rec = (s.hands || {})[side];
   const rows = [["ROS 도메인", ros.error ? `오류: ${ros.error}` : ros.domain ?? "-"],
-    ["EtherCAT 드라이버", h.driver ? "있음" : "없음 (s2r 콘솔에서 켤 것)", h.driver ? "ok" : "warn"],
+    ["EtherCAT 드라이버", driverText(s, side), h.driver ? "ok" : ""],
     ["angle_set 발행", (h.angle_set_publisher_nodes || []).join(", ") || String(h.angle_set_publishers ?? "-")]];
   if (rec) {
     rows.push(["상태", `${rec.mode} · ${rec.state}`, rec.fault ? "bad" : ""]);
@@ -370,9 +378,11 @@ function detailHand(s, side) {
   const cal = (s.calibration || {})[side];
   if (cal) rows.push(["장갑 보정", cal.detail, cal.ok ? "ok" : "warn"]);
   if (jobLine(key)) rows.push(["최근", jobLine(key), job(key).state === "failed" ? "bad" : ""]);
+  const driverOff = real() && running(`ecat_${side}`) && !running(key)
+    ? btn("드라이버 내리기", { "data-action": `driver_off:${side}` }, "ghost small") : "";
   return `<h3>로봇 ${SIDE_KO[side]}손 · RH56F1</h3>${facts(rows)}
-    <p class="hint">[켜기]: 노드를 띄우고 켠다(home 펼침 → 장갑 따라가기). [끄기]: 펼침으로 돌아간 뒤 노드를 내린다. 드라이버는 s2r 콘솔 몫.</p>
-    <div class="actions">${logButton(key)}</div>`;
+    <p class="hint">[켜기]: 드라이버(없으면) → 노드 → 켜기, home(펼침) 뒤 장갑을 따라간다. [끄기]: 펼침으로 돌아간 뒤 노드를 내린다(드라이버는 남는다). 장갑 보정이 먼저 있어야 한다.</p>
+    <div class="actions">${logButton(key)}${real() ? logButton(`ecat_${side}`).replace("전체 로그", "드라이버 로그") : ""}${driverOff}</div>`;
 }
 
 function detailRecord(s) {
@@ -539,7 +549,7 @@ document.addEventListener("change", (ev) => {
 
 $("#space-target").addEventListener("change", (ev) => act("space_target", { key: ev.target.value || null }, null, "Space 대상 바꿈"));
 $("#stop-all").addEventListener("click", async (ev) => {
-  if (await confirmDialog("모두 정지", "실행 중인 모든 것에 SIGINT 를 한 번 보낸다. 팔은 home → 차렷, 목은 home, 손은 펼침으로 간 뒤 끝난다.", "", false))
+  if (await confirmDialog("모두 정지", "실행 중인 모든 것에 SIGINT 를 한 번 보낸다. 팔·녹화는 home → 차렷, 목은 home. 로봇 손은 팔이 차렷에 간 뒤 펼침으로, 손 드라이버는 마지막에 내린다.", "", false))
     act("stop_all", {}, ev.currentTarget, "모두 정지 요청");
 });
 $("#quit").addEventListener("click", async () => {
