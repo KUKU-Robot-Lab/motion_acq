@@ -111,3 +111,27 @@ def test_failed_start_returns_to_rest_instead_of_dropping(monkeypatch):
         assert np.abs(env.streamer.feedback()["right"]).max() < 0.1  # at rest before the motors go off
     finally:
         backend.disconnect()
+
+
+def test_unpowered_arm_is_refused():
+    """10.04: arm power off -> every joint read exactly 0 -> the path ran into a following error."""
+    import functools
+
+    from motion_acq.real.openarm.driver import OpenArmSdkSide
+    from motion_acq.real.openarm.fake_sdk import FakeOpenArmSdk
+
+    sdk = FakeOpenArmSdk(start_q_by_port={"can0": [0.0] * 7})
+    side = functools.partial(OpenArmSdkSide, sdk=sdk)("can0", enable_fd=True, kp=tuple(KP), kd=(1.0,) * 7,
+                                                       gripper_enabled=False)
+    with pytest.raises(RuntimeError, match="powered on"):
+        side.read_startup_q()
+
+
+def test_power_off_away_from_rest_holds_and_warns(monkeypatch, caplog):
+    backend, env, home = fake_right(monkeypatch, feedforward=True)
+    backend.connect()
+    backend.home(home)
+    monkeypatch.setattr("sys.stdin", None)  # not a terminal: warn, do not wait
+    with caplog.at_level("ERROR"):
+        backend.disconnect()
+    assert "away from rest" in caplog.text and "will drop" in caplog.text

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ import yaml
 from motion_acq.real.openarm.gravity import ArmGravity, GravityModelError, load_arm_gravity
 from motion_acq.real.openarm.home_path import (
     MAX_PATH_SPEED_RAD_S,
+    PATH_START_TOLERANCE_RAD,
     HomePath,
     HomePathError,
     classify_start,
@@ -256,6 +258,14 @@ class OpenArmSdkSide:
             raise RuntimeError(
                 f"OpenArm {self.port} startup feedback is unstable at "
                 f"joint{joint + 1} ({float(excursions[joint]):.3f} rad span)."
+            )
+        if not np.any(np.stack(samples)):
+            # A powered arm never reads exactly 0.0 on every joint; an unpowered one
+            # does (10.04 right arm, power off). Starting would stream commands that a
+            # later power-on turns into a jump.
+            raise RuntimeError(
+                f"OpenArm {self.port}: every joint reads exactly 0 (no motor feedback). "
+                "Is the arm powered on? Switch it on and start again."
             )
         return np.median(recent, axis=0).astype(np.float32)
 
@@ -768,8 +778,38 @@ class OpenArmCanEnvironment:
         if self.streamer is not None:
             self.streamer.raise_if_failed()
 
+    def _confirm_power_off_away_from_rest(self) -> None:
+        """Stored-path robots: the motors only go off at rest without asking.
+
+        Anywhere else the arm drops (10.04). Hold where it is and, on a
+        terminal, wait for the operator to support it before switching off.
+        """
+        if self.streamer is None or not self.settings.home_paths:
+            return
+        feedback = self.streamer.feedback()
+        away = {side: float(np.abs(q).max()) for side, q in feedback.items()
+                if float(np.abs(q).max()) > PATH_START_TOLERANCE_RAD}
+        if not away:
+            return
+        try:
+            self.streamer.hold()
+        except RuntimeError:
+            pass  # streamer down: the motors keep their last command until disabled
+        where = ", ".join(f"{side} {np.rad2deg(v):.0f} deg from rest" for side, v in away.items())
+        log.error("OpenArm motors are about to switch off away from rest (%s): the arm will drop.", where)
+        if not sys.stdin or not sys.stdin.isatty():
+            return
+        try:
+            input(f"\n*** OpenArm {where}. Support the arm, then press Enter to switch the motors off. ***\n")
+        except (EOFError, KeyboardInterrupt):
+            pass
+
     def close(self) -> None:
         error: BaseException | None = None
+        try:
+            self._confirm_power_off_away_from_rest()
+        except Exception as exc:  # noqa: BLE001 - never block the disable itself
+            log.warning("Could not check the arm pose before switching off: %s", exc)
         if self.streamer is not None:
             try:
                 self.streamer.stop()

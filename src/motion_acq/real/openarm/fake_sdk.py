@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 ARM_DOF = 7
+# An unpowered arm reads exactly 0 everywhere; the driver refuses that.
+REST_READING = (1e-4, -1e-4, 2e-4, 1e-4, -2e-4, 1e-4, -1e-4)
 
 
 @dataclass(frozen=True)
@@ -152,7 +154,8 @@ class FakeOpenArmSdk:
     def OpenArm(self, port: str, enable_fd: bool) -> FakeOpenArm:  # noqa: N802 - SDK name
         arm = FakeOpenArm(
             port, enable_fd,
-            start_q=self.start_q_by_port.get(port, [0.0] * ARM_DOF),
+            # rest, plus the few-millidegree offsets a powered encoder always shows
+            start_q=self.start_q_by_port.get(port, list(REST_READING)),
             speed=self.speed_rad_s,
             gravity=self.gravity_by_port.get(port),
         )
