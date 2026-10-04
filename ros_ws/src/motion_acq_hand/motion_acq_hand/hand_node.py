@@ -13,7 +13,8 @@ home (hand open): enable walks home before following the glove; disable, Ctrl+C
 and SIGTERM walk home before stopping (a second signal skips the return).
 enable_on_start is only accepted on the isolated fake domain. Every cycle is
 logged to <log_dir>/hand_<side>_<time>.jsonl and, if udp_target is set, sent
-as one JSON datagram (recorder sidecar).
+as one JSON datagram to each HOST:PORT of that comma-separated list (recorder
+sidecar, macq console).
 """
 
 # ruff: noqa: I001  -- motion_acq_hand.common must be imported first (it puts motion_acq on sys.path)
@@ -46,6 +47,7 @@ from motion_acq.hand.controller import ControllerConfig, HandController
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state
 from motion_acq.hand.retarget import DEFAULT_RETARGET, HandRetargeter, load_hand_retarget_config
 from motion_acq.hand.rh56f1 import DEFAULT_MAP, load_rh56f1_map
+from motion_acq.sidecar import parse_udp_targets
 
 
 class HandNode(Node):
@@ -88,10 +90,9 @@ class HandNode(Node):
         self.create_subscription(Bool, f"/motion_acq/hand_{self.side}/enable", self._on_enable, 10)
 
         self.log_file = self._open_log(log_dir)
-        self.udp = None
-        if udp_target:
-            host, port = udp_target.rsplit(":", 1)
-            self.udp = (socket.socket(socket.AF_INET, socket.SOCK_DGRAM), (host, int(port)))
+        # recorder sidecar and the console: comma-separated HOST:PORT list
+        self.udp_targets = parse_udp_targets(udp_target)
+        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) if self.udp_targets else None
         self._last_mode = self.controller.mode
         self.create_timer(1.0 / config.rate_hz, self._tick)
         self.get_logger().info(
@@ -153,7 +154,8 @@ class HandNode(Node):
         try:
             self.log_file.write(line + "\n")
             if self.udp is not None:
-                self.udp[0].sendto(line.encode("utf-8"), self.udp[1])
+                for target in self.udp_targets:
+                    self.udp.sendto(line.encode("utf-8"), target)
         except OSError as exc:  # logging must never stop the control loop
             self.get_logger().warning(f"hand log/udp write failed: {exc}", throttle_duration_sec=5.0)
         self.status_pub.publish(String(data=json.dumps({

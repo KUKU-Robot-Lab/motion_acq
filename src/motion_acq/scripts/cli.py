@@ -48,6 +48,10 @@ COMMANDS = {
         "motion_acq.scripts.head_teleop",
         "Meta Quest HMD -> Dynamixel pan/tilt head (fake bus by default)",
     ),
+    ("console",): Command(
+        "motion_acq.console.launcher",
+        "Operator console window: Quest, head, arms, gloves, hands, recording (--real | --fake)",
+    ),
 }
 
 

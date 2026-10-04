@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>macq 콘솔</title>
+<link rel="stylesheet" href="/static/console.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5v14l12-7z" fill="currentColor"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><rect x="2.5" y="6.5" width="19" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 14.5h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-log" viewBox="0 0 24 24"><path d="M5 6h14M5 10h14M5 14h10M5 18h7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M7.1 6.5a7 7 0 1 0 9.8 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+</svg>
+
+<header id="top">
+  <div class="brand"><span class="logo">macq</span><span class="brand-sub">콘솔</span></div>
+  <span id="station" class="badge">-</span>
+  <span id="robot" class="meta">-</span>
+  <div class="seg" role="radiogroup" aria-label="모드">
+    <button type="button" data-mode="fake" role="radio">FAKE</button>
+    <button type="button" data-mode="real" role="radio">실기</button>
+  </div>
+  <span id="conn" class="badge" aria-live="polite">연결 중</span>
+  <span class="spacer"></span>
+  <button type="button" id="theme" class="icon-btn" aria-label="밝게/어둡게"><svg><use href="#i-sun"/></svg></button>
+  <button type="button" id="quit" class="btn ghost"><svg><use href="#i-power"/></svg>콘솔 종료</button>
+</header>
+
+<section id="health" aria-label="장치 상태"></section>
+<section id="alerts" aria-live="assertive"></section>
+
+<main id="cards">
+  <article class="card" id="card-quest">
+    <header><h2>Quest</h2><span class="badge" data-f="source">-</span></header>
+    <dl class="facts" data-f="facts"></dl>
+    <div class="actions">
+      <button type="button" class="btn" data-action="quest:app">HandUMI 앱 모드</button>
+      <button type="button" class="btn" data-action="quest:view">헤드셋 영상 모드</button>
+      <button type="button" class="btn ghost" data-action="quest:vr">VR 시작</button>
+      <button type="button" class="btn ghost" data-action="quest:launch">앱 다시 시작</button>
+      <button type="button" class="btn ghost fake-only" data-toggle="mock_quest">가짜 Quest</button>
+      <button type="button" class="btn ghost" data-stop="quest_view">영상 서버 정지</button>
+    </div>
+    <p class="hint">팔은 HandUMI 앱 모드로. 헤드셋 영상 모드(WebXR)는 머리용이고 팔에는 아직 검증 전이다.</p>
+    <div class="job" data-f="job"></div>
+  </article>
+
+  <article class="card wide" id="card-arm">
+    <header><h2>팔</h2><span class="badge" data-f="phase">정지</span></header>
+    <div class="row">
+      <div class="seg" role="radiogroup" aria-label="팔" data-f="sides">
+        <button type="button" data-side="right" role="radio">오른팔</button>
+        <button type="button" data-side="left" role="radio">왼팔</button>
+        <button type="button" data-side="both" role="radio">양팔</button>
+      </div>
+      <label class="field">이동 배율 <input type="number" id="scale" min="0.1" max="1.7" step="0.1" inputmode="decimal"></label>
+      <span class="meta" data-f="tcp"></span>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn primary" data-start="arm"><svg><use href="#i-play"/></svg>시작 (차렷 → home)</button>
+      <button type="button" class="btn key" data-key="arm" data-text=" "><svg><use href="#i-key"/></svg>Space: 따라가기</button>
+      <button type="button" class="btn danger" data-stop="arm"><svg><use href="#i-stop"/></svg>정지 (home → 차렷)</button>
+      <button type="button" class="btn ghost" data-log="arm"><svg><use href="#i-log"/></svg>로그</button>
+    </div>
+    <pre class="tail" data-f="tail"></pre>
+  </article>
+
+  <article class="card" id="card-head">
+    <header><h2>머리</h2><span class="badge" data-f="phase">정지</span></header>
+    <dl class="facts" data-f="facts"></dl>
+    <div class="actions">
+      <button type="button" class="btn primary" data-start="head"><svg><use href="#i-play"/></svg>시작 (home 잠금)</button>
+      <button type="button" class="btn key" data-key="head" data-text=" "><svg><use href="#i-key"/></svg>Space: 따라가기/잠금</button>
+      <button type="button" class="btn danger" data-stop="head"><svg><use href="#i-stop"/></svg>정지 (home)</button>
+      <button type="button" class="btn ghost" data-log="head"><svg><use href="#i-log"/></svg>로그</button>
+    </div>
+    <pre class="tail" data-f="tail"></pre>
+  </article>
+
+  <article class="card wide" id="card-record">
+    <header><h2>녹화</h2><span class="badge" data-f="phase">정지</span></header>
+    <div class="row">
+      <label class="field grow">작업 설명 <input type="text" id="task" maxlength="200"></label>
+      <label class="field">에피소드 <input type="number" id="episodes" min="1" max="500" step="1"></label>
+    </div>
+    <p class="meta" data-f="streams"></p>
+    <div class="actions">
+      <button type="button" class="btn primary" data-start="record"><svg><use href="#i-play"/></svg>녹화 프로그램 시작</button>
+      <button type="button" class="btn key" data-key="record" data-text=" "><svg><use href="#i-key"/></svg>Space: 시작/저장</button>
+      <button type="button" class="btn key" data-key="record" data-text="r">R: 다시</button>
+      <button type="button" class="btn key" data-key="record" data-text="q">Q: 마치기</button>
+      <button type="button" class="btn danger" data-stop="record"><svg><use href="#i-stop"/></svg>정지</button>
+      <button type="button" class="btn ghost" data-log="record"><svg><use href="#i-log"/></svg>로그</button>
+    </div>
+    <pre class="tail" data-f="tail"></pre>
+  </article>
+
+  <article class="card hands-only" id="card-glove">
+    <header><h2>장갑 (Nova 2)</h2><span class="badge" data-f="sensecom">-</span></header>
+    <dl class="facts" data-f="facts"></dl>
+    <div class="row"><label class="field">보정 사용자 <input type="text" id="user" maxlength="32" placeholder="op1"></label></div>
+    <div class="actions">
+      <button type="button" class="btn" data-action="glove:up">SenseCom + 장갑 연결</button>
+      <button type="button" class="btn" data-action="glove:driver">드라이버 시작</button>
+      <button type="button" class="btn ghost" data-action="glove_driver_stop">드라이버 정지</button>
+      <button type="button" class="btn ghost" data-start="calib_right">오른손 보정</button>
+      <button type="button" class="btn ghost" data-start="calib_left">왼손 보정</button>
+      <button type="button" class="btn key" data-key-active="calib" data-text="&#10;">Enter: 이 자세 기록</button>
+    </div>
+    <pre class="tail" data-f="tail"></pre>
+  </article>
+
+  <article class="card hands-only" id="card-hands">
+    <header><h2>손 (RH56F1 EtherCAT)</h2><span class="meta" data-f="domain"></span></header>
+    <p class="hint">드라이버는 s2r 콘솔에서 켠다. 여기서는 손 노드만 붙인다(꺼진 채로 뜨고, 켜기는 따로 승인).</p>
+    <div class="hand-rows" data-f="rows"></div>
+  </article>
+</main>
+
+<footer id="bar">
+  <div id="running" class="chips" aria-label="실행 중"></div>
+  <span class="spacer"></span>
+  <label class="field inline">Space 대상
+    <select id="space-target"><option value="">없음</option><option value="arm">팔</option><option value="head">머리</option><option value="record">녹화</option></select>
+  </label>
+  <button type="button" id="stop-all" class="btn danger big"><svg><use href="#i-stop"/></svg>모두 정지 (안전 자세)</button>
+</footer>
+
+<aside id="drawer" hidden aria-label="로그">
+  <header><h2 id="drawer-title">로그</h2><span class="meta" id="drawer-path"></span><span class="spacer"></span>
+    <button type="button" class="btn ghost danger-text" id="drawer-force">강제 종료</button>
+    <button type="button" class="icon-btn" id="drawer-close" aria-label="닫기">&times;</button></header>
+  <pre id="drawer-log"></pre>
+  <form id="drawer-input" class="row"><input type="text" id="drawer-text" maxlength="80" placeholder="입력 보내기 (Enter 포함)" autocomplete="off"><button type="submit" class="btn">보내기</button></form>
+</aside>
+
+<dialog id="confirm">
+  <form method="dialog">
+    <h2 id="confirm-title">확인</h2>
+    <p id="confirm-summary"></p>
+    <pre id="confirm-command"></pre>
+    <div class="actions end">
+      <button value="cancel" class="btn" autofocus>취소</button>
+      <button value="ok" class="btn danger" id="confirm-ok">실행</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toasts" aria-live="polite"></div>
+<script src="/static/console.js"></script>
+</body>
+</html>

@@ -212,6 +212,19 @@ class SidecarReceiver:
         return self.spec.to_frame(record), record is not None
 
 
+def parse_udp_targets(text: str) -> list[tuple[str, int]]:
+    """'127.0.0.1:47111,127.0.0.1:47141' -> [(host, port), ...]; '' -> []."""
+    targets = []
+    for item in (part.strip() for part in str(text or "").split(",")):
+        if not item:
+            continue
+        host, sep, port = item.rpartition(":")
+        if not sep or not host or not port.isdigit() or not 0 < int(port) < 65536:
+            raise ValueError(f"udp target must be HOST:PORT, not {item!r}")
+        targets.append((host, int(port)))
+    return targets
+
+
 def parse_sidecar_args(values: list[str] | None) -> dict[str, int]:
     """``--sidecar head=47101 --sidecar hand_right=47111`` -> {name: port}."""
     out: dict[str, int] = {}

@@ -87,3 +87,8 @@ head:
 
 # STEP 3 hands: the gloves (serial, BLE address) are the lab's shared Nova 2
 # pair in configs/hands/nova2_gloves.yaml; scripts/nova2.sh connects them.
+# RH56F1 driver = EtherCAT (default since 10.04, user), brought up from the s2r
+# console on the s2r real ROS domain. motion_acq never starts it: the hand
+# nodes, the glove driver and the calibration join that domain.
+hands:
+  ros_domain_id: 126

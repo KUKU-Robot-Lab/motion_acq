@@ -70,6 +70,50 @@ cd ~/rl_ws/motion_acq && git pull   # main tracks kuku/main
 | arm4090 | can0 | can1 | false: s2r owns the links; motion_acq only validates them |
 | arm5080 | can0 | can1 | true (one PCAN-USB Pro FD; VERIFY wiring with show_param) |
 
+## Operator console: `macq console`
+
+One window for the assistant instead of terminals, separate from the sim2real
+console (its own server on 127.0.0.1:8790 and its own Chrome app window).
+
+```bash
+MACQ_STATION=arm4090 macq console --real         # real robot; --fake (default) touches nothing
+MACQ_STATION=arm4090 macq console --install-desktop   # app menu entry "macq 콘솔 (arm4090)", real mode
+```
+
+It runs the same programs as the terminal commands below, each in its own
+process group on a pseudo-terminal, and shows their state:
+
+| card | runs | keys |
+|---|---|---|
+| Quest | `quest_usb.sh app` (HandUMI app, for the arms) / quest-view + `quest_usb.sh view` (head camera in the headset) / `vr`; fake: mock sender | |
+| 팔 | `macq teleop-real` right / left / both, translation scale, `--skip-can-repair` where s2r owns CAN | Space: follow |
+| 머리 | `macq head --unlock key`, records to quest-view, the console and the recorder | Space: follow / lock (home) |
+| 녹화 | `macq teleop-record`; requires only the streams whose producer runs | Space start/save, R, Q |
+| 장갑 | `nova2.sh up / driver`, `calibrate` per side | Enter per pose |
+| 손 | `hand_node` per side on the s2r domain, enable / disable topics | |
+
+- Real mode: a unit that moves the robot (arm, head, record, hand enable) shows
+  its exact command and starts only after [실기 실행]. Blockers are checked
+  first: CAN up/FD and not held by s2r, head port free, a Quest pose source
+  (arms: the HandUMI app only; the WebXR page is not verified for the arms), the
+  RH56F1 EtherCAT driver present on `hands.ros_domain_id` (126) with nobody
+  else publishing `/hand_<side>/angle_set`.
+- 정지 sends SIGINT once (arms home -> rest, head home, hands open); a second
+  stop is refused because it would cut that return short. 강제 종료 (SIGTERM,
+  then SIGKILL, no safe pose) is in the log drawer and asks first. 모두 정지
+  stops everything the same way.
+- Keyboard Space in the window goes to the Space target in the bottom bar
+  (the last started of arm / head / record). A program waiting for Enter
+  (the OpenArm power-off question, calibration poses) shows a red bar with the
+  button.
+- Closing the window leaves the server and the robot as they are; run the
+  command again to reopen it. [콘솔 종료] or Ctrl+C stops every unit safely
+  first. Children are listed in `logs/console/running.json`, so a console
+  started after a crash shows what is still running. Logs per unit:
+  `logs/console/<time>/`, every operator action: `logs/console/intents.jsonl`.
+- The RH56F1 EtherCAT driver is never started here: bring it up from the s2r
+  console. arm5080 has no head, gloves or hands in its rig, so those cards are hidden.
+
 ## Meta Quest over USB (default)
 
 Each station's Quest is wired to its PC. The HandUMI Quest App listens on
@@ -143,6 +187,11 @@ Only arm4090 has a `head:` section (values from sim2real
 until the staged hardware test.
 
 ## STEP 3: hand (SenseGlove Nova 2 -> RH56F1), arm4090
+
+The RH56F1 driver is EtherCAT (default since 10.04): the s2r console brings it
+up on the s2r real ROS domain (`hands.ros_domain_id: 126` in the arm4090 rig);
+`macq station --real`, `macq console` and the hand nodes join that domain and
+never start the driver themselves.
 
 Pure retargeting lives in `motion_acq.hand` (Python 3.10 safe); the ROS 2
 package `ros_ws/src/motion_acq_hand` wraps it for the system interpreter:

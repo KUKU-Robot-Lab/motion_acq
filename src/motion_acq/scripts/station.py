@@ -339,6 +339,11 @@ def main(argv: list[str] | None = None) -> None:
     plan = Plan(station, rig, "fake" if args.fake else "real", streams, args.user)
     if plan.mode == "real" and plan.hands and not plan.user:
         raise SystemExit("--user is required with hands (calibration file owner)")
+    domain = (rig.get("hands") or {}).get("ros_domain_id")
+    if plan.mode == "real" and domain is not None:
+        # The RH56F1 EtherCAT driver runs on the s2r real domain (s2r console);
+        # preflight, hand nodes and the enable topic must be on it too.
+        os.environ["ROS_DOMAIN_ID"] = str(int(domain))
     plan.log_dir = ROOT / "logs" / "station" / time.strftime("%Y%m%d_%H%M%S")
     plan.log_dir.mkdir(parents=True, exist_ok=True)
     print(f"Station {station} ({plan.mode}): streams {streams or 'none (arms only)'}")
