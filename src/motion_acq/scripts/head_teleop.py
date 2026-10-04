@@ -147,7 +147,8 @@ def main(argv: list[str] | None = None) -> None:
         measured = driver.start()
         log.info("Head torque on at pan %.1f / tilt %.1f deg; moving to home %.1f / %.1f at %.0f deg/s.",
                  *measured, *config.home, config.home_speed_deg_s)
-        measured = driver.move_to(*config.home, speed_deg_s=config.home_speed_deg_s, rate_hz=rate_hz)
+        measured = driver.move_to(*config.home, speed_deg_s=config.home_speed_deg_s, rate_hz=rate_hz,
+                                   tolerance_deg=config.home_tolerance_deg)
         log.info("Head at home (pan %.1f / tilt %.1f deg); following the HMD after anchoring.", *measured)
         session = HeadSession(
             tracker, driver, HeadRetargeter(retarget),
@@ -183,7 +184,8 @@ def _return_home(driver: HeadDriver, config: HeadConfig, rate_hz: float, *, aler
         log.error("Hardware alert: the head stays where it is (not returning home).")
         return
     try:
-        measured = driver.move_to(*config.home, speed_deg_s=config.home_speed_deg_s, rate_hz=rate_hz)
+        measured = driver.move_to(*config.home, speed_deg_s=config.home_speed_deg_s, rate_hz=rate_hz,
+                                   tolerance_deg=config.home_tolerance_deg)
         log.info("Head back at home (pan %.1f / tilt %.1f deg).", *measured)
     except (HeadBusError, KeyboardInterrupt) as exc:
         log.error("Head could not return home: %s", exc or "interrupted")

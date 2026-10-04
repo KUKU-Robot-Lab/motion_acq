@@ -73,6 +73,7 @@ head:
     profile_acceleration: 20
     profile_velocity: 50
     start_tolerance_deg: 2.0  # refuse to start if the head sits outside the window
+    home_tolerance_deg: 2.0   # pan rests ~1.6 deg short of its goal (s2r head_home_rh56f1.yaml)
   filter:
     deadband_deg: 0.5
     min_cutoff_hz: 1.0

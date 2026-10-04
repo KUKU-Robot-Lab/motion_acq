@@ -398,3 +398,17 @@ def test_head_teleop_starts_and_ends_at_home(monkeypatch):
     assert tick_to_deg(before[-1][2]) == pytest.approx(-2.9, abs=0.1)
     assert bus.present_ticks[1] == deg_to_tick(-2.9) and bus.present_ticks[2] == deg_to_tick(71.8)
     assert after and tick_to_deg(after[-1][2]) == pytest.approx(-2.9, abs=0.1)
+
+
+def test_home_tolerance_covers_the_arm4090_pan_static_error():
+    """s2r: pan goal 1997 ticks rests at 2015 (1.6 deg); 10.04 run stopped 1.5 deg short of home."""
+    config = load_head_config(station_rig_config("arm4090"), allow_fake_default=False)
+    assert config.home_tolerance_deg >= 1.6
+    bus = fake_bus(pan=-1.4, tilt=71.9)
+    driver = make_driver(bus)
+    driver.start()
+    driver.bus.write4 = lambda *a: None  # the motor does not move for a 1.5 deg goal change
+    clock = FakeTime()
+    measured = driver.move_to(*config.home, speed_deg_s=20.0, tolerance_deg=config.home_tolerance_deg,
+                              sleep=clock.sleep, clock=clock.clock)
+    assert measured == pytest.approx((-1.4, 71.9), abs=0.1)

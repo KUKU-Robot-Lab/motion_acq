@@ -28,6 +28,9 @@ class HeadConfig:
     rate_hz: float = 50.0
     max_consecutive_faults: int = 10
     home_speed_deg_s: float = 20.0  # start and end: walk to home at this speed
+    # The arm4090 pan stops ~1.6 deg short of its goal (sim2real head_home_rh56f1.yaml:
+    # goal 1997 ticks, rests at 2015); a smaller tolerance never "arrives".
+    home_tolerance_deg: float = 2.0
     from_station: bool = True
 
     @property
@@ -103,6 +106,7 @@ def head_config_from_section(data: dict[str, Any], *, from_station: bool = True)
         rate_hz=float(data.get("rate_hz", 50.0)),
         max_consecutive_faults=int(data.get("max_consecutive_faults", 10)),
         home_speed_deg_s=_home_speed(limits),
+        home_tolerance_deg=float(motor.get("home_tolerance_deg", 2.0)),
         from_station=from_station,
     )
 
