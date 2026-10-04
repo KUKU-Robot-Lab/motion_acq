@@ -213,7 +213,7 @@ async def serve(args: argparse.Namespace) -> None:
                          f"adb forward --remove tcp:{args.tcp_port}") from exc
     await loop.create_datagram_endpoint(SyncResponder, local_addr=("127.0.0.1", args.sync_port))
     await loop.create_datagram_endpoint(lambda: HeadStatus(shared), local_addr=("127.0.0.1", args.head_status_port))
-    runner = web.AppRunner(build_app(shared, poses, video_fps=args.fps))
+    runner = web.AppRunner(build_app(shared, poses, video_fps=args.fps), shutdown_timeout=1.0)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", args.port).start()
     log.info("page http://localhost:%d (Quest: scripts/quest_usb.sh view); poses -> TCP 127.0.0.1:%d; "

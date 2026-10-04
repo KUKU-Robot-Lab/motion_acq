@@ -93,6 +93,9 @@ cmd_view() {
 cmd_vr() {
   # WebXR needs a user gesture in the page; the browser devtools give it to the PC.
   one_device
+  if [[ "${1:-}" != "--status" ]] && "$ADB" shell dumpsys power | grep -q "mWakefulness=Asleep"; then
+    die "the headset is asleep (not worn): put it on, then run $0 vr"
+  fi
   "$ROOT/.venv/bin/python" -m motion_acq.quest_view.devtools --view-port "$VIEW_PORT" "$@"
 }
 
