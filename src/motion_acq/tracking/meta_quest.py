@@ -138,9 +138,13 @@ def controller_pose_in_workspace(
 
 
 def workspace_from_hmd(hmd: HmdState) -> WorkspaceCalibration:
-    """Build a workspace reset that re-centers on the current Quest HMD pose."""
+    """Build a workspace reset that re-centers on the current Quest HMD pose.
+
+    Only the headset heading turns the axes: x = where the wearer faces on the
+    floor, z = up. A head tilted at reset time must not tilt the arm motion.
+    """
     reference = unity_pose_to_handumi(hmd.position, hmd.quaternion)
-    return WorkspaceCalibration.from_reference(reference)
+    return WorkspaceCalibration.from_heading(reference)
 
 
 def pose_to_pose7(pose: Pose) -> np.ndarray:

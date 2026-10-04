@@ -21,6 +21,7 @@ the rest of HandUMI uses (`retargeting.handumi_to_robot`).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -249,8 +250,36 @@ class WorkspaceCalibration:
         """Re-center the workspace so ``reference`` maps to the origin."""
         return cls(reference.inverse())
 
+    @classmethod
+    def from_heading(cls, reference: Pose) -> WorkspaceCalibration:
+        """Re-center on ``reference`` but keep the workspace level (z stays up).
+
+        Only the heading of ``reference`` turns the axes; its pitch and roll are
+        dropped, so a head tilted at reset time cannot tilt the workspace.
+        """
+        return cls.from_reference(heading_only(reference))
+
     def apply(self, pose_quest: Pose) -> Pose:
         return self.workspace_from_quest.compose(pose_quest)
+
+
+MIN_HEADING_NORM = 0.1  # forward axis within ~84 deg of vertical still gives a heading
+
+
+def heading_only(pose: Pose) -> Pose:
+    """``pose`` with its rotation reduced to the yaw about +z (gravity up).
+
+    The heading is where the forward (+x) axis points on the floor plane. When
+    the forward axis is (nearly) vertical, the twist about +z is used instead.
+    """
+    forward = quat_to_matrix(pose.quaternion)[:, 0]
+    if math.hypot(forward[0], forward[1]) >= MIN_HEADING_NORM:
+        yaw = math.atan2(forward[1], forward[0])
+    else:
+        _, _, z, w = pose.quaternion
+        yaw = 2.0 * math.atan2(z, w)
+    half = 0.5 * yaw
+    return Pose(pose.position.copy(), np.array([0.0, 0.0, math.sin(half), math.cos(half)]))
 
 
 def apply_mounting_offset(controller_pose: Pose, offset: Pose) -> Pose:
@@ -294,6 +323,7 @@ __all__ = [
     "WorkspaceCalibration",
     "apply_mounting_offset",
     "gripper_pose_in_workspace",
+    "heading_only",
     "matrix_to_quat",
     "quat_conjugate",
     "quat_multiply",
