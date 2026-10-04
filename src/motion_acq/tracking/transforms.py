@@ -266,19 +266,22 @@ class WorkspaceCalibration:
 MIN_HEADING_NORM = 0.1  # forward axis within ~84 deg of vertical still gives a heading
 
 
-def heading_only(pose: Pose) -> Pose:
-    """``pose`` with its rotation reduced to the yaw about +z (gravity up).
+def heading_yaw(quaternion: npt.ArrayLike) -> float:
+    """Yaw (rad, about +z = gravity up) of where the forward (+x) axis points.
 
-    The heading is where the forward (+x) axis points on the floor plane. When
-    the forward axis is (nearly) vertical, the twist about +z is used instead.
+    The forward axis is projected on the floor plane; when it is (nearly)
+    vertical, the twist about +z is used instead.
     """
-    forward = quat_to_matrix(pose.quaternion)[:, 0]
+    q = quat_normalize(quaternion)
+    forward = quat_to_matrix(q)[:, 0]
     if math.hypot(forward[0], forward[1]) >= MIN_HEADING_NORM:
-        yaw = math.atan2(forward[1], forward[0])
-    else:
-        _, _, z, w = pose.quaternion
-        yaw = 2.0 * math.atan2(z, w)
-    half = 0.5 * yaw
+        return math.atan2(forward[1], forward[0])
+    return 2.0 * math.atan2(q[2], q[3])
+
+
+def heading_only(pose: Pose) -> Pose:
+    """``pose`` with its rotation reduced to its heading (yaw about +z)."""
+    half = 0.5 * heading_yaw(pose.quaternion)
     return Pose(pose.position.copy(), np.array([0.0, 0.0, math.sin(half), math.cos(half)]))
 
 
@@ -324,6 +327,7 @@ __all__ = [
     "apply_mounting_offset",
     "gripper_pose_in_workspace",
     "heading_only",
+    "heading_yaw",
     "matrix_to_quat",
     "quat_conjugate",
     "quat_multiply",

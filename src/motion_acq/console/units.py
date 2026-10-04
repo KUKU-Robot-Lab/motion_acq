@@ -225,7 +225,8 @@ def arm(station: Station, mode: str, side: str, scale: float = DEFAULT_SCALE) ->
     return Launch("arm", f"팔 원격조작 ({SIDE_KO[side]})", argv, _base_env(station), pty=True,
                   moves_robot=_real(mode),
                   summary=f"{SIDE_KO[side]}: 차렷이 벗어나 있으면 먼저 0.05 rad/s 로 기준 차렷에 맞추고, "
-                          "저장 경로로 home 에 간 뒤 Space 를 기다린다. 정지하면 home → 차렷으로 돌아간 뒤 모터를 끈다.",
+                          "저장 경로로 home 에 간 뒤 Space 를 기다린다. Space 순간 착용자가 바라보는 방향이 로봇 앞(+x)이 된다. "
+                          "정지하면 home → 차렷으로 돌아간 뒤 모터를 끈다.",
                   stop_grace_s=120.0)
 
 

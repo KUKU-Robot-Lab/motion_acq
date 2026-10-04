@@ -30,6 +30,7 @@ class TeleopInputs:
     side_tracked: dict[str, bool]
     openings: dict[str, float]
     sample_time_ns: int
+    hmd_pose7: np.ndarray | None = None  # workspace headset pose, None when untracked
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,11 @@ class TeleopSession:
                 "right": float(widths.right_normalized),
             },
             sample_time_ns=tracking_sample_time_ns(sample),
+            hmd_pose7=(
+                np.asarray(sample.hmd_pose, dtype=np.float32).copy()
+                if bool(getattr(sample, "hmd_tracked", False))
+                else None
+            ),
         )
 
     def advance(
@@ -95,7 +101,7 @@ class TeleopSession:
             for side, pose in inputs.raw_source_poses.items()
         }
         anchored_sides = self.controller.anchor(
-            source_poses, inputs.side_tracked, start_sides
+            source_poses, inputs.side_tracked, start_sides, hmd_pose7=inputs.hmd_pose7
         )
         step = self.controller.step(source_poses, inputs.side_tracked, inputs.openings)
         exact_indices = tuple(

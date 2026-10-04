@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+import math
+
 import numpy as np
 
 from motion_acq.retargeting.handumi_to_robot import (
@@ -12,8 +14,28 @@ from motion_acq.retargeting.handumi_to_robot import (
     local_relative_robot_target_pose7,
 )
 from motion_acq.robots.registry import RobotRuntime
+from motion_acq.tracking.transforms import heading_yaw
 
 SIDES: tuple[str, str] = ("left", "right")
+
+
+def heading_world_map(world_map: np.ndarray, hmd_pose7: np.ndarray) -> np.ndarray:
+    """``world_map`` turned so the headset heading becomes source forward (+x).
+
+    Only the yaw of the headset counts (z stays up): moving the hand where the
+    wearer faces is then robot +x, whatever the workspace heading was.
+    """
+    yaw = heading_yaw(np.asarray(hmd_pose7, dtype=np.float64)[3:7])
+    c, s = math.cos(yaw), math.sin(yaw)
+    undo_yaw = np.array([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]])
+    return (np.asarray(world_map, dtype=np.float64) @ undo_yaw).astype(np.float32)
+
+
+def _usable_pose7(pose7: np.ndarray | None) -> bool:
+    if pose7 is None:
+        return False
+    pose = np.asarray(pose7, dtype=np.float64)
+    return pose.shape == (7,) and bool(np.all(np.isfinite(pose))) and np.linalg.norm(pose[3:7]) > 1e-6
 
 
 @dataclass(frozen=True)
@@ -42,6 +64,7 @@ class TeleopController:
         source_world_to_robot_world: np.ndarray,
         translation_scale: float,
         anchor_z: float | None = None,
+        heading_from_hmd: bool = False,
     ) -> None:
         self.runtime = runtime
         self.solver = runtime.solver_cls()
@@ -52,6 +75,8 @@ class TeleopController:
             source_world_to_robot_world, dtype=np.float32
         )
         self.translation_scale = float(translation_scale)
+        # True: each arm takes robot forward from the headset heading at its anchor
+        self.heading_from_hmd = bool(heading_from_hmd)
         self.max_reach = runtime.config.ik_weights.max_reach
         self.side_indices = {side: runtime.arm_joint_indices(side) for side in SIDES}
         left_home, right_home = self.solver.fk_pose7(self.home_q)
@@ -121,7 +146,18 @@ class TeleopController:
         source_poses: Mapping[str, np.ndarray],
         side_tracked: Mapping[str, bool],
         requested_sides: tuple[str, ...],
+        *,
+        hmd_pose7: np.ndarray | None = None,
     ) -> tuple[str, ...]:
+        """Start the requested arms from their current hand poses.
+
+        With heading_from_hmd and a tracked headset, robot forward is where the
+        headset faces now; else the workspace axes. Arms already following keep
+        the mapping of their own anchor.
+        """
+        world_map = self.source_world_to_robot_world
+        if self.heading_from_hmd and _usable_pose7(hmd_pose7):
+            world_map = heading_world_map(world_map, np.asarray(hmd_pose7))
         anchored: list[str] = []
         for side in requested_sides:
             if side not in self.enabled_sides or not side_tracked[side]:
@@ -132,7 +168,7 @@ class TeleopController:
                 "adapter": local_frame_adapter(
                     source,
                     self.anchor_ref[side],
-                    source_world_to_robot_world=self.source_world_to_robot_world,
+                    source_world_to_robot_world=world_map,
                 ),
             }
             self.tracking_hold_sides.discard(side)

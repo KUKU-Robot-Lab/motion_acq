@@ -141,6 +141,7 @@ from motion_acq.teleop.common import (
     latest_widths as _latest_widths,
 )
 from motion_acq.teleop.common import (
+    tracking_heading_from_hmd as _tracking_heading_from_hmd,
     tracking_world_map as _tracking_world_map,
 )
 from motion_acq.teleop.core import TeleopController
@@ -1919,6 +1920,7 @@ def _run_record() -> None:
         enabled_sides=enabled_sides,
         source_world_to_robot_world=_tracking_world_map(args.device),
         translation_scale=args.translation_scale,
+        heading_from_hmd=_tracking_heading_from_hmd(args.device),
     )
     if args.ik_solver == "dls":
         controller.solver = make_real_teleop_dls_solver(

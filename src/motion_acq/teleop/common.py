@@ -407,6 +407,11 @@ def tracking_world_map(device: str) -> np.ndarray:
     return VR_TO_ROBOT if device == "pico" else np.eye(3, dtype=np.float32)
 
 
+def tracking_heading_from_hmd(device: str) -> bool:
+    """True: robot forward = headset heading when an arm starts (Quest, level z-up workspace)."""
+    return device == "meta"
+
+
 def tracking_ready_for_sides(
     source_poses: dict[str, np.ndarray],
     side_tracked: dict[str, bool],

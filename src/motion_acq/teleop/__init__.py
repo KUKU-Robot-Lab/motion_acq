@@ -15,6 +15,7 @@ from motion_acq.teleop.common import (
     start_sides,
     tracking_ready_for_sides,
     tracking_sample_time_ns,
+    tracking_heading_from_hmd,
     tracking_world_map,
 )
 from motion_acq.teleop.core import TeleopController
@@ -72,6 +73,7 @@ __all__ = [
     "start_sides",
     "tracking_ready_for_sides",
     "tracking_sample_time_ns",
+    "tracking_heading_from_hmd",
     "tracking_world_map",
     "add_teleop_motion_arguments",
     "validate_teleop_motion_args",

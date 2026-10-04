@@ -83,6 +83,7 @@ from motion_acq.teleop.common import (
     tracking_ready_for_sides as _tracking_ready_for_sides,
 )
 from motion_acq.teleop.common import (
+    tracking_heading_from_hmd as _tracking_heading_from_hmd,
     tracking_world_map as _tracking_world_map,
 )
 from motion_acq.teleop.core import TeleopController
@@ -542,6 +543,7 @@ def _run_sim() -> None:
         enabled_sides=enabled_sides,
         source_world_to_robot_world=_tracking_world_map(args.device),
         translation_scale=args.translation_scale,
+        heading_from_hmd=_tracking_heading_from_hmd(args.device),
         anchor_z=args.anchor_z,
     )
     q = home_q.copy()
