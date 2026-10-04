@@ -3,9 +3,12 @@
     ros2 run motion_acq_hand calibrate --side right --user op1   # lab glove of that side
     ros2 run motion_acq_hand calibrate --side right --user fake --fake --yes   # fake glove
 
-For each pose in configs/hands/nova2_to_rh56f1.yaml the operator holds still
-and the assistant presses Enter; the tool records --seconds of samples,
-rejects a pose that moved, and saves configs/hands/calibration/<user>_<side>.yaml.
+For each pose in configs/hands/nova2_to_rh56f1.yaml (Korean prompt) the
+operator holds still and presses Enter; the tool records --seconds of samples.
+A pose that moved, or two poses that came out the same, are asked again
+(motion_acq.hand.calibration.run_session) instead of ending the run. Enters
+typed while a pose records are dropped, so they cannot record the next pose.
+Saves configs/hands/calibration/<user>_<side>.yaml.
 --fake switches the fake glove to each pose itself; --yes skips the prompts.
 """
 
@@ -13,7 +16,8 @@ rejects a pose that moved, and saves configs/hands/calibration/<user>_<side>.yam
 from __future__ import annotations
 
 import argparse
-import statistics
+import sys
+import termios
 import time
 from pathlib import Path
 
@@ -31,11 +35,9 @@ from rclpy.node import Node
 from senseglove_msgs.msg import SenseGloveState
 from std_msgs.msg import String
 
-from motion_acq.hand.calibration import CalibrationError, calibrate
+from motion_acq.hand.calibration import CalibrationError, run_session
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state, features
 from motion_acq.hand.retarget import DEFAULT_RETARGET, load_hand_retarget_config
-
-MAX_POSE_STD_RAD = 0.05  # a feature moving more than this while "still" -> redo
 
 
 class Recorder(Node):
@@ -70,12 +72,15 @@ def record_pose(node: Recorder, seconds: float) -> list[dict[str, float]]:
     spin_for(node, seconds)
     samples, node.samples = node.samples, None
     if len(samples) < 10:
-        raise CalibrationError(f"only {len(samples)} glove samples in {seconds} s; is the glove streaming?")
-    for name in samples[0]:
-        spread = statistics.pstdev(s[name] for s in samples)
-        if spread > MAX_POSE_STD_RAD:
-            raise CalibrationError(f"{name} moved (std {spread:.3f} rad) while holding the pose; redo")
+        raise CalibrationError(f"{seconds} 초에 장갑 샘플 {len(samples)} 개뿐: 장갑 드라이버가 도는지 확인")
     return samples
+
+
+def ask_enter(text: str) -> None:
+    """Wait for a fresh Enter: drop Enters typed earlier (e.g. during a recording)."""
+    if sys.stdin.isatty():
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    input(text)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -106,21 +111,20 @@ def main(argv: list[str] | None = None) -> None:
         spin_for(node, 1.0)
         if time.monotonic() - node.last_rx > 0.5:
             raise SystemExit(f"no glove samples on {topic}")
-        pose_samples = {}
-        for pose, description in config.poses.items():
+
+        def record(pose: str) -> list[dict[str, float]]:
             if args.fake:
                 node.pose_pub.publish(String(data=pose))
                 spin_for(node, 0.5)
-            if not args.yes:
-                input(f"[{side}] pose '{pose}': {description}. Hold still, then press Enter ")
-            pose_samples[pose] = record_pose(node, args.seconds)
-            print(f"  recorded {pose}: {len(pose_samples[pose])} samples")
-        calibration = calibrate(
-            side=side, user=args.user, pose_samples=pose_samples,
-            feature_poses=config.feature_poses, min_span=config.min_span_rad,
+            return record_pose(node, args.seconds)
+
+        calibration = run_session(
+            side=side, user=args.user, poses=config.poses, feature_poses=config.feature_poses,
+            min_span=config.min_span_rad, record=record, say=lambda text: print(text, flush=True),
+            ask=(lambda text: None) if args.yes else ask_enter,
         )
         calibration.save(out)
-        print(f"saved {out}")
+        print(f"보정 저장됨: {out}")
         for name, r in calibration.ranges.items():
             print(f"  {name:17s} open {r.open:+.3f}  closed {r.closed:+.3f} rad")
     except CalibrationError as exc:

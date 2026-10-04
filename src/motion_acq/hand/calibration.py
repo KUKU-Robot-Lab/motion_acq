@@ -7,7 +7,7 @@ import statistics
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import yaml
 
@@ -94,9 +94,90 @@ def calibrate(
                 raise CalibrationError(f"pose {pose!r} (for {feature}) was not recorded")
         lo, hi = medians[open_pose][feature], medians[closed_pose][feature]
         if abs(hi - lo) < min_span:
-            raise CalibrationError(
-                f"{feature}: {open_pose} {lo:.3f} vs {closed_pose} {hi:.3f} rad differ by "
-                f"less than {min_span} rad; redo those poses"
-            )
+            raise PoseSpanError(feature, (open_pose, closed_pose), lo, hi, min_span)
         ranges[feature] = FeatureRange(lo, hi)
     return HandCalibration(side, user, ranges)
+
+
+class PoseSpanError(CalibrationError):
+    """Two poses that should differ gave (almost) the same feature value."""
+
+    def __init__(self, feature: str, poses: tuple[str, str], lo: float, hi: float, min_span: float) -> None:
+        self.feature, self.poses, self.lo, self.hi = feature, poses, lo, hi
+        super().__init__(f"{feature}: {poses[0]} {lo:.3f} vs {poses[1]} {hi:.3f} rad differ by "
+                         f"less than {min_span} rad; redo those poses")
+
+
+# -- operator session (the ROS calibrate node supplies ask / record / say) -----------------------------
+
+MAX_POSE_STD_RAD = 0.05  # a calibrated feature moving more than this while "still" -> ask again
+SIDE_KO = {"right": "오른손", "left": "왼손"}
+FEATURE_KO = {"index": "검지", "middle": "중지", "ring": "약지", "pinky": "새끼",
+              "thumb_bend": "엄지 굽힘", "thumb_opposition": "엄지 맞대기"}
+
+
+def pose_features(feature_poses: Mapping[str, tuple[str, str]], pose: str) -> tuple[str, ...]:
+    """The features whose open or closed end this pose records."""
+    return tuple(f for f, ends in feature_poses.items() if pose in ends)
+
+
+def unsteady_features(
+    samples: Sequence[Mapping[str, float]], names: Sequence[str], max_std: float,
+) -> dict[str, float]:
+    """{feature: std} for the given features that moved more than max_std."""
+    spreads = {n: statistics.pstdev(s[n] for s in samples) for n in names}
+    return {n: v for n, v in spreads.items() if v > max_std}
+
+
+def run_session(
+    *,
+    side: str,
+    user: str,
+    poses: Mapping[str, str],
+    feature_poses: Mapping[str, tuple[str, str]],
+    min_span: float,
+    ask: Callable[[str], None],
+    record: Callable[[str], Sequence[Mapping[str, float]]],
+    say: Callable[[str], None],
+    max_tries: int = 3,
+    max_std: float = MAX_POSE_STD_RAD,
+) -> HandCalibration:
+    """Walk the operator through every pose; a bad take repeats that pose only.
+
+    ``ask`` shows the prompt and returns once the operator is in the pose (Enter),
+    ``record`` returns that pose's feature samples. A pose whose calibrated
+    features moved is asked again; two poses that came out the same are both
+    asked again. Gives up (CalibrationError) after ``max_tries`` of either.
+    """
+    order = list(poses)
+    side_ko = SIDE_KO.get(side, side)
+
+    def take(pose: str) -> Sequence[Mapping[str, float]]:
+        step = f"[{side_ko} {order.index(pose) + 1}/{len(order)}]"
+        for attempt in range(1, max_tries + 1):
+            ask(f"{step} {poses[pose]}. 자세를 잡고 멈춘 뒤 Enter 를 누르세요 ")
+            say("  기록 중: 그대로 멈춰 있으세요")
+            samples = record(pose)
+            moved = unsteady_features(samples, pose_features(feature_poses, pose), max_std)
+            if not moved:
+                say(f"  기록됨 ({len(samples)} 샘플)")
+                return samples
+            names = ", ".join(f"{FEATURE_KO.get(n, n)} {v:.2f} rad" for n, v in moved.items())
+            say(f"  움직였습니다 ({names}): 같은 자세를 다시 합니다 ({attempt}/{max_tries})")
+        raise CalibrationError(f"{step} 자세를 {max_tries}번 모두 움직였습니다")
+
+    samples = {pose: take(pose) for pose in order}
+    for attempt in range(1, max_tries + 1):
+        try:
+            return calibrate(side=side, user=user, pose_samples=samples,
+                             feature_poses=feature_poses, min_span=min_span)
+        except PoseSpanError as exc:
+            if attempt == max_tries:
+                raise CalibrationError(f"{max_tries}번 해도 {exc}") from exc
+            redo = [p for p in order if p in exc.poses]
+            say(f"  {FEATURE_KO.get(exc.feature, exc.feature)} 값이 두 자세에서 거의 같습니다 "
+                f"({exc.lo:.2f} vs {exc.hi:.2f} rad, {min_span} 이상 달라야 함): "
+                f"{', '.join(f'{order.index(p) + 1}번' for p in redo)} 자세를 다시 합니다")
+            for pose in redo:
+                samples[pose] = take(pose)
+    raise AssertionError("unreachable")

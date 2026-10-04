@@ -23,11 +23,12 @@ features:
   thumb_bend: {thumb_pip: 1.0}
   thumb_opposition: {thumb_brake: 1.0}
 
-# Calibration poses, recorded with the hand still for ~2 s each.
+# Calibration poses, recorded with the hand still for ~2 s each. The text is the
+# operator prompt (Korean); only the features of each pose must hold still.
 poses:
-  open: "flat hand, fingers straight, thumb out to the side"
-  fist: "fingers curled into a fist, thumb bent over the fingers"
-  thumb_opposed: "fingers straight, thumb tip on the base of the little finger"
+  open: "손 펴기: 다섯 손가락을 모두 쭉 펴고, 엄지는 검지에서 멀리 옆으로 벌린다"
+  fist: "주먹: 네 손가락을 끝까지 말아 쥐고, 엄지도 굽혀 검지·중지 위를 덮는다 (엄지를 펴 두면 실패)"
+  thumb_opposed: "엄지 맞대기: 네 손가락은 편 채로, 엄지 끝을 새끼손가락 뿌리(손바닥 아래 끝)에 댄다"
 
 # feature: [pose giving n = 0, pose giving n = 1]
 feature_poses:

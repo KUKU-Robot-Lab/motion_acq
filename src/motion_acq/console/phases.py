@@ -63,14 +63,17 @@ QUEST_VIEW_RULES: tuple[Rule, ...] = (
 )
 
 CALIB_RULES: tuple[Rule, ...] = (
-    ("saved", "ok", "보정 저장됨"),
-    ("moved", "warn", "움직임: 그 자세 다시"),
+    ("보정 저장됨", "ok", "보정 저장됨"),
+    ("움직였습니다", "warn", "움직임: 같은 자세 다시"),
+    ("거의 같습니다", "warn", "두 자세가 같음: 그 자세들 다시"),
+    ("기록 중", "live", "기록 중: 그대로 멈춤"),
+    ("기록됨", "live", "기록됨: 다음 자세"),
 )
 
 RULES = {"arm": ARM_RULES, "record": RECORD_RULES, "quest_view": QUEST_VIEW_RULES,
          "calib_right": CALIB_RULES, "calib_left": CALIB_RULES}
 
-PROMPT = re.compile(r"press enter|\[y/n\]|\[Y/n\]|\[y/N\]", re.IGNORECASE)
+PROMPT = re.compile(r"press enter|enter 를 누르세요|\[y/n\]|\[Y/n\]|\[y/N\]", re.IGNORECASE)
 POSES_IN = re.compile(r"poses in (\d+) \(last ([^)]*) ago\), tracking clients (\d+), camera frames (\d+)")
 
 
