@@ -3,7 +3,10 @@
 Only the calls OpenArmSdkSide makes are implemented. Each motor follows its
 MIT position target at a bounded speed, so the real driver code path
 (startup read, slow home, streamer, watchdog, following error) runs
-unchanged on top of it.
+unchanged on top of it. With a gravity model per port the motors also sag
+like the real PD does: they settle at q* + (tau - G(q)) / kp, so a missing
+or wrong gravity feedforward shows up in fake runs (10.04: the real right j7
+stopped 0.13 rad short of home without it).
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ class FakeMotor:
     def __init__(self, position: float) -> None:
         self.position = float(position)
         self.target = float(position)
+        self.kp = 0.0
+        self.tau = 0.0
 
     def get_position(self) -> float:
         return self.position
@@ -49,6 +54,8 @@ class _MotorGroup:
             self._owner.commands += 1
             for motor, param in zip(self._motors, params, strict=True):
                 motor.target = float(param.q)
+                motor.kp = float(param.kp)
+                motor.tau = float(param.tau)
 
 
 class _Gripper:
@@ -62,8 +69,10 @@ class _Gripper:
 
 
 class FakeOpenArm:
-    def __init__(self, port: str, enable_fd: bool, *, start_q: list[float], speed: float) -> None:
+    def __init__(self, port: str, enable_fd: bool, *, start_q: list[float], speed: float,
+                 gravity=None) -> None:
         self.port = port
+        self.gravity = gravity  # q (7,) -> holding torque (7,), or None
         self.enable_fd = enable_fd
         self.speed = float(speed)
         self.lock = threading.Lock()
@@ -106,8 +115,13 @@ class FakeOpenArm:
             if not self.enabled or self._arm is None:
                 return
             step = self.speed * dt
-            for motor in self._arm.get_motors():
-                error = motor.target - motor.position
+            motors = self._arm.get_motors()
+            sag = [0.0] * len(motors)
+            if self.gravity is not None:
+                load = self.gravity([m.position for m in motors])
+                sag = [(m.tau - float(g)) / m.kp if m.kp > 0 else 0.0 for m, g in zip(motors, load, strict=True)]
+            for motor, offset in zip(motors, sag, strict=True):
+                error = motor.target + offset - motor.position
                 motor.position += max(-step, min(step, error))
 
     def get_arm(self) -> _MotorGroup:
@@ -127,6 +141,7 @@ class FakeOpenArmSdk:
 
     start_q_by_port: dict[str, list[float]] = field(default_factory=dict)
     speed_rad_s: float = 3.0
+    gravity_by_port: dict = field(default_factory=dict)
     arms: dict[str, FakeOpenArm] = field(default_factory=dict)
 
     MotorType = SimpleNamespace(DM8009="DM8009", DM4340="DM4340", DM4310="DM4310")
@@ -139,6 +154,7 @@ class FakeOpenArmSdk:
             port, enable_fd,
             start_q=self.start_q_by_port.get(port, [0.0] * ARM_DOF),
             speed=self.speed_rad_s,
+            gravity=self.gravity_by_port.get(port),
         )
         self.arms[port] = arm
         return arm

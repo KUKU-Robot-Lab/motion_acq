@@ -19,6 +19,7 @@ from motion_acq.real.base import TeleopRobotBackend
 from motion_acq.real.openarm.driver import (
     OpenArmCanEnvironment,
     OpenArmSdkSide,
+    load_gravity_models,
     load_openarm_settings,
 )
 from motion_acq.real.openarm.fake_sdk import ARM_DOF, FakeOpenArmSdk
@@ -60,7 +61,14 @@ def build_backend(
         rig_config, runtime.config.real_options, user_openarm_gripper_calibration_path(),
         robot_name=runtime.name,
     )
-    sdk = FakeOpenArmSdk(start_q_by_port=_start_q_by_port(runtime, rig_config, settings))
+    # The fake arm sags under the same gravity model the real one has (when the
+    # robot YAML gives one), so the feedforward is exercised, not assumed.
+    gravity = load_gravity_models(settings, ("left", "right"))
+    ports = {"left": settings.left_port, "right": settings.right_port}
+    sdk = FakeOpenArmSdk(
+        start_q_by_port=_start_q_by_port(runtime, rig_config, settings),
+        gravity_by_port={ports[side]: model for side, model in gravity.items()},
+    )
     environment = OpenArmCanEnvironment(
         settings,
         active_sides=active_sides,

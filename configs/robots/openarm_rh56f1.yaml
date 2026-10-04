@@ -41,6 +41,14 @@ real:
   home_paths:
     right: configs/paths/home_rh56f1_right.npz
     left: configs/paths/home_rh56f1_left.npz
+  # Gravity torque feedforward (MIT tau), the sim2real pd_rh56f1_exec model:
+  # same masses (this URDF carries the open RH56F1 as fixed links), tip at the
+  # palm sensor, scale 1, cap 20 N m. Without it the right j7 sags 0.13 rad at home.
+  gravity:
+    urdf: assets/openarm_rh56f1/openarm_rh56f1.urdf
+    tip_link: {right: r_hl_palm_sensor, left: l_hl_palm_sensor}
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    cap_nm: 20.0
   gripper:
     enabled: false  # no J8 motor: the RH56F1 sits on the wrist
   control:

@@ -14,6 +14,7 @@ from typing import Any, Protocol
 import numpy as np
 import yaml
 
+from motion_acq.real.openarm.gravity import ArmGravity, GravityModelError, load_arm_gravity
 from motion_acq.real.openarm.home_path import (
     MAX_PATH_SPEED_RAD_S,
     HomePath,
@@ -39,6 +40,8 @@ DEFAULT_KP = (70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0)
 DEFAULT_KD = (2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5)
 JOINT_LIMIT_SNAP_TOLERANCE_RAD = 1e-4
 _REPO_ROOT = Path(__file__).resolve().parents[4]
+# A failed start retreats along the path only from this close to it.
+RETREAT_MAX_OFFSET_RAD = 0.3
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,12 @@ class OpenArmCanSettings:
     # side -> stored rest<->home path (sim2real); empty: HandUMI slow home
     # (shoulders first) and no rest at the end. See home_path.py.
     home_paths: tuple[tuple[str, str], ...] = ()
+    # Gravity torque feedforward in the MIT tau term (sim2real pd model_tau_ff);
+    # empty urdf: PD only, as HandUMI. See gravity.py.
+    gravity_urdf: str = ""
+    gravity_tip_links: tuple[tuple[str, str], ...] = ()
+    gravity_scale: tuple[float, ...] = (1.0,) * 7
+    gravity_cap_nm: float = 20.0
 
 
 def load_openarm_settings(
@@ -97,6 +106,7 @@ def load_openarm_settings(
     control = robot_real.get("control") or {}
     gains = robot_real.get("gains") or {}
     gripper = robot_real.get("gripper") or {}
+    gravity = robot_real.get("gravity") or {}
     calibrated: dict[str, Any] = {}
     if gripper_calibration_path is not None and gripper_calibration_path.exists():
         with gripper_calibration_path.open("r", encoding="utf-8") as handle:
@@ -146,6 +156,10 @@ def load_openarm_settings(
             (str(side), str(_REPO_ROOT / path))
             for side, path in sorted((robot_real.get("home_paths") or {}).items())
         ),
+        gravity_urdf=str(_REPO_ROOT / gravity["urdf"]) if gravity.get("urdf") else "",
+        gravity_tip_links=tuple(sorted((str(k), str(v)) for k, v in (gravity.get("tip_link") or {}).items())),
+        gravity_scale=tuple(float(v) for v in gravity.get("scale", (1.0,) * 7)),
+        gravity_cap_nm=float(gravity.get("cap_nm", 20.0)),
     )
 
 
@@ -163,7 +177,7 @@ class OpenArmSide(Protocol):
     port: str
 
     def read_q(self) -> np.ndarray: ...
-    def send(self, q: np.ndarray, gripper_opening: float) -> None: ...
+    def send(self, q: np.ndarray, gripper_opening: float, tau: np.ndarray | None = None) -> None: ...
     def close(self) -> None: ...
 
 
@@ -245,10 +259,11 @@ class OpenArmSdkSide:
             )
         return np.median(recent, axis=0).astype(np.float32)
 
-    def send(self, q: np.ndarray, gripper_opening: float) -> None:
+    def send(self, q: np.ndarray, gripper_opening: float, tau: np.ndarray | None = None) -> None:
+        tau = np.zeros(ARM_DOF) if tau is None else np.asarray(tau, dtype=float)
         params = [
-            self.sdk.MITParam(kp, kd, float(target), 0.0, 0.0)
-            for kp, kd, target in zip(self.kp, self.kd, q, strict=True)
+            self.sdk.MITParam(kp, kd, float(target), 0.0, float(t))
+            for kp, kd, target, t in zip(self.kp, self.kd, q, tau, strict=True)
         ]
         self.arm.get_arm().mit_control_all(params)
         if self.gripper_enabled:
@@ -267,6 +282,19 @@ class OpenArmSdkSide:
 SideFactory = Callable[..., OpenArmSide]
 
 
+def load_gravity_models(settings: OpenArmCanSettings, sides: tuple[str, ...]) -> dict[str, ArmGravity]:
+    """Gravity feedforward per side from the robot YAML real.gravity block (empty: off)."""
+    if not settings.gravity_urdf:
+        return {}
+    tips = dict(settings.gravity_tip_links)
+    missing = [side for side in sides if side not in tips]
+    if missing:
+        raise GravityModelError(f"real.gravity.tip_link has no entry for {missing}")
+    return {side: load_arm_gravity(Path(settings.gravity_urdf), side, tips[side],
+                                   scale=settings.gravity_scale, cap_nm=settings.gravity_cap_nm)
+            for side in sides}
+
+
 class OpenArmJointStreamer(JointStreamer):
     """Velocity-limited latest-target streamer with a stale-command hold."""
 
@@ -283,6 +311,10 @@ class OpenArmJointStreamer(JointStreamer):
         )
         self.arms = arms
         self.settings = settings
+        self.gravity = load_gravity_models(settings, tuple(arms))
+        if self.gravity:
+            log.info("OpenArm gravity feedforward on (%s): tau at start %s N m", ", ".join(self.gravity),
+                     {side: np.round(model(initial_q[side]), 2).tolist() for side, model in self.gravity.items()})
         self._targets = {side: q.copy() for side, q in initial_q.items()}
         self._commanded = {side: q.copy() for side, q in initial_q.items()}
         self._feedback = {side: q.copy() for side, q in initial_q.items()}
@@ -409,8 +441,12 @@ class OpenArmJointStreamer(JointStreamer):
                     self._commanded = {side: q.copy() for side, q in commands.items()}
 
                 feedback: dict[str, np.ndarray] = {}
+                with self._lock:
+                    last_feedback = {side: q.copy() for side, q in self._feedback.items()}
                 for side, arm in self.arms.items():
-                    arm.send(commands[side], grippers[side])
+                    model = self.gravity.get(side)
+                    tau = None if model is None else model(last_feedback[side])
+                    arm.send(commands[side], grippers[side], tau)
                     feedback[side] = arm.read_q()
                     joint_errors = np.abs(feedback[side] - commands[side])
                     joint = int(np.argmax(joint_errors))
@@ -452,6 +488,7 @@ class OpenArmCanEnvironment:
         self.joint_limits = joint_limits or {}
         self.arms: dict[str, OpenArmSide] = {}
         self.streamer: OpenArmJointStreamer | None = None
+        self._path_progress: dict[str, tuple[np.ndarray, int]] = {}
         self._last_limit_warning_at = {side: 0.0 for side in SIDES}
 
     def connect(self) -> None:
@@ -560,9 +597,48 @@ class OpenArmCanEnvironment:
         self.streamer = OpenArmJointStreamer(self.arms, self.settings, initial)
         self.streamer.start()
         from_rest = {side: paths[side].q for side, mode in modes.items() if mode == "rest"}
-        if from_rest:
-            self._play_paths(from_rest, next(iter(paths.values())).dt, "rest -> home")
-        self.move_home(q, joint_names)
+        self._path_progress = {}
+        try:
+            if from_rest:
+                self._play_paths(from_rest, next(iter(paths.values())).dt, "rest -> home")
+            self.move_home(q, joint_names)
+        except Exception as exc:
+            if paths:
+                self._retreat_to_rest(paths, exc)
+            raise
+
+    def _retreat_to_rest(self, paths: dict[str, HomePath], cause: BaseException) -> None:
+        """A start that failed after leaving rest goes back along the path it came.
+
+        Disabling the motors anywhere but rest drops the arm (10.04 right arm,
+        home timeout). Only possible while the streamer is healthy; otherwise
+        the arm stays where it is until the motors are switched off.
+        """
+        assert self.streamer is not None
+        try:
+            self.streamer.raise_if_failed()
+        except RuntimeError as exc:
+            log.error("OpenArm start failed (%s) and the streamer is down (%s): the arm cannot be "
+                      "brought back to rest and will drop when the motors go off. Support it.", cause, exc)
+            return
+        back = {}
+        feedback = self.streamer.feedback()
+        for side, path in paths.items():
+            sent, k = self._path_progress.get(side, (path.q, len(path.q) - 1))
+            route = sent[: k + 1][::-1]
+            off = float(np.abs(feedback[side] - route[0]).max())
+            if off > RETREAT_MAX_OFFSET_RAD:
+                log.error("OpenArm %s is %.2f rad off the stored path; not retreating, holding in place. "
+                          "Support the arm before the motors go off.", side, off)
+                self.streamer.hold()
+                return
+            back[side] = route
+        log.error("OpenArm start failed (%s); returning to rest along the stored path.", cause)
+        try:
+            self._play_paths(back, next(iter(paths.values())).dt, "retreat -> rest")
+            log.info("OpenArm back at rest after the failed start.")
+        except Exception as exc:  # noqa: BLE001 - report both, the caller re-raises the cause
+            log.error("OpenArm retreat to rest failed too (%s); support the arm.", exc)
 
     def _home_paths(self) -> dict[str, HomePath]:
         configured = dict(self.settings.home_paths)
@@ -588,6 +664,7 @@ class OpenArmCanEnvironment:
                     {side: path[min(k, len(path) - 1)].astype(np.float32) for side, path in paths.items()},
                     {side: 0.0 for side in paths},
                 )
+                self._path_progress = {side: (path, min(k, len(path) - 1)) for side, path in paths.items()}
                 delay = start + (k + 1) * dt - time.monotonic()
                 if delay > 0:
                     time.sleep(delay)
