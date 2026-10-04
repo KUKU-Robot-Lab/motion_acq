@@ -631,6 +631,7 @@ class Console:
         tail = self.sup.log_tail(key, 120)
         snap["phase"] = phases.phase(key, tail) if snap["running"] or snap["rc"] is not None else None
         snap["prompt"] = phases.prompt(tail, snap.get("partial", "")) if snap["running"] else None
+        snap["error"] = phases.error_line(tail) if snap["rc"] not in (None, 0) else None
         return snap
 
     def calibration(self) -> dict:

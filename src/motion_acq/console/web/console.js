@@ -153,7 +153,12 @@ function nodeGlove(s, side) {
   if (!s.sensecom_installed) return { ...n, tone: "bad", state: "SenseCom 미설치", sub: "이 PC: scripts/ros_ws_setup.sh --full" };
   if (jobRunning("glove")) return { ...n, tone: "live", state: "연결 중...", sub: "" };
   const connect = btn("연결", { "data-action": "glove:connect" }, "primary");
-  if (g.connected && topic) return { ...n, tone: "ok", state: "연결됨 · 데이터 옴", sub: cal ? (cal.ok ? "보정 유효" : "보정 필요 (자세히)") : "" };
+  if (g.connected && topic) {
+    const calOk = cal && cal.ok;
+    return { ...n, tone: calOk ? "ok" : "warn", state: calOk ? "연결됨 · 보정 유효" : "연결됨 · 보정 필요",
+             sub: calOk ? "" : "보정 사용자 이름을 넣고 손마다 보정한다",
+             actions: calOk ? "" : btn("보정", { "data-select": `glove_${side}` }, "primary") };
+  }
   if (g.connected) return { ...n, tone: "warn", state: "BLE 연결, 드라이버 없음", sub: jobLine("glove"), actions: connect };
   return { ...n, tone: "mute", state: "미연결", sub: jobLine("glove") || "장갑 전원을 켜고 [연결]", actions: connect };
 }
@@ -265,9 +270,11 @@ function renderArmCtrl(s) {
            `<span class="meta">${esc((unitState("arm") || ["", ""])[1])}</span>`;
   } else {
     const none = armSides().length === 0;
+    const err = unit("arm").error;
     html = btn(`<svg><use href="#i-play"/></svg>팔 시작`, { "data-start": "arm", disabled: none || running("record"),
                 title: running("record") ? "녹화가 팔을 쓰는 중" : "" }, "primary big") +
-           `<span class="meta">차렷 → home, Space 로 따라가기 · 배율 ${fmt(s.settings.scale, 1)}</span>`;
+           (err ? `<span class="meta" style="color: var(--bad)">지난 시작 실패: ${esc(err)}</span>`
+                : `<span class="meta">차렷 → home, Space 로 따라가기 · 배율 ${fmt(s.settings.scale, 1)}</span>`);
   }
   if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
 }
@@ -339,7 +346,8 @@ function detailGlove(s) {
   if (jobLine("glove")) rows.push(["최근", jobLine("glove"), job("glove").state === "failed" ? "bad" : ""]);
   const calib = ["calib_right", "calib_left"].find(running);
   return `<h3>장갑 · Nova 2</h3>${facts(rows)}
-    <div class="row"><label class="field">보정 사용자 <input type="text" id="user" maxlength="32" placeholder="op1" value="${esc(s.settings.user)}"></label></div>
+    <div class="row"><label class="field">보정 사용자 <input type="text" id="user" maxlength="32" placeholder="이름 (예: op1) 입력 후 Enter" value="${esc(s.settings.user)}"></label></div>
+    <p class="hint">순서: 이름 입력 → [오른손 보정] → 화면 안내 자세마다 [Enter: 이 자세 기록] → [왼손 보정]. SenseCom 을 다시 켜면 다시 보정한다.</p>
     <div class="actions">${btn("오른손 보정", { "data-start": "calib_right" }, "small")}${btn("왼손 보정", { "data-start": "calib_left" }, "small")}
       ${btn("Enter: 이 자세 기록", { "data-key": calib || "", "data-text": "\n", disabled: !calib }, "key small")}
       ${btn("드라이버 정지", { "data-action": "glove_driver_stop", disabled: !(g.driver_pids || []).length }, "ghost small")}</div>
@@ -530,6 +538,7 @@ document.addEventListener("click", async (ev) => {
   else if (d.send) act("key", { key: d.send, text: d.text }, b, "입력 보냄");
   else if (d.action) act("action", { name: d.action }, b, "요청함");
   else if (d.log) openDrawer(d.log);
+  else if (d.select) { selected = d.select; if (S) render(S); setTimeout(() => $("#user")?.focus(), 50); }
   else if (d.left) act("action", { name: `left_behind_stop:${d.left}` }, b, "SIGINT 보냄");
 });
 

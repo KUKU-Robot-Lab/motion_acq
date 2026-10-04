@@ -27,6 +27,8 @@ ARM_RULES: tuple[Rule, ...] = (
     ("start failed", "bad", "시작 실패: 차렷으로 복귀"),
     ("about to switch off away from rest", "bad", "차렷이 아닌 곳에서 모터를 끄려 함: 팔을 받칠 것"),
     ("Traceback", "bad", "오류로 멈춤 (로그 확인)"),
+    ("neither rest", "bad", "차렷도 home 도 아니라 시작 안 함: 팔을 차렷에 맞출 것(모터는 안 켜졌다)"),
+    ("Refusing to start", "bad", "시작 거부 (자세히 보기)"),
 )
 
 RECORD_RULES: tuple[Rule, ...] = (
@@ -89,6 +91,18 @@ def prompt(lines: list[str], partial: str) -> str | None:
         return partial
     if lines and PROMPT.search(lines[-1]):
         return lines[-1]
+    return None
+
+
+ERROR_LINE = re.compile(r"(?:[A-Za-z_.]+Error|SystemExit|RuntimeError): (.+)$")
+
+
+def error_line(lines: list[str]) -> str | None:
+    """The last 'SomethingError: message' line of a program that stopped on an error."""
+    for line in reversed(lines):
+        match = ERROR_LINE.search(line)
+        if match:
+            return match.group(1)[:400]
     return None
 
 
