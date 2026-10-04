@@ -141,7 +141,12 @@ def build_app(shared: Shared, poses: PoseBroadcast, *, video_fps: float) -> web.
     app = web.Application()
 
     async def index(_request):
-        return web.FileResponse(WEB_DIR / "index.html")
+        # The Quest Browser caches scripts hard; version the script by its mtime and
+        # never cache the page, so an updated viewer.js is always loaded.
+        version = int((WEB_DIR / "viewer.js").stat().st_mtime)
+        html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+        html = html.replace("/static/viewer.js", f"/static/viewer.js?v={version}")
+        return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
 
     async def websocket(request):
         ws = web.WebSocketResponse(heartbeat=5.0, max_msg_size=1 << 20)

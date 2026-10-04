@@ -51,6 +51,20 @@ def find_page(local_port: int, view_port: int, timeout_s: float) -> str:
     raise SystemExit(f"cannot reach the page: {last}")
 
 
+def command(ws_url: str, method: str, params: dict) -> dict:
+    """One devtools command, its result."""
+    from websockets.sync.client import connect
+
+    with connect(ws_url, max_size=None, open_timeout=5) as ws:
+        ws.send(json.dumps({"id": 1, "method": method, "params": params}))
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            message = json.loads(ws.recv(timeout=15))
+            if message.get("id") == 1:
+                return message.get("result", {})
+    raise SystemExit(f"no reply to {method}")
+
+
 def evaluate(ws_url: str, expression: str, *, user_gesture: bool) -> object:
     from websockets.sync.client import connect
 
@@ -82,10 +96,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.status:
         print(evaluate(url, state, user_gesture=False))
         return 0
+    if evaluate(url, "typeof window.macqStartVr", user_gesture=False) != "function":
+        # an old cached viewer.js: reload past the cache once
+        command(url, "Page.reload", {"ignoreCache": True})
+        time.sleep(2.0)
+        url = find_page(args.local_port, args.view_port, args.wait_s)
     deadline = time.monotonic() + args.wait_s
     while evaluate(url, "typeof window.macqStartVr", user_gesture=False) != "function":
         if time.monotonic() > deadline:
-            raise SystemExit("the page has no macqStartVr(); is it the current quest-view page? reload it")
+            raise SystemExit("the page has no macqStartVr() even after a reload; is quest-view up to date?")
         time.sleep(0.5)
     result = evaluate(url, "window.macqStartVr()", user_gesture=True)
     print(f"VR: {result}; page state {evaluate(url, state, user_gesture=False)}")
