@@ -35,6 +35,12 @@ replay:
   max_joint_delta: 0.35
 real:
   backend: openarm_can
+  # sim2real stored rest (all 0) <-> home paths (RRT, >= 2 cm clearance, 0.3 rad/s,
+  # hand closed). Start: rest -> home along the path (or settle if already at
+  # home); end: home -> rest along it, then motors off. See configs/paths/README.md.
+  home_paths:
+    right: configs/paths/home_rh56f1_right.npz
+    left: configs/paths/home_rh56f1_left.npz
   gripper:
     enabled: false  # no J8 motor: the RH56F1 sits on the wrist
   control:

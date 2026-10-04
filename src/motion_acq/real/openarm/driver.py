@@ -14,6 +14,13 @@ from typing import Any, Protocol
 import numpy as np
 import yaml
 
+from motion_acq.real.openarm.home_path import (
+    MAX_PATH_SPEED_RAD_S,
+    HomePath,
+    HomePathError,
+    classify_start,
+    load_home_path,
+)
 from motion_acq.real.streamer import (
     JointStreamer,
     next_periodic_deadline,
@@ -31,6 +38,7 @@ GRIPPER_RECV_CAN_ID = 0x18
 DEFAULT_KP = (70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0)
 DEFAULT_KD = (2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5)
 JOINT_LIMIT_SNAP_TOLERANCE_RAD = 1e-4
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 @dataclass(frozen=True)
@@ -64,6 +72,9 @@ class OpenArmCanSettings:
     right_gripper_open_position_rad: float | None = None
     kp: tuple[float, ...] = DEFAULT_KP
     kd: tuple[float, ...] = DEFAULT_KD
+    # side -> stored rest<->home path (sim2real); empty: HandUMI slow home
+    # (shoulders first) and no rest at the end. See home_path.py.
+    home_paths: tuple[tuple[str, str], ...] = ()
 
 
 def load_openarm_settings(
@@ -131,6 +142,10 @@ def load_openarm_settings(
         ),
         kp=tuple(float(v) for v in gains.get("kp", DEFAULT_KP)),
         kd=tuple(float(v) for v in gains.get("kd", DEFAULT_KD)),
+        home_paths=tuple(
+            (str(side), str(_REPO_ROOT / path))
+            for side, path in sorted((robot_real.get("home_paths") or {}).items())
+        ),
     )
 
 
@@ -532,9 +547,76 @@ class OpenArmCanEnvironment:
                 side,
                 np.round(np.rad2deg(measured), 1).tolist(),
             )
+        paths = self._home_paths()
+        modes: dict[str, str] = {}
+        if paths:
+            targets = self._split_q(q, joint_names)
+            for side in self.active_sides:
+                modes[side] = classify_start(
+                    initial[side], paths[side], targets[side], self.settings.home_tolerance_rad
+                )
+            log.info("OpenArm start: %s (stored sim2real path from rest; the RH56F1 must be closed)",
+                     ", ".join(f"{side} at {mode}" for side, mode in modes.items()))
         self.streamer = OpenArmJointStreamer(self.arms, self.settings, initial)
         self.streamer.start()
+        from_rest = {side: paths[side].q for side, mode in modes.items() if mode == "rest"}
+        if from_rest:
+            self._play_paths(from_rest, next(iter(paths.values())).dt, "rest -> home")
         self.move_home(q, joint_names)
+
+    def _home_paths(self) -> dict[str, HomePath]:
+        configured = dict(self.settings.home_paths)
+        if not configured:
+            return {}
+        missing = [side for side in self.active_sides if side not in configured]
+        if missing:
+            raise HomePathError(f"no stored home path for the {missing} arm(s)")
+        return {side: load_home_path(Path(configured[side]), side) for side in self.active_sides}
+
+    def _play_paths(self, paths: dict[str, np.ndarray], dt: float, label: str) -> None:
+        """Stream stored joint paths (one per side, same step) and wait for the last point."""
+        if self.streamer is None:
+            raise RuntimeError("home() before _play_paths()")
+        steps = max(len(path) for path in paths.values())
+        log.info("OpenArm %s: following the stored path (%s), %.1f s.", ", ".join(paths), label, (steps - 1) * dt)
+        # The path already respects 0.3 rad/s; the streamer limit only must not lag behind it.
+        self.streamer.set_max_speed(max(self.settings.home_max_joint_speed_rad_s, 1.5 * MAX_PATH_SPEED_RAD_S))
+        try:
+            start = time.monotonic()
+            for k in range(steps):
+                self.streamer.set_targets(
+                    {side: path[min(k, len(path) - 1)].astype(np.float32) for side, path in paths.items()},
+                    {side: 0.0 for side in paths},
+                )
+                delay = start + (k + 1) * dt - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+            self.streamer.wait_until_targets(
+                timeout_s=self.settings.home_timeout_s,
+                tolerance_rad=self.settings.home_tolerance_rad,
+            )
+        finally:
+            self.streamer.set_max_speed(self.settings.max_joint_speed_rad_s)
+
+    def rest(self, q: np.ndarray, joint_names: list[str]) -> None:
+        """End of a session: from home, back along the stored path to rest.
+
+        No-op without stored paths (HandUMI robots end at home). Call after
+        move_home(); refuses if an arm is not at home.
+        """
+        paths = self._home_paths()
+        if not paths:
+            return
+        if self.streamer is None:
+            raise RuntimeError("home() before rest()")
+        feedback = self.streamer.feedback()
+        targets = self._split_q(q, joint_names)
+        for side in self.active_sides:
+            off = float(np.abs(feedback[side] - targets[side]).max())
+            if off > self.settings.home_tolerance_rad:
+                raise HomePathError(f"OpenArm {side} is {off:.3f} rad from home; not starting the path to rest")
+        self._play_paths({side: path.q[::-1] for side, path in paths.items()},
+                         next(iter(paths.values())).dt, "home -> rest")
 
     def move_home(self, q: np.ndarray, joint_names: list[str]) -> None:
         if self.streamer is None:

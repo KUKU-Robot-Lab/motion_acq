@@ -478,5 +478,9 @@ def return_home_on_exit(real_env: Any, home_q: np.ndarray, log: logging.Logger) 
     try:
         real_env.move_home(home_q)
         log.info("Arms at home.")
+        rest = getattr(real_env, "rest", None)
+        if callable(rest):  # stored-path robots go on to rest so the motors can go off safely
+            rest(home_q)
+            log.info("Arms ready to disable (at rest, or at home for robots without a stored path).")
     except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - disconnect must still run
-        log.error("Arms could not return home: %s", exc or "interrupted")
+        log.error("Arms could not return home / to rest: %s", exc or "interrupted")

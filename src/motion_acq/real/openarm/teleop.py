@@ -96,6 +96,10 @@ class OpenArmBackend:
         self._last_q = np.asarray(q, dtype=np.float32).copy()
         self.environment.move_home(q, list(self.joint_names))
 
+    def rest(self, q: np.ndarray) -> None:
+        """From home along the stored path to rest (all 0) before the motors go off."""
+        self.environment.rest(q, list(self.joint_names))
+
     def write(
         self,
         q: np.ndarray,
