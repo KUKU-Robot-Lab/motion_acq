@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import struct
 import threading
 import time
@@ -84,6 +85,40 @@ def _publish(shared: Shared, frame, params, captured_ns: int) -> None:
             shared.jpeg = buf.tobytes()
         shared.frame, shared.frame_shape, shared.frame_ns = raw, tuple(frame.shape), captured_ns
         shared.jpeg_seq += 1
+
+
+V4L2_ROOT = Path("/sys/class/video4linux")
+FALLBACK_CAMERA = 4
+
+
+def find_realsense_color(root: Path = V4L2_ROOT) -> int | None:
+    """V4L2 index of the RealSense colour stream: the first node of its RGB interface (USB :1.3).
+
+    Moving the camera to another USB port can renumber /dev/video* (10.04: hub
+    trouble, the camera moved to a root port); the interface number does not change."""
+    found = []
+    for node in sorted(root.glob("video*")):
+        try:
+            name = (node / "name").read_text().strip()
+            iface = Path(os.path.realpath(node / "device")).name
+            index = int((node / "index").read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if name.startswith("Intel(R) RealSense") and iface.endswith(":1.3") and index == 0:
+            found.append(int(node.name.removeprefix("video")))
+    return found[0] if found else None
+
+
+def resolve_camera(value: str) -> int:
+    """--camera: a V4L2 index, -1 (none) or auto (the RealSense colour node, else FALLBACK_CAMERA)."""
+    if value != "auto":
+        return int(value)
+    index = find_realsense_color()
+    if index is None:
+        log.warning("no RealSense colour node found under %s; trying /dev/video%d", V4L2_ROOT, FALLBACK_CAMERA)
+        return FALLBACK_CAMERA
+    log.info("RealSense colour stream: /dev/video%d", index)
+    return index
 
 
 def _camera_off(shared: Shared) -> None:
@@ -321,9 +356,9 @@ async def serve(args: argparse.Namespace) -> None:
         threading.Thread(target=test_pattern_thread, daemon=True, name="quest-view-pattern",
                          args=(args.width, args.height, args.fps, args.jpeg_quality, shared, stop, want_camera)
                          ).start()
-    elif args.camera >= 0:
+    elif (camera := resolve_camera(args.camera)) >= 0:
         threading.Thread(target=camera_thread, daemon=True, name="quest-view-camera",
-                         args=(args.camera, args.width, args.height, args.fps, args.jpeg_quality, shared, stop,
+                         args=(camera, args.width, args.height, args.fps, args.jpeg_quality, shared, stop,
                                want_camera)).start()
     poses = PoseBroadcast()
     loop = asyncio.get_running_loop()
@@ -370,7 +405,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--tcp-port", type=int, default=65432, help="HandUMI pose stream for the providers")
     p.add_argument("--sync-port", type=int, default=42000)
     p.add_argument("--head-status-port", type=int, default=HEAD_STATUS_PORT)
-    p.add_argument("--camera", type=int, default=4, help="V4L2 index of the head camera, -1 = none")
+    p.add_argument("--camera", default="auto",
+                   help="V4L2 index of the head camera, -1 = none, auto = the RealSense colour node (default)")
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--fps", type=float, default=30.0)

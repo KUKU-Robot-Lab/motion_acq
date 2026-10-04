@@ -243,3 +243,24 @@ def test_camera_opens_only_while_the_neck_runs():
 
         asyncio.run_coroutine_threadsafe(shutdown(), loop).result(timeout=5)
         loop.call_soon_threadsafe(loop.stop)
+
+
+def test_realsense_colour_node_is_found_by_interface(tmp_path):
+    from motion_acq.quest_view.server import find_realsense_color
+
+    def node(n: int, name: str, iface: str, index: int) -> None:
+        dev = tmp_path / "devices" / iface
+        dev.mkdir(parents=True, exist_ok=True)
+        v = tmp_path / "class" / f"video{n}"
+        v.mkdir(parents=True)
+        (v / "name").write_text(name + "\n")
+        (v / "index").write_text(f"{index}\n")
+        (v / "device").symlink_to(dev)
+
+    rs = "Intel(R) RealSense(TM) Depth Ca"
+    for n, iface, index in ((0, "4-4:1.0", 0), (1, "4-4:1.0", 1), (2, "4-4:1.0", 2), (3, "4-4:1.0", 3),
+                            (6, "4-4:1.3", 0), (7, "4-4:1.3", 1)):
+        node(n, rs, iface, index)
+    node(8, "USB webcam", "1-2:1.3", 0)
+    assert find_realsense_color(tmp_path / "class") == 6
+    assert find_realsense_color(tmp_path / "nothing") is None
