@@ -1,14 +1,16 @@
 "use strict";
-// macq console window: renders /api/stream, sends operator actions to /api/*.
+// macq console window: a body-shaped map of the devices; each node has one main action,
+// everything else is in the detail panel on the right. State comes from /api/stream.
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 let S = null;
+let selected = "quest";
 let drawerKey = null;
 let lastEventT = Date.now() / 1000;
 const SIDE_KO = { right: "오른", left: "왼" };
-const UNIT_KO = { quest_view: "영상 서버", mock_quest: "가짜 Quest", head: "머리", arm: "팔", record: "녹화",
-  hand_right: "오른손 노드", hand_left: "왼손 노드", calib_right: "오른손 보정", calib_left: "왼손 보정" };
+const UNIT_KO = { quest_view: "영상 서버", mock_quest: "가짜 Quest", head: "목", arm: "팔", record: "녹화",
+  hand_right: "로봇 오른손", hand_left: "로봇 왼손", calib_right: "오른손 보정", calib_left: "왼손 보정" };
 const unitName = (k) => UNIT_KO[k] || k.replace(/^task_/, "작업 ");
 const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmt = (v, d = 1) => (typeof v === "number" && isFinite(v) ? v.toFixed(d) : "-");
@@ -22,11 +24,7 @@ async function post(path, body) {
   } catch (e) {
     return { ok: false, error: `콘솔 서버 응답 없음 (${e})` };
   }
-  try {
-    return await r.json();
-  } catch {
-    return { ok: false, error: `콘솔 서버 응답을 읽지 못했다 (HTTP ${r.status})` };
-  }
+  try { return await r.json(); } catch { return { ok: false, error: `콘솔 서버 응답을 읽지 못했다 (HTTP ${r.status})` }; }
 }
 
 async function act(path, body, btn, okText) {
@@ -66,98 +64,380 @@ function toast(text, kind = "") {
   setTimeout(() => el.remove(), kind === "bad" ? 9000 : 3500);
 }
 
-// ---------------------------------------------------------------- rendering helpers
-function unitBadge(u, override) {
-  if (!u || (!u.running && u.rc === null)) return ["mute", "정지"];
-  if (u.running && u.stopping_s !== null && u.stopping_s !== undefined)
-    return ["warn", u.forced ? `강제 종료 중 ${fmt(u.stopping_s, 0)} s` : `정지 중 ${fmt(u.stopping_s, 0)} s (안전 자세)`];
-  if (u.running) return override || u.phase || ["live", "실행 중"];
-  if (u.rc === 0) return ["mute", "끝남"];
-  return ["bad", `끝남 (rc ${u.rc}) ${u.phase && u.phase[0] === "bad" ? u.phase[1] : ""}`];
-}
-
-function setBadge(el, [tone, text]) {
+function setBadge([tone, text]) {
+  const el = $("#conn");
   el.className = `badge ${tone}`;
   el.textContent = text;
 }
 
-function facts(el, rows) {
-  el.innerHTML = rows.map(([k, v, tone]) => `<dt>${esc(k)}</dt><dd class="${tone || ""}">${esc(v)}</dd>`).join("");
+// ---------------------------------------------------------------- helpers
+const unit = (k) => S?.units?.[k] || {};
+const running = (k) => !!unit(k).running;
+const stopping = (k) => running(k) && unit(k).stopping_s !== null && unit(k).stopping_s !== undefined;
+const job = (name) => (S?.jobs || {})[name] || {};
+const jobRunning = (name) => job(name).state === "running";
+const real = () => S?.mode === "real";
+const armSides = () => ({ right: ["right"], left: ["left"], both: ["right", "left"] })[S.settings.arm_side] || [];
+
+function btn(label, attrs, cls = "") {
+  const a = Object.entries(attrs).map(([k, v]) => (v === true ? k : v === false || v == null ? "" : `${k}="${esc(v)}"`)).join(" ");
+  return `<button type="button" class="btn ${cls}" ${a}>${label}</button>`;
 }
 
-function tail(el, u, n = 6) {
-  const lines = (u?.tail || []).slice(-n);
-  if (u?.partial) lines.push(u.partial);
-  const text = lines.join("\n");
-  if (el.textContent !== text) { el.textContent = text; el.scrollTop = el.scrollHeight; }
+function unitState(k, fallback) {
+  const u = unit(k);
+  if (!u.running && (u.rc === null || u.rc === undefined)) return null;
+  if (stopping(k)) return ["warn", u.forced ? `강제 종료 중 ${fmt(u.stopping_s, 0)} s` : `정지 중 ${fmt(u.stopping_s, 0)} s (안전 자세로)`];
+  if (u.running) return fallback || u.phase || ["live", "실행 중"];
+  if (u.rc === 0) return null;
+  return ["bad", `끝남 (rc ${u.rc})${u.phase && u.phase[0] === "bad" ? ": " + u.phase[1] : ""}`];
 }
 
-const running = (k) => !!S?.units?.[k]?.running;
-const stopping = (k) => running(k) && S.units[k].stopping_s !== null && S.units[k].stopping_s !== undefined;
+function jobLine(name) {
+  const j = job(name);
+  if (!j.state) return "";
+  return j.state === "running" ? "진행 중..." : j.text;
+}
 
-// ---------------------------------------------------------------- sections
+// ---------------------------------------------------------------- node models
+// Each returns {title, dev, tone, state, sub, actions}; actions is HTML (one main button, sometimes two).
+function nodeQuest(s) {
+  const q = (s.probes || {}).quest || {};
+  const usb = (q.devices || []).length === 1 && q.devices[0] === "device";
+  const qv = s.quest_view;
+  const n = { title: "머리", dev: "Quest 3", actions: "" };
+  const connect = btn("연결", { "data-action": "quest:connect" }, "primary");
+  if (jobRunning("quest")) return { ...n, tone: "live", state: "연결 중...", sub: "" };
+  if (!real()) {
+    if (running("mock_quest")) return { ...n, tone: "ok", state: "가짜 Quest", sub: running("quest_view") ? "테스트 영상 송출" : "" };
+    return { ...n, tone: "mute", state: "꺼짐", sub: "가짜 Quest + 테스트 영상", actions: connect };
+  }
+  if (s.quest_source === "app") return { ...n, tone: "ok", state: "HandUMI 앱 (영상 없음)", sub: "영상으로 바꾸려면 [연결]", actions: connect };
+  if (s.quest_source === "external") return { ...n, tone: "bad", state: "콘솔 밖 프로그램이 65432 사용", sub: "자세히 보기" };
+  if (!running("quest_view")) {
+    return { ...n, tone: usb ? "mute" : "bad", state: usb ? "꺼짐" : (q.text || "확인 중"),
+             sub: q.awake === false ? "헤드셋 잠듦: 쓰면 깬다" : jobLine("quest"), actions: connect };
+  }
+  const last = qv ? parseFloat(qv.last) : NaN;
+  if (qv && isFinite(last) && last < 3) {
+    return { ...n, tone: "ok", state: "영상 송출 중", sub: `자세 받는 곳 ${qv.clients} · 프레임 ${qv.frames}` };
+  }
+  return { ...n, tone: "warn", state: "페이지 열림: 헤드셋을 쓰고 [시작]", sub: jobLine("quest"),
+           actions: btn("시작", { "data-action": "quest:start" }, "go") };
+}
+
+function nodeNeck(s) {
+  const n = { title: "목", dev: "다이나믹셀 XC330", sub: "" };
+  if (!running("head")) {
+    const st = unitState("head");
+    return { ...n, tone: st ? st[0] : "mute", state: st ? st[1] : "꺼짐", actions: btn("시작", { "data-start": "head" }, "primary") };
+  }
+  const h = s.head;
+  let st = ["live", "기록 기다림"];
+  if (h) st = h.returning ? ["live", "home 으로 복귀 중"] : h.locked ? ["ok", "잠김 (home): Space 로 따라가기"]
+    : h.state === "hold" ? ["warn", "HMD 놓침: 멈춤"] : ["live", "머리 따라가는 중"];
+  st = unitState("head", st);
+  const sub = h ? `pan ${fmt(h.meas_pan_deg - h.home_pan_deg)}° · tilt ${fmt(h.meas_tilt_deg - h.home_tilt_deg)}°` : "";
+  return { ...n, tone: st[0], state: st[1], sub,
+           actions: btn("Space", { "data-key": "head", "data-text": " " }, "key small") +
+                    btn("정지", { "data-stop": "head" }, "danger small") };
+}
+
+function nodeGlove(s, side) {
+  const g = ((s.probes || {}).gloves || {}).gloves?.[side] || {};
+  const topic = (((s.probes || {}).ros || {}).glove_topics || {})[side];
+  const cal = (s.calibration || {})[side];
+  const n = { title: `${SIDE_KO[side]}손`, dev: `Nova 2 ${g.serial || ""}` };
+  if (!real()) return { ...n, tone: "mute", state: "fake: 로봇 손을 켜면 가짜 장갑", sub: cal ? (cal.ok ? "보정 있음" : "보정 없음") : "" };
+  if (!s.sensecom_installed) return { ...n, tone: "bad", state: "SenseCom 미설치", sub: "이 PC: scripts/ros_ws_setup.sh --full" };
+  if (jobRunning("glove")) return { ...n, tone: "live", state: "연결 중...", sub: "" };
+  const connect = btn("연결", { "data-action": "glove:connect" }, "primary");
+  if (g.connected && topic) return { ...n, tone: "ok", state: "연결됨 · 데이터 옴", sub: cal ? (cal.ok ? "보정 유효" : "보정 필요 (자세히)") : "" };
+  if (g.connected) return { ...n, tone: "warn", state: "BLE 연결, 드라이버 없음", sub: jobLine("glove"), actions: connect };
+  return { ...n, tone: "mute", state: "미연결", sub: jobLine("glove") || "장갑 전원을 켜고 [연결]", actions: connect };
+}
+
+function nodeArm(s, side) {
+  const can = ((s.probes || {}).can || {})[side] || {};
+  const inUse = armSides().includes(side);
+  const busy = running("arm") || running("record");
+  const n = { title: `로봇 ${SIDE_KO[side]}팔`, dev: `OpenArm · ${can.port || "-"}` };
+  const pick = `<label class="pick"><input type="checkbox" data-pick="${side}" ${inUse ? "checked" : ""} ${busy ? "disabled" : ""}> 이 팔 사용</label>`;
+  const canText = can.up && can.fd ? "CAN UP FD" : can.exists === false ? "CAN 없음" : can.up ? "CAN FD 아님" : "CAN DOWN";
+  if (busy && inUse) {
+    const st = unitState(running("record") ? "record" : "arm") || ["live", "실행 중"];
+    return { ...n, tone: st[0], state: st[1], sub: canText, actions: pick };
+  }
+  return { ...n, tone: inUse ? (can.up && can.fd || !real() ? "ok" : "warn") : "mute",
+           state: inUse ? "대기 (선택됨)" : "사용 안 함", sub: canText, actions: pick };
+}
+
+function nodeHand(s, side) {
+  const key = `hand_${side}`;
+  const h = (((s.probes || {}).ros || {}).hands || {})[side] || {};
+  const rec = (s.hands || {})[side];
+  const n = { title: `로봇 ${SIDE_KO[side]}손`, dev: "RH56F1 EtherCAT" };
+  const on = btn("켜기", { "data-action": `hand_on:${side}` }, "primary");
+  if (jobRunning(key)) return { ...n, tone: "live", state: "켜는 중...", sub: "" };
+  if (!running(key)) {
+    const st = unitState(key);
+    const failed = job(key).state === "failed" ? job(key).text : "";
+    const driverText = !real() ? "fake: 켜면 가짜 드라이버·장갑과 함께 뜬다"
+      : h.driver ? "EtherCAT 드라이버 있음" : "드라이버 없음: s2r 콘솔에서 켤 것";
+    return { ...n, tone: st ? st[0] : failed ? "bad" : h.driver || !real() ? "mute" : "warn", state: st ? st[1] : "꺼짐",
+             sub: failed || driverText, actions: on };
+  }
+  let st = ["ok", "노드 실행 (손 꺼짐)"];
+  if (rec?.fault) st = ["bad", `FAULT ${rec.fault}`];
+  else if (rec?.mode === "enabled") st = ["live", rec.state === "homing" ? "home(펼침)으로 이동" : "장갑 따라가는 중"];
+  st = unitState(key, st);
+  const enabled = rec?.mode === "enabled";
+  return { ...n, tone: st[0], state: st[1], sub: job(key).state === "failed" ? job(key).text : rec?.refusal || "",
+           actions: (enabled ? "" : on) + btn("끄기", { "data-action": `hand_off:${side}` }, "danger small") };
+}
+
+function nodeRecord(s) {
+  const items = s.record_checklist || [];
+  const chips = `<div class="checklist">${items.map((i) => `<span class="check ${i.ok ? "ok" : "miss"}" title="${esc(i.detail)}">${i.ok ? "✓" : "!"} ${esc(i.name)}</span>`).join("")}</div>`;
+  const n = { title: "녹화", dev: "LeRobot 데이터셋 · 모든 스트림 + 영상" };
+  if (!running("record")) {
+    const st = unitState("record");
+    const armOn = running("arm");
+    return { ...n, tone: st ? st[0] : "mute", state: st ? st[1] : "대기", sub: "", body: chips,
+             actions: btn(`<svg><use href="#i-rec"/></svg>녹화 시작`, { "data-start": "record", disabled: armOn,
+                          title: armOn ? "팔 원격조작을 먼저 정지" : "" }, "danger big") };
+  }
+  const st = unitState("record") || ["live", "실행 중"];
+  return { ...n, tone: st[0], state: st[1], sub: "", body: chips,
+           actions: btn("Space 시작/저장", { "data-key": "record", "data-text": " " }, "key") +
+                    btn("R 다시", { "data-key": "record", "data-text": "r" }, "key") +
+                    btn("Q 마치기", { "data-key": "record", "data-text": "q" }, "key") +
+                    btn("정지", { "data-stop": "record" }, "danger") };
+}
+
+function nodeHtml(m) {
+  return `<div class="n-head"><span class="dot"></span><span class="n-title">${esc(m.title)}</span><span class="n-dev">${esc(m.dev)}</span></div>
+    <div class="n-state">${esc(m.state)}</div><div class="n-sub">${esc(m.sub || "")}</div>${m.body || ""}
+    <div class="n-actions">${m.actions || ""}</div>`;
+}
+
+const NODES = {
+  quest: nodeQuest, neck: nodeNeck,
+  glove_left: (s) => nodeGlove(s, "left"), glove_right: (s) => nodeGlove(s, "right"),
+  arm_left: (s) => nodeArm(s, "left"), arm_right: (s) => nodeArm(s, "right"),
+  hand_left: (s) => nodeHand(s, "left"), hand_right: (s) => nodeHand(s, "right"),
+  record: nodeRecord,
+};
+
+function nodeHidden(s, id) {
+  if (id === "neck") return !s.station.has_head;
+  if (/^(glove|hand)_/.test(id)) return !s.station.hands.includes(id.split("_")[1]);
+  return false;
+}
+
+function renderNodes(s) {
+  for (const el of $$(".node")) {
+    const id = el.dataset.node;
+    el.hidden = nodeHidden(s, id);
+    if (el.hidden) continue;
+    const m = NODES[id](s);
+    el.className = `node${id === "record" ? " rec" : ""} tone-${m.tone}${id === selected ? " selected" : ""}`;
+    const html = nodeHtml(m);
+    if (el.dataset.html !== html && !el.contains(document.activeElement)) { el.innerHTML = html; el.dataset.html = html; }
+  }
+  renderArmCtrl(s);
+}
+
+function renderArmCtrl(s) {
+  const box = $("#arm-ctrl");
+  let html;
+  if (running("arm")) {
+    html = btn("Space 따라가기", { "data-key": "arm", "data-text": " " }, "key") +
+           btn("정지 (home → 차렷)", { "data-stop": "arm" }, "danger") +
+           `<span class="meta">${esc((unitState("arm") || ["", ""])[1])}</span>`;
+  } else {
+    const none = armSides().length === 0;
+    html = btn(`<svg><use href="#i-play"/></svg>팔 시작`, { "data-start": "arm", disabled: none || running("record"),
+                title: running("record") ? "녹화가 팔을 쓰는 중" : "" }, "primary big") +
+           `<span class="meta">차렷 → home, Space 로 따라가기 · 배율 ${fmt(s.settings.scale, 1)}</span>`;
+  }
+  if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
+}
+
+// ---------------------------------------------------------------- detail panel
+function facts(rows) {
+  return `<dl class="facts">${rows.map(([k, v, tone]) => `<dt>${esc(k)}</dt><dd class="${tone || ""}">${esc(v)}</dd>`).join("")}</dl>`;
+}
+
+const logButton = (key) => btn("전체 로그", { "data-log": key }, "ghost small");
+
+function directionHtml(s) {
+  const d = s.direction || {};
+  const ok = s.settings.webxr_arm_ok;
+  const status = ok
+    ? `<p class="hint">확인됨 ${esc(ok)}: 헤드셋 영상 모드로 팔을 움직일 수 있다. ${btn("다시 확인 필요로", { "data-action": "direction:reset" }, "ghost small")}</p>`
+    : `<p class="hint">아직 확인 전: 그동안 헤드셋 영상 모드에서는 팔 시작이 막힌다.</p>`;
+  if (!d.active) return status + `<div class="actions">${btn("방향 확인 켜기", { "data-action": "direction:on" }, "small")}</div>`;
+  const side = (k) => d.sides?.[k]
+    ? `<b>${esc(d.sides[k].main)}</b><span class="meta">앞 ${d.sides[k].x_cm} · 왼 ${d.sides[k].y_cm} · 위 ${d.sides[k].z_cm} cm</span>`
+    : `<b>-</b><span class="meta">${d.tracked?.[k] ? "" : "안 보임"}</span>`;
+  return status + `<div class="readout"><span>왼손 컨트롤러</span><div>${side("left")}</div><span>오른손 컨트롤러</span><div>${side("right")}</div></div>
+    <p class="hint">${esc(d.waiting || d.error || "컨트롤러를 앞으로 → '앞', 왼쪽 → '왼', 위로 → '위' 가 나오면 맞다. 로봇은 움직이지 않는다.")}</p>
+    <div class="actions">${btn("기준 다시", { "data-action": "direction:rebase" }, "small")}${btn("방향 맞음: 팔 허용", { "data-action": "direction:ok" }, "go small")}${btn("끄기", { "data-action": "direction:off" }, "ghost small")}</div>`;
+}
+
+function detailQuest(s) {
+  const q = (s.probes || {}).quest || {};
+  const qv = s.quest_view;
+  const owner = (s.probes || {}).quest_port;
+  const rows = [["USB", q.text || "확인 중", (q.devices || []).length === 1 && q.devices[0] === "device" ? "ok" : "bad"],
+    ["헤드셋", q.awake === undefined || q.awake === null ? "-" : q.awake ? "깨어 있음" : "잠듦 (쓰면 깬다)", q.awake ? "ok" : "warn"],
+    ["자세 입력", ({ app: "HandUMI 앱", view: "헤드셋 영상(WebXR)", mock: "가짜 Quest", external: "콘솔 밖 프로그램" })[s.quest_source] || "없음"],
+    ["영상 서버", running("quest_view") ? "실행 중" : "꺼짐", running("quest_view") ? "live" : ""]];
+  if (qv && real()) rows.push(["헤드셋 자세", `${qv.poses} 개 (마지막 ${qv.last} 전) · 받는 곳 ${qv.clients}`]);
+  if (s.quest_source === "external" && owner) rows.push(["TCP 65432", `콘솔 밖 ${owner.name} (PID ${owner.pid ?? "?"})`, "bad"]);
+  if (jobLine("quest")) rows.push(["최근", jobLine("quest"), job("quest").state === "failed" ? "bad" : ""]);
+  const extra = real()
+    ? btn("VR 다시 시작", { "data-action": "quest:start" }) + btn("페이지 다시 열기", { "data-action": "quest:connect" }) +
+      btn("영상 끊기", { "data-stop": "quest_view" }, "ghost") + btn("HandUMI 앱 모드", { "data-action": "quest:app" }, "ghost")
+    : btn("가짜 Quest 정지", { "data-stop": "mock_quest" }, "ghost") + btn("테스트 영상 정지", { "data-stop": "quest_view" }, "ghost");
+  return `<h3>머리 · Quest 3</h3>${facts(rows)}<div class="actions">${extra}</div>
+    <div class="sect">방향 확인 (헤드셋 영상으로 팔을 움직이기 전, 한 번)</div>${directionHtml(s)}
+    <div class="actions">${logButton("quest_view")}</div>`;
+}
+
+function detailNeck(s) {
+  const h = s.head;
+  const rows = h ? [["pan (home 기준)", `${fmt(h.meas_pan_deg - h.home_pan_deg)}°  [오른 ${fmt(h.window_deg?.[0], 0)} / 왼 ${fmt(h.window_deg?.[1], 0)}]`],
+    ["tilt (home 기준)", `${fmt(h.meas_tilt_deg - h.home_tilt_deg)}°  [아래 ${fmt(h.window_deg?.[2], 0)} / 위 ${fmt(h.window_deg?.[3], 0)}]`],
+    ["HMD", h.hmd_tracked ? "추적 중" : "놓침", h.hmd_tracked ? "ok" : "warn"]] : [["상태", running("head") ? "기록 기다림" : "꺼짐"]];
+  const port = (s.probes || {}).head_port || {};
+  rows.push(["포트", !port.exists ? "없음" : (port.holders || []).length ? `PID ${port.holders.join(",")} 사용` : "비어 있음"]);
+  return `<h3>목 · 다이나믹셀</h3>${facts(rows)}<p class="hint">시작하면 home 으로 가서 잠긴 채 기다린다. Space 로 따라가기/잠금, 잠그면 home 으로 돌아간다.</p>
+    <div class="actions">${logButton("head")}</div>`;
+}
+
+function detailGlove(s) {
+  const g = (s.probes || {}).gloves || {};
+  const ros = (s.probes || {}).ros || {};
+  const rows = [["SenseCom", !s.sensecom_installed ? "미설치 (scripts/ros_ws_setup.sh --full)" : g.sensecom_started_at ? "실행 중" : "꺼짐",
+    s.sensecom_installed ? (g.sensecom_started_at ? "ok" : "") : "bad"]];
+  for (const [side, glove] of Object.entries(g.gloves || {})) {
+    rows.push([`${SIDE_KO[side]}손 ${glove.serial}`, `${glove.connected ? "BLE 연결" : "BLE 미연결"} · 토픽 ${(ros.glove_topics || {})[side] ? "있음" : "없음"}`]);
+    const cal = (s.calibration || {})[side];
+    if (cal) rows.push([`${SIDE_KO[side]}손 보정`, cal.ok ? "유효" : cal.detail, cal.ok ? "ok" : "warn"]);
+  }
+  rows.push(["드라이버", (g.driver_pids || []).length ? `PID ${g.driver_pids.join(", ")}` : "꺼짐"]);
+  if (jobLine("glove")) rows.push(["최근", jobLine("glove"), job("glove").state === "failed" ? "bad" : ""]);
+  const calib = ["calib_right", "calib_left"].find(running);
+  return `<h3>장갑 · Nova 2</h3>${facts(rows)}
+    <div class="row"><label class="field">보정 사용자 <input type="text" id="user" maxlength="32" placeholder="op1" value="${esc(s.settings.user)}"></label></div>
+    <div class="actions">${btn("오른손 보정", { "data-start": "calib_right" }, "small")}${btn("왼손 보정", { "data-start": "calib_left" }, "small")}
+      ${btn("Enter: 이 자세 기록", { "data-key": calib || "", "data-text": "\n", disabled: !calib }, "key small")}
+      ${btn("드라이버 정지", { "data-action": "glove_driver_stop", disabled: !(g.driver_pids || []).length }, "ghost small")}</div>
+    <div class="actions">${logButton(calib || "task_glove_up")}</div>`;
+}
+
+function detailArm(s) {
+  const p = s.probes || {};
+  const rows = Object.entries(s.station.can_ports).map(([side, port]) => {
+    const c = (p.can || {})[side] || {};
+    return [`CAN ${SIDE_KO[side]}팔`, `${port} ${c.up ? "UP" : "DOWN"}${c.fd ? " FD" : ""}`, c.up && c.fd ? "ok" : real() ? "bad" : ""];
+  });
+  const holders = Array.isArray(p.can_holders) ? p.can_holders : [];
+  rows.push(["s2r CAN 점유", holders.length ? holders[0].slice(0, 60) : "없음", holders.length ? "bad" : "ok"]);
+  rows.push(["TCP 보정", s.station.tcp.measured ? s.station.tcp.path : "identity (측정 전)"]);
+  rows.push(["RT 한도", p.rt ? `rtprio ${p.rt.rtprio}` : "-", p.rt?.ok ? "ok" : "warn"]);
+  return `<h3>로봇 팔 · OpenArm</h3>${facts(rows)}
+    <div class="row"><label class="field">이동 배율 <input type="number" id="scale" min="0.1" max="1.7" step="0.1" value="${esc(s.settings.scale)}" ${running("arm") || running("record") ? "disabled" : ""}></label></div>
+    <p class="hint">시작: 차렷 → 저장 경로 → home (손은 주먹). Space 로 따라가기. 정지: home → 차렷 → 모터 끔.</p>
+    <div class="actions">${logButton("arm")}</div>`;
+}
+
+function detailHand(s, side) {
+  const key = `hand_${side}`;
+  const ros = (s.probes || {}).ros || {};
+  const h = (ros.hands || {})[side] || {};
+  const rec = (s.hands || {})[side];
+  const rows = [["ROS 도메인", ros.error ? `오류: ${ros.error}` : ros.domain ?? "-"],
+    ["EtherCAT 드라이버", h.driver ? "있음" : "없음 (s2r 콘솔에서 켤 것)", h.driver ? "ok" : "warn"],
+    ["angle_set 발행", (h.angle_set_publisher_nodes || []).join(", ") || String(h.angle_set_publishers ?? "-")]];
+  if (rec) {
+    rows.push(["상태", `${rec.mode} · ${rec.state}`, rec.fault ? "bad" : ""]);
+    rows.push(["장갑 나이", `${fmt(rec.glove_age_s, 2)} s${rec.glove_frozen ? " (멈춤)" : ""}`, rec.glove_frozen ? "warn" : ""]);
+    if (rec.refusal) rows.push(["켜기 거부", rec.refusal, "bad"]);
+  }
+  const cal = (s.calibration || {})[side];
+  if (cal) rows.push(["장갑 보정", cal.detail, cal.ok ? "ok" : "warn"]);
+  if (jobLine(key)) rows.push(["최근", jobLine(key), job(key).state === "failed" ? "bad" : ""]);
+  return `<h3>로봇 ${SIDE_KO[side]}손 · RH56F1</h3>${facts(rows)}
+    <p class="hint">[켜기]: 노드를 띄우고 켠다(home 펼침 → 장갑 따라가기). [끄기]: 펼침으로 돌아간 뒤 노드를 내린다. 드라이버는 s2r 콘솔 몫.</p>
+    <div class="actions">${logButton(key)}</div>`;
+}
+
+function detailRecord(s) {
+  const rows = (s.record_checklist || []).map((i) => [i.name, i.detail, i.ok ? "ok" : "warn"]);
+  return `<h3>녹화</h3>${facts(rows)}
+    <div class="row"><label class="field grow">작업 설명 <input type="text" id="task" maxlength="200" value="${esc(s.settings.task)}"></label>
+      <label class="field">에피소드 <input type="number" id="episodes" min="1" max="500" step="1" value="${esc(s.settings.episodes)}"></label></div>
+    <p class="hint">시작하면 팔이 차렷 → home 으로 간다. Space 로 에피소드 시작/저장, R 은 버리고 다시, Q 는 마침. 빠진 스트림(! 표시)은 데이터셋에 안 들어간다.</p>
+    <div class="actions">${logButton("record")}</div>`;
+}
+
+const DETAILS = {
+  quest: detailQuest, neck: detailNeck, glove_left: detailGlove, glove_right: detailGlove,
+  arm_left: detailArm, arm_right: detailArm, hand_left: (s) => detailHand(s, "left"), hand_right: (s) => detailHand(s, "right"),
+  record: detailRecord,
+};
+const DETAIL_TAIL = { quest: "quest_view", neck: "head", arm_left: "arm", arm_right: "arm", hand_left: "hand_left",
+  hand_right: "hand_right", record: "record", glove_left: "calib", glove_right: "calib" };
+
+function renderDetail(s) {
+  const box = $("#detail");
+  const html = DETAILS[selected](s);
+  let tailKey = DETAIL_TAIL[selected];
+  if (tailKey === "calib") tailKey = ["calib_right", "calib_left"].find(running) || "task_glove_up";
+  if (box.dataset.html !== html && !box.contains(document.activeElement)) {
+    box.innerHTML = html + `<pre class="tail" id="detail-tail"></pre>`;
+    box.dataset.html = html;
+  }
+  const u = unit(tailKey);
+  const lines = (u.tail || []).slice(-10);
+  if (u.partial) lines.push(u.partial);
+  const pre = $("#detail-tail");
+  if (pre && pre.textContent !== lines.join("\n")) { pre.textContent = lines.join("\n"); pre.scrollTop = pre.scrollHeight; }
+}
+
+// ---------------------------------------------------------------- top, alerts, bar
 function renderTop(s) {
-  const st = s.station;
-  $("#station").textContent = st.name;
-  $("#robot").textContent = `${st.robot} · 손 도메인 ${st.ros_domain ?? "-"}`;
+  $("#station").textContent = `${s.station.name} · ${s.station.robot}`;
   document.body.classList.toggle("is-real", s.mode === "real");
-  document.body.classList.toggle("is-fake", s.mode === "fake");
-  document.body.classList.toggle("has-hands", st.hands.length > 0);
-  $("#card-head").hidden = !st.has_head;
   const busy = s.running.length > 0;
   $$("#top [data-mode]").forEach((b) => {
     b.setAttribute("aria-checked", String(b.dataset.mode === s.mode));
     b.disabled = busy && b.dataset.mode !== s.mode;
     b.title = b.disabled ? "실행 중인 것을 모두 정지한 뒤 바꿀 수 있다" : "";
   });
-  document.title = `macq 콘솔 · ${st.name} · ${s.mode === "real" ? "실기" : "FAKE"}`;
-}
-
-function pill(label, value, tone) {
-  return `<div class="pill ${tone}"><small>${esc(label)}</small><b>${esc(value)}</b></div>`;
-}
-
-function renderHealth(s) {
   const p = s.probes || {};
-  const out = [];
-  const q = p.quest || {};
-  const qOk = (q.devices || []).length === 1 && q.devices[0] === "device";
-  out.push(pill("Quest USB", qOk ? (q.awake === false ? "연결 · 잠듦" : "연결됨") : (q.text || "확인 중"), qOk ? (q.awake === false ? "warn" : "ok") : "bad"));
-  const src = { app: "HandUMI 앱", view: "헤드셋 영상", mock: "가짜 Quest", external: "콘솔 밖 프로그램" }[s.quest_source];
-  out.push(pill("자세 입력", src || "없음", s.quest_source === "external" ? "bad" : src ? "ok" : "warn"));
-  for (const [side, port] of Object.entries(s.station.can_ports)) {
-    const c = (p.can || {})[side] || {};
-    const ok = c.up && c.fd;
-    out.push(pill(`CAN ${SIDE_KO[side]}팔 ${port}`, ok ? "UP FD" : c.exists === false ? "없음" : c.up ? "FD 아님" : "DOWN", ok ? "ok" : s.mode === "real" ? "bad" : "mute"));
-  }
-  const holders = Array.isArray(p.can_holders) ? p.can_holders : [];
-  out.push(pill("s2r CAN 점유", holders.length ? "점유 중" : "없음", holders.length ? "bad" : "ok"));
-  if (s.station.has_head) {
-    const h = p.head_port || {};
-    out.push(pill("머리 포트", !h.exists ? "없음" : (h.holders || []).length ? `PID ${h.holders.join(",")}` : "비어 있음",
-      !h.exists ? (s.mode === "real" ? "bad" : "mute") : (h.holders || []).length ? (running("head") ? "live" : "bad") : "ok"));
-  }
-  const rt = p.rt || {};
-  out.push(pill("RT 한도", rt.rtprio !== undefined ? `rtprio ${rt.rtprio}` : "-", rt.ok ? "ok" : "warn"));
+  const holders = Array.isArray(p.can_holders) ? p.can_holders : null;
+  const canOk = Object.keys(s.station.can_ports).every((side) => (p.can || {})[side]?.up && (p.can || {})[side]?.fd);
+  const pills = [["CAN", canOk ? "UP" : "DOWN", canOk ? "ok" : real() ? "bad" : "mute"],
+    ["s2r CAN", holders === null ? "?" : holders.length ? "점유" : "비어 있음", holders && !holders.length ? "ok" : "bad"],
+    ["RT", p.rt ? String(p.rt.rtprio) : "-", p.rt?.ok ? "ok" : "warn"]];
   if (s.station.hands.length) {
     const ros = p.ros || {};
-    for (const side of s.station.hands) {
-      const h = (ros.hands || {})[side];
-      out.push(pill(`손 ${SIDE_KO[side]} EtherCAT`, ros.error ? "ROS 오류" : !h ? "확인 중" : h.driver ? "드라이버 있음" : "없음",
-        ros.error ? "bad" : !h ? "mute" : h.driver ? "ok" : "warn"));
-    }
-    const g = p.gloves || {};
-    out.push(pill("SenseCom", g.sensecom_started_at ? "실행 중" : "꺼짐", g.sensecom_started_at ? "ok" : "mute"));
-    for (const [side, glove] of Object.entries(g.gloves || {}))
-      out.push(pill(`장갑 ${SIDE_KO[side]}`, glove.connected ? "연결" : "미연결", glove.connected ? "ok" : "mute"));
+    const drivers = s.station.hands.filter((side) => (ros.hands || {})[side]?.driver).length;
+    pills.push([`손 드라이버 · 도메인 ${ros.domain ?? "-"}`, ros.error ? "오류" : `${drivers}/${s.station.hands.length}`, drivers ? "ok" : "warn"]);
   }
-  $("#health").innerHTML = out.join("");
+  const html = pills.map(([k, v, t]) => `<span class="badge ${t}">${esc(k)} ${esc(v)}</span>`).join("");
+  if ($("#health").dataset.html !== html) { $("#health").innerHTML = html; $("#health").dataset.html = html; }
+  document.title = `macq 콘솔 · ${s.station.name} · ${s.mode === "real" ? "실기" : "FAKE"}`;
 }
 
 function renderAlerts(s) {
   const items = [];
   if (s.closing)
-    items.push(`<div class="alert warn"><p><b>콘솔 종료 중</b>: 모든 단위를 안전 자세로 정지하는 중이다. 끝나면 서버가 내려간다(새 시작 불가).</p></div>`);
+    items.push(`<div class="alert warn"><p><b>콘솔 종료 중</b>: 모든 것을 안전 자세로 정지하는 중이다. 끝나면 서버가 내려간다(새 시작 불가).</p></div>`);
   for (const e of s.left_behind || [])
     items.push(`<div class="alert"><p>이전 콘솔이 남긴 <b>${esc(unitName(e.key))}</b> (PID ${Number(e.pid)}) 가 아직 돈다${e.stopping ? " (정지 중)" : ""}: <code>${esc((e.argv || []).join(" ").slice(0, 160))}</code></p>
       <button type="button" class="btn danger" data-left="${Number(e.pid)}" ${e.stopping ? "disabled" : ""}>정지 (SIGINT)</button></div>`);
@@ -165,195 +445,20 @@ function renderAlerts(s) {
     if (!u.prompt) continue;
     const yn = /\[y\/n\]/i.test(u.prompt);
     items.push(`<div class="alert ${key.startsWith("calib") ? "warn" : ""}"><p><b>${esc(unitName(key))}</b> 이 입력을 기다린다: <code>${esc(u.prompt)}</code></p>
-      ${yn ? `<button type="button" class="btn" data-send="${key}" data-text="y&#10;">y</button><button type="button" class="btn" data-send="${key}" data-text="n&#10;">n</button>`
-           : `<button type="button" class="btn danger" data-send="${key}" data-text="&#10;">Enter 보내기</button>`}</div>`);
+      ${yn ? `<button type="button" class="btn" data-send="${esc(key)}" data-text="y&#10;">y</button><button type="button" class="btn" data-send="${esc(key)}" data-text="n&#10;">n</button>`
+           : `<button type="button" class="btn danger" data-send="${esc(key)}" data-text="&#10;">Enter 보내기</button>`}</div>`);
   }
   const html = items.join("");
   if ($("#alerts").dataset.html !== html) { $("#alerts").innerHTML = html; $("#alerts").dataset.html = html; }
 }
 
-function renderQuest(s) {
-  const card = $("#card-quest");
-  const q = (s.probes || {}).quest || {};
-  const src = { app: ["ok", "HandUMI 앱"], view: ["live", "헤드셋 영상"], mock: ["live", "가짜 Quest"],
-    external: ["bad", "콘솔 밖 프로그램"] }[s.quest_source] || ["warn", "입력 없음"];
-  setBadge($('[data-f="source"]', card), src);
-  const qv = s.quest_view;
-  const rows = [["USB", q.text || "확인 중", (q.devices || []).length === 1 && q.devices[0] === "device" ? "ok" : "bad"],
-    ["헤드셋", q.awake === undefined || q.awake === null ? "-" : q.awake ? "깨어 있음" : "잠듦 (쓰면 깬다)", q.awake ? "ok" : "warn"],
-    ["앱 forward 65432", q.forward ? "있음" : "없음", q.forward ? "ok" : ""],
-    ["영상 reverse 8787", q.reverse ? "있음" : "없음", q.reverse ? "ok" : ""]];
-  const owner = (s.probes || {}).quest_port;
-  if (s.quest_source === "external" && owner)
-    rows.push(["TCP 65432", `콘솔 밖 ${owner.name} (PID ${owner.pid ?? "?"}) 사용 중: 끄고 다시`, "bad"]);
-  const uv = s.units.quest_view;
-  rows.push(["영상 서버", running("quest_view") ? (uv.phase ? uv.phase[1] : "실행 중") : "꺼짐", running("quest_view") ? "live" : ""]);
-  if (qv) rows.push(["헤드셋 자세", `${qv.poses} 개 (마지막 ${qv.last} 전) · 받는 곳 ${qv.clients}`, qv.last === "never" ? "warn" : "ok"]);
-  facts($('[data-f="facts"]', card), rows);
-  const busyJob = ["quest_app", "quest_view"].some((j) => (s.jobs[j] || {}).state === "running");
-  const users = ["head", "arm", "record"].some(running);
-  $$('[data-action="quest:app"], [data-action="quest:view"]', card).forEach((b) => {
-    b.disabled = busyJob || users;
-    b.title = users ? "머리/팔/녹화를 먼저 정지" : "";
-  });
-  const mock = $('[data-toggle="mock_quest"]', card);
-  mock.textContent = running("mock_quest") ? "가짜 Quest 정지" : "가짜 Quest 시작";
-  const job = Object.entries(s.jobs).filter(([k]) => k.startsWith("quest")).sort((a, b) => b[1].at - a[1].at)[0];
-  const jobEl = $('[data-f="job"]', card);
-  if (job) {
-    const [name, j] = job;
-    jobEl.className = `job ${j.state === "failed" ? "bad" : j.state === "ok" ? "ok" : ""}`;
-    jobEl.textContent = `${name === "quest_app" ? "앱 모드" : "영상 모드"}: ${j.state === "running" ? "진행 중..." : j.text}`;
-  }
-}
-
-function renderArm(s) {
-  const card = $("#card-arm");
-  const u = s.units.arm;
-  setBadge($('[data-f="phase"]', card), unitBadge(u));
-  card.classList.toggle("running", running("arm"));
-  card.classList.toggle("stopping", stopping("arm"));
-  const locked = running("arm") || running("record");
-  $$("[data-side]", card).forEach((b) => {
-    b.setAttribute("aria-checked", String(b.dataset.side === s.settings.arm_side));
-    b.disabled = locked;
-  });
-  syncInput("#scale", s.settings.scale);
-  $("#scale").disabled = locked;
-  const tcp = s.station.tcp;
-  $('[data-f="tcp"]', card).textContent = `TCP 보정: ${tcp.measured ? tcp.path : "identity (측정 전)"}`;
-  tail($('[data-f="tail"]', card), u);
-}
-
-function renderHead(s) {
-  if (!s.station.has_head) return;
-  const card = $("#card-head");
-  const u = s.units.head;
-  const h = s.head;
-  let override = null;
-  if (h && running("head") && !stopping("head")) {
-    override = h.returning ? ["live", "home 으로 복귀 중"] : h.locked ? ["ok", "잠김 (home): Space 로 따라가기"]
-      : h.state === "hold" ? ["warn", "HMD 놓침: 멈춤"] : ["live", "HMD 따라가는 중"];
-  }
-  setBadge($('[data-f="phase"]', card), unitBadge(u, override));
-  card.classList.toggle("running", running("head"));
-  card.classList.toggle("stopping", stopping("head"));
-  const rows = [];
-  if (h) {
-    const dp = h.meas_pan_deg - h.home_pan_deg, dt = h.meas_tilt_deg - h.home_tilt_deg;
-    rows.push(["pan (home 기준)", `${fmt(dp)}°  [오른 ${fmt(h.window_deg?.[0], 0)} / 왼 ${fmt(h.window_deg?.[1], 0)}]`]);
-    rows.push(["tilt (home 기준)", `${fmt(dt)}°  [아래 ${fmt(h.window_deg?.[2], 0)} / 위 ${fmt(h.window_deg?.[3], 0)}]`]);
-    rows.push(["HMD", h.hmd_tracked ? "추적 중" : "놓침", h.hmd_tracked ? "ok" : "warn"]);
-  } else rows.push(["상태", running("head") ? "기록 기다림" : "꺼짐"]);
-  facts($('[data-f="facts"]', card), rows);
-  tail($('[data-f="tail"]', card), u, 4);
-}
-
-function renderRecord(s) {
-  const card = $("#card-record");
-  const u = s.units.record;
-  setBadge($('[data-f="phase"]', card), unitBadge(u));
-  card.classList.toggle("running", running("record"));
-  card.classList.toggle("stopping", stopping("record"));
-  syncInput("#task", s.settings.task);
-  syncInput("#episodes", s.settings.episodes);
-  const sc = s.station.sidecars || {};
-  const streams = Object.keys(sc).filter((n) => running(n === "head" ? "head" : n));
-  $('[data-f="streams"]', card).textContent = running("record") ? "" :
-    `시작하면 필수 스트림: ${streams.length ? streams.join(", ") : "없음 (팔만, --no-sidecars)"} · 팔 ${({ right: "오른팔", left: "왼팔", both: "양팔" })[s.settings.arm_side]}`;
-  tail($('[data-f="tail"]', card), u);
-}
-
-function renderGlove(s) {
-  if (!s.station.hands.length) return;
-  const card = $("#card-glove");
-  const g = (s.probes || {}).gloves || {};
-  const ros = (s.probes || {}).ros || {};
-  setBadge($('[data-f="sensecom"]', card), g.sensecom_started_at ? ["ok", "SenseCom 실행 중"] : ["mute", "SenseCom 꺼짐"]);
-  const rows = [];
-  for (const [side, glove] of Object.entries(g.gloves || {})) {
-    const topic = (ros.glove_topics || {})[side];
-    rows.push([`${SIDE_KO[side]}손 ${glove.serial}`, `${glove.connected ? "BLE 연결" : "BLE 미연결"} · 토픽 ${topic ? "있음" : "없음"}`, glove.connected && topic ? "ok" : "warn"]);
-    const cal = (s.calibration || {})[side];
-    if (cal) rows.push([`${SIDE_KO[side]}손 보정`, cal.ok ? "유효" : cal.detail, cal.ok ? "ok" : "warn"]);
-  }
-  rows.push(["드라이버", (g.driver_pids || []).length ? `PID ${g.driver_pids.join(", ")}` : "꺼짐", (g.driver_pids || []).length ? "ok" : ""]);
-  facts($('[data-f="facts"]', card), rows);
-  syncInput("#user", s.settings.user);
-  const calib = ["calib_right", "calib_left"].find(running);
-  const enter = $("[data-key-active]", card);
-  enter.disabled = !calib;
-  enter.dataset.key = calib || "";
-  const fakeOnly = s.mode !== "real";
-  $$('[data-action^="glove:"]', card).forEach((b) => { b.disabled = fakeOnly; b.title = fakeOnly ? "실기 모드에서만" : ""; });
-  $('[data-action="glove_driver_stop"]', card).disabled = !(g.driver_pids || []).length;
-  tail($('[data-f="tail"]', card), s.units[calib || "calib_right"], 5);
-}
-
-function renderHands(s) {
-  if (!s.station.hands.length) return;
-  const card = $("#card-hands");
-  const ros = (s.probes || {}).ros || {};
-  $('[data-f="domain"]', card).textContent = ros.error ? `ROS: ${ros.error}` : `ROS 도메인 ${ros.domain ?? "-"} · ${ros.took_s ?? "-"} s`;
-  const box = $('[data-f="rows"]', card);
-  if (!box.dataset.built) {
-    box.innerHTML = s.station.hands.map((side) => `<section class="hand-row" data-hand="${side}">
-      <header><b>${SIDE_KO[side]}손</b><span class="badge" data-f="state">-</span></header>
-      <dl class="facts" data-f="facts"></dl>
-      <div class="actions">
-        <button type="button" class="btn" data-start="hand_${side}">노드 시작</button>
-        <button type="button" class="btn primary" data-action="hand_on:${side}">켜기 (장갑 따라가기)</button>
-        <button type="button" class="btn" data-action="hand_off:${side}">끄기 (펼침)</button>
-        <button type="button" class="btn danger" data-stop="hand_${side}">정지</button>
-        <button type="button" class="btn ghost" data-log="hand_${side}">로그</button>
-      </div></section>`).join("");
-    box.dataset.built = "1";
-  }
-  for (const side of s.station.hands) {
-    const row = $(`[data-hand="${side}"]`, box);
-    const key = `hand_${side}`;
-    const h = (ros.hands || {})[side] || {};
-    const rec = (s.hands || {})[side];
-    let override = null;
-    if (rec && running(key) && !stopping(key))
-      override = rec.fault ? ["bad", `FAULT ${rec.fault}`] : [rec.mode === "disabled" ? "ok" : "live", `${rec.mode} · ${rec.state}`];
-    setBadge($('[data-f="state"]', row), unitBadge(s.units[key], override));
-    const rows = [["EtherCAT 드라이버", h.driver ? "있음" : "없음 (s2r 콘솔에서 켤 것)", h.driver ? "ok" : "warn"],
-      ["angle_set 발행자", String(h.angle_set_publishers ?? "-"), (h.angle_set_publishers || 0) > (running(key) ? 1 : 0) ? "bad" : ""]];
-    if (rec) {
-      rows.push(["장갑 나이", `${fmt(rec.glove_age_s, 2)} s${rec.glove_frozen ? " (멈춤)" : ""}`, rec.glove_frozen ? "warn" : ""]);
-      if (rec.refusal) rows.push(["켜기 거부", rec.refusal, "bad"]);
-    }
-    facts($('[data-f="facts"]', row), rows);
-    $(`[data-action="hand_on:${side}"]`, row).disabled = !running(key) || stopping(key);
-    $(`[data-action="hand_off:${side}"]`, row).disabled = !running(key) || stopping(key);
-  }
-}
-
 function renderBar(s) {
-  const chips = s.running.map((k) => `<button type="button" class="chip ${stopping(k) ? "stopping" : ""}" data-log="${k}">${esc(unitName(k))}</button>`).join("");
+  const chips = s.running.map((k) => `<button type="button" class="chip ${stopping(k) ? "stopping" : ""}" data-log="${esc(k)}">${esc(unitName(k))}</button>`).join("");
   if ($("#running").dataset.html !== chips) { $("#running").innerHTML = chips; $("#running").dataset.html = chips; }
   const sel = $("#space-target");
   if (document.activeElement !== sel) sel.value = s.space_target || "";
   $$("[data-key]").forEach((b) => b.classList.toggle("target", b.dataset.key === s.space_target && b.dataset.text === " "));
   $("#stop-all").disabled = s.running.length === 0;
-}
-
-const EXCLUDES = { arm: "record", record: "arm", quest_view: "mock_quest", mock_quest: "quest_view" };
-
-function renderButtons() {
-  $$("[data-start]").forEach((b) => {
-    const other = EXCLUDES[b.dataset.start];
-    b.disabled = running(b.dataset.start) || (other && running(other));
-    b.title = other && running(other) ? `${unitName(other)} 실행 중` : "";
-  });
-  $$("[data-stop]").forEach((b) => { b.disabled = !running(b.dataset.stop) || stopping(b.dataset.stop); });
-  $$("[data-key]:not([data-key-active])").forEach((b) => { b.disabled = !running(b.dataset.key) || stopping(b.dataset.key); });
-}
-
-function syncInput(sel, value) {
-  const el = $(sel);
-  if (document.activeElement !== el && el.value !== String(value ?? "")) el.value = value ?? "";
 }
 
 function renderEvents(s) {
@@ -366,17 +471,12 @@ function renderEvents(s) {
 
 function render(s) {
   S = s;
+  if (!DETAILS[selected] || nodeHidden(s, selected)) selected = "quest";
   renderTop(s);
-  renderHealth(s);
   renderAlerts(s);
-  renderQuest(s);
-  renderArm(s);
-  renderHead(s);
-  renderRecord(s);
-  renderGlove(s);
-  renderHands(s);
+  renderNodes(s);
+  renderDetail(s);
   renderBar(s);
-  renderButtons();
   renderEvents(s);
 }
 
@@ -405,28 +505,41 @@ function openDrawer(key) {
 // ---------------------------------------------------------------- events
 document.addEventListener("click", async (ev) => {
   const b = ev.target.closest("button");
-  if (!b) return;
+  const node = ev.target.closest(".node");
+  if (!b) {
+    if (node && !ev.target.closest("label, input")) { selected = node.dataset.node; if (S) render(S); }
+    return;
+  }
   const d = b.dataset;
   if (d.mode && !b.disabled && S && d.mode !== S.mode) {
-    if (d.mode === "real" && !(await confirmDialog("실기 모드로", "이제부터 시작하는 것은 실제 로봇·장치를 쓴다. 움직이는 단위는 시작 전에 명령을 다시 보여 준다.", "", true))) return;
+    if (d.mode === "real" && !(await confirmDialog("실기 모드로", "이제부터 시작하는 것은 실제 로봇·장치를 쓴다. 움직이는 것은 시작 전에 명령을 다시 보여 준다.", "", true))) return;
     act("mode", { mode: d.mode }, null, d.mode === "real" ? "실기 모드" : "FAKE 모드");
   } else if (d.start) act("start", { key: d.start }, b, `${unitName(d.start)} 시작`);
   else if (d.stop) act("stop", { key: d.stop }, b, `${unitName(d.stop)} 정지 요청 (안전 자세로)`);
   else if (d.key !== undefined && d.text !== undefined && d.key) act("key", { key: d.key, text: d.text }, null, `${unitName(d.key)} ← ${d.text === " " ? "Space" : d.text.trim() || "Enter"}`);
   else if (d.send) act("key", { key: d.send, text: d.text }, b, "입력 보냄");
   else if (d.action) act("action", { name: d.action }, b, "요청함");
-  else if (d.toggle) act(running(d.toggle) ? "stop" : "start", { key: d.toggle }, b);
-  else if (d.side) act("settings", { arm_side: d.side }, null, `팔: ${b.textContent}`);
   else if (d.log) openDrawer(d.log);
   else if (d.left) act("action", { name: `left_behind_stop:${d.left}` }, b, "SIGINT 보냄");
 });
 
-for (const [sel, field, cast] of [["#scale", "scale", Number], ["#task", "task", String], ["#episodes", "episodes", Number], ["#user", "user", String]]) {
-  $(sel).addEventListener("change", (ev) => act("settings", { [field]: cast(ev.target.value) }, null, "설정 저장"));
-}
+document.addEventListener("change", (ev) => {
+  const t = ev.target;
+  if (t.dataset.pick && S) {
+    const sides = new Set(armSides());
+    if (t.checked) sides.add(t.dataset.pick); else sides.delete(t.dataset.pick);
+    if (!sides.size) { t.checked = true; toast("팔은 하나 이상 골라야 한다", "bad"); return; }
+    const side = sides.size === 2 ? "both" : [...sides][0];
+    act("settings", { arm_side: side }, null, `팔: ${({ right: "오른팔", left: "왼팔", both: "양팔" })[side]}`);
+    return;
+  }
+  const field = { scale: ["scale", Number], task: ["task", String], episodes: ["episodes", Number], user: ["user", String] }[t.id];
+  if (field) act("settings", { [field[0]]: field[1](t.value) }, null, "설정 저장");
+});
+
 $("#space-target").addEventListener("change", (ev) => act("space_target", { key: ev.target.value || null }, null, "Space 대상 바꿈"));
 $("#stop-all").addEventListener("click", async (ev) => {
-  if (await confirmDialog("모두 정지", "실행 중인 모든 단위에 SIGINT 를 한 번 보낸다. 팔은 home → 차렷, 머리는 home, 손은 펼침으로 간 뒤 끝난다.", "", false))
+  if (await confirmDialog("모두 정지", "실행 중인 모든 것에 SIGINT 를 한 번 보낸다. 팔은 home → 차렷, 목은 home, 손은 펼침으로 간 뒤 끝난다.", "", false))
     act("stop_all", {}, ev.currentTarget, "모두 정지 요청");
 });
 $("#quit").addEventListener("click", async () => {
@@ -453,6 +566,9 @@ $("#drawer-input").addEventListener("submit", (ev) => {
 });
 document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && !$("#drawer").hidden && !$("#confirm").open) { $("#drawer").hidden = true; drawerKey = null; return; }
+  if ((ev.key === "Enter" || ev.key === " ") && ev.target.classList?.contains("node")) {  // keyboard select
+    ev.preventDefault(); selected = ev.target.dataset.node; if (S) render(S); return;
+  }
   if (ev.code !== "Space" || ev.repeat || $("#confirm").open) return;
   if (ev.target.closest("input, textarea, select")) return;
   ev.preventDefault();  // Space goes to the robot program, not to the focused button
@@ -462,17 +578,16 @@ document.addEventListener("keydown", (ev) => {
 
 // ---------------------------------------------------------------- start
 (function init() {
-  const saved = new URLSearchParams(location.search).get("theme") || localStorage.getItem("macq-theme");
+  const params = new URLSearchParams(location.search);
+  const saved = params.get("theme") || localStorage.getItem("macq-theme");
   document.documentElement.dataset.theme = saved || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
-  if (new URLSearchParams(location.search).has("once")) {  // one render, no stream (headless screenshots)
-    fetch("/api/state").then((r) => r.json()).then((s) => { setBadge($("#conn"), ["ok", "한 번 읽음"]); render(s); });
+  if (params.get("node")) selected = params.get("node");
+  if (params.has("once")) {  // one render, no stream (headless screenshots)
+    fetch("/api/state").then((r) => r.json()).then((s) => { setBadge(["ok", "한 번 읽음"]); render(s); });
     return;
   }
   const es = new EventSource("/api/stream");
-  es.addEventListener("state", (ev) => {
-    setBadge($("#conn"), ["ok", "연결됨"]);
-    render(JSON.parse(ev.data));
-  });
-  es.onerror = () => setBadge($("#conn"), ["bad", "콘솔 서버 끊김"]);
+  es.addEventListener("state", (ev) => { setBadge(["ok", "연결됨"]); render(JSON.parse(ev.data)); });
+  es.onerror = () => setBadge(["bad", "콘솔 서버 끊김"]);
   setInterval(refreshDrawer, 1000);
 })();

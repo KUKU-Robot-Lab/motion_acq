@@ -79,9 +79,10 @@ def test_server_turns_page_poses_into_the_handumi_stream():
     from motion_acq.tracking.meta_quest import MetaQuestConfig, MetaQuestTrackingProvider
 
     ports = {"port": free_port(), "tcp": free_port(), "sync": free_port(socket.SOCK_DGRAM),
-             "head": free_port(socket.SOCK_DGRAM)}
+             "head": free_port(socket.SOCK_DGRAM), "frames": free_port()}
     args = parse_args(["--port", str(ports["port"]), "--tcp-port", str(ports["tcp"]), "--sync-port",
-                       str(ports["sync"]), "--head-status-port", str(ports["head"]), "--camera", "-1"])
+                       str(ports["sync"]), "--head-status-port", str(ports["head"]), "--camera", "-1",
+                       "--frame-port", str(ports["frames"])])
     loop = asyncio.new_event_loop()
     task = loop.create_task(serve(args))
     thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -134,3 +135,60 @@ def test_server_turns_page_poses_into_the_handumi_stream():
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=5)
         loop.close()
+
+
+def test_frame_stream_reaches_the_recorder_camera():
+    """quest-view test pattern -> TCP frame server -> QuestViewCameraDevice (RGB, monotonic time)."""
+    import socket as _socket
+    import subprocess
+    import sys
+    import time as _time
+
+    from motion_acq.cameras.questview import QuestViewCameraDevice
+    from motion_acq.cameras.usb import _make_camera
+
+    def free_port() -> int:
+        with _socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    page, frames = free_port(), free_port()
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM) as s:
+        s.bind(("127.0.0.1", 0))
+        head = s.getsockname()[1]
+    proc = subprocess.Popen([sys.executable, "-m", "motion_acq.quest_view.server", "--port", str(page),
+                             "--frame-port", str(frames), "--head-status-port", str(head),
+                             "--test-pattern", "--no-pose-server", "--fps", "30"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        cam = _make_camera("quest-view", index_or_path=f"127.0.0.1:{frames}", fps=30, width=640, height=480)
+        assert isinstance(cam, QuestViewCameraDevice)
+        deadline = _time.monotonic() + 15
+        while True:
+            try:
+                cam.connect()
+                break
+            except RuntimeError:
+                if _time.monotonic() > deadline:
+                    raise
+                _time.sleep(0.3)
+        before = _time.monotonic_ns()
+        _time.sleep(0.3)
+        sample = cam.sample_at(_time.monotonic_ns())
+        assert sample.image.shape == (480, 640, 3)
+        assert sample.capture_time_ns > before - 200_000_000
+        # the pattern's box is BGR (0, 200, 255): in RGB the first channel is 255 and the last 0 there
+        box = (sample.image[:, :, 0] == 255) & (sample.image[:, :, 1] == 200)
+        assert box.any() and (sample.image[box][:, 2] == 0).all()
+        cam.disconnect()
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_frame_header_round_trip():
+    from motion_acq.cameras.questview import parse_header
+    from motion_acq.quest_view.server import FRAME_HEADER, FRAME_MAGIC
+
+    raw = FRAME_HEADER.pack(FRAME_MAGIC, 7, 123456789, 640, 480, 3)
+    assert parse_header(raw) == (7, 123456789, 640, 480, 3)

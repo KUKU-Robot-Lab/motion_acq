@@ -291,7 +291,10 @@ def disable_hands(plan: Plan) -> None:
 
 def recorder_command(plan: Plan, extra: list[str]) -> list[str]:
     cmd = [str(VENV_BIN / "macq"), "teleop-record", "--device", "meta", "--space-start", "--skip-feetech"]
-    if not (plan.rig.get("cameras") or {}):
+    cameras = list((plan.rig.get("cameras") or {}))
+    if cameras and plan.mode == "real":
+        cmd += ["--cameras", ",".join(cameras)]  # arm4090: head frames from macq quest-view
+    else:
         cmd.append("--skip-cameras")
     if plan.streams:
         for name, port in plan.streams.items():

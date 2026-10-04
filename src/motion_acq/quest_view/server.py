@@ -15,6 +15,12 @@ Remove the HandUMI adb forward first: both use local port 65432.
 The head process sends its records here with --udp-target 127.0.0.1:47121;
 the status line shows locked / following, the HMD offset from the anchor
 and the camera pan/tilt from home against the window.
+
+quest-view owns the head camera, so it also hands every frame to the recorder:
+TCP 127.0.0.1:47126 streams raw BGR frames (FRAME_HEADER + pixels) to each
+connected client (motion_acq.cameras.questview, camera type "quest-view").
+--test-pattern replaces the camera with a moving pattern and --no-pose-server
+leaves 65432 to the mock sender (fake recording with video).
 """
 
 from __future__ import annotations
@@ -39,6 +45,10 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 _PING = struct.Struct("<BQ")  # HandUMI time-sync (motion_acq.tracking.meta_quest)
 _PONG = struct.Struct("<BQQ")
 HEAD_STATUS_PORT = 47121
+FRAME_PORT = 47126
+# magic, sequence, capture time (time.monotonic_ns), width, height, channels; then height*width*channels bytes (BGR)
+FRAME_HEADER = struct.Struct("<4sIQHHB")
+FRAME_MAGIC = b"MQVF"
 STATUS_PERIOD_S = 0.1
 NO_POSE_WARN_S = 10.0
 
@@ -49,10 +59,45 @@ class Shared:
 
     jpeg: bytes | None = None
     jpeg_seq: int = 0
+    frame: bytes | None = None  # raw BGR of the same frame, for the recorder
+    frame_shape: tuple[int, int, int] = (0, 0, 0)
+    frame_ns: int = 0
     head: dict | None = None
     frames_in: int = 0
     last_pose_at: float = 0.0
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def _publish(shared: Shared, frame, params, captured_ns: int) -> None:
+    import cv2
+
+    ok, buf = cv2.imencode(".jpg", frame, params)
+    raw = frame.tobytes()
+    with shared.lock:
+        if ok:
+            shared.jpeg = buf.tobytes()
+        shared.frame, shared.frame_shape, shared.frame_ns = raw, tuple(frame.shape), captured_ns
+        shared.jpeg_seq += 1
+
+
+def test_pattern_thread(width: int, height: int, fps: float, quality: int, shared: Shared,
+                        stop: threading.Event) -> None:
+    """A moving pattern instead of the camera (fake runs: recording with video, no hardware)."""
+    import cv2
+    import numpy as np
+
+    params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    period = 1.0 / max(fps, 1.0)
+    n = 0
+    while not stop.is_set():
+        frame = np.zeros((height, width, 3), np.uint8)
+        frame[:, :, 1] = 40
+        x = int((n * 7) % width)
+        cv2.rectangle(frame, (x, height // 3), (min(x + 60, width - 1), 2 * height // 3), (0, 200, 255), -1)
+        cv2.putText(frame, f"quest-view test {n}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        _publish(shared, frame, params, time.monotonic_ns())
+        n += 1
+        stop.wait(period)
 
 
 def camera_thread(index: int, width: int, height: int, fps: float, quality: int,
@@ -71,15 +116,44 @@ def camera_thread(index: int, width: int, height: int, fps: float, quality: int,
     try:
         while not stop.is_set():
             ok, frame = cap.read()
+            captured_ns = time.monotonic_ns()
             if not ok:
                 time.sleep(0.05)
                 continue
-            ok, buf = cv2.imencode(".jpg", frame, params)
-            if ok:
-                with shared.lock:
-                    shared.jpeg, shared.jpeg_seq = buf.tobytes(), shared.jpeg_seq + 1
+            _publish(shared, frame, params, captured_ns)
     finally:
         cap.release()
+
+
+class FrameServer:
+    """Raw frames to local readers (the recorder). A slow reader skips frames, never blocks the camera."""
+
+    def __init__(self, shared: Shared) -> None:
+        self.shared = shared
+        self.clients = 0
+
+    async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.clients += 1
+        log.info("frame reader connected (recorder)")
+        sent = 0
+        try:
+            while not writer.is_closing():
+                with self.shared.lock:
+                    seq, raw, shape, ns = (self.shared.jpeg_seq, self.shared.frame, self.shared.frame_shape,
+                                           self.shared.frame_ns)
+                if raw is None or seq == sent:
+                    await asyncio.sleep(0.005)
+                    continue
+                h, w, c = shape
+                writer.write(FRAME_HEADER.pack(FRAME_MAGIC, seq & 0xFFFFFFFF, ns, w, h, c) + raw)
+                await writer.drain()
+                sent = seq
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            self.clients -= 1
+            writer.close()
+            log.info("frame reader left")
 
 
 class PoseBroadcast:
@@ -200,40 +274,50 @@ async def _push(ws: web.WebSocketResponse, shared: Shared, video_fps: float) -> 
 async def serve(args: argparse.Namespace) -> None:
     shared = Shared()
     stop = threading.Event()
-    if args.camera >= 0:
+    if args.test_pattern:
+        threading.Thread(target=test_pattern_thread, daemon=True, name="quest-view-pattern",
+                         args=(args.width, args.height, args.fps, args.jpeg_quality, shared, stop)).start()
+    elif args.camera >= 0:
         threading.Thread(target=camera_thread, daemon=True, name="quest-view-camera",
                          args=(args.camera, args.width, args.height, args.fps, args.jpeg_quality, shared, stop)
                          ).start()
     poses = PoseBroadcast()
     loop = asyncio.get_running_loop()
-    try:
-        tcp = await asyncio.start_server(poses.handle, "127.0.0.1", args.tcp_port)
-    except OSError as exc:
-        raise SystemExit(f"TCP 127.0.0.1:{args.tcp_port} is taken ({exc}); remove the HandUMI forward: "
-                         f"adb forward --remove tcp:{args.tcp_port}") from exc
-    await loop.create_datagram_endpoint(SyncResponder, local_addr=("127.0.0.1", args.sync_port))
+    tcp = None
+    if not args.no_pose_server:
+        try:
+            tcp = await asyncio.start_server(poses.handle, "127.0.0.1", args.tcp_port)
+        except OSError as exc:
+            raise SystemExit(f"TCP 127.0.0.1:{args.tcp_port} is taken ({exc}); remove the HandUMI forward: "
+                             f"adb forward --remove tcp:{args.tcp_port}") from exc
+        await loop.create_datagram_endpoint(SyncResponder, local_addr=("127.0.0.1", args.sync_port))
+    frames = FrameServer(shared)
+    frame_tcp = await asyncio.start_server(frames.handle, "127.0.0.1", args.frame_port)
     await loop.create_datagram_endpoint(lambda: HeadStatus(shared), local_addr=("127.0.0.1", args.head_status_port))
     runner = web.AppRunner(build_app(shared, poses, video_fps=args.fps), shutdown_timeout=1.0)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", args.port).start()
-    log.info("page http://localhost:%d (Quest: scripts/quest_usb.sh view); poses -> TCP 127.0.0.1:%d; "
-             "head status <- UDP %d", args.port, args.tcp_port, args.head_status_port)
+    log.info("page http://localhost:%d (Quest: scripts/quest_usb.sh view); poses -> TCP 127.0.0.1:%s; "
+             "head status <- UDP %d; frames -> TCP 127.0.0.1:%d", args.port,
+             "off" if tcp is None else args.tcp_port, args.head_status_port, args.frame_port)
     started = time.monotonic()
     try:
         while True:
             await asyncio.sleep(5.0)
             now = time.monotonic()
             age = now - shared.last_pose_at if shared.last_pose_at else None
-            log.info("poses in %d (last %s ago), tracking clients %d, camera frames %d",
+            log.info("poses in %d (last %s ago), tracking clients %d, camera frames %d, frame readers %d",
                      shared.frames_in, f"{age:.1f} s" if age is not None else "never",
-                     len(poses.writers), shared.jpeg_seq)
-            if (age if age is not None else now - started) > NO_POSE_WARN_S:
+                     len(poses.writers), shared.jpeg_seq, frames.clients)
+            if tcp is not None and (age if age is not None else now - started) > NO_POSE_WARN_S:
                 log.warning("no headset poses for %.0f s: VR not started, or a USB re-plug dropped the adb "
                             "reverse; run scripts/quest_usb.sh view (or vr) again",
                             age if age is not None else now - started)
     finally:
         stop.set()
-        tcp.close()
+        if tcp is not None:
+            tcp.close()
+        frame_tcp.close()
         await runner.cleanup()
 
 
@@ -248,6 +332,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--fps", type=float, default=30.0)
     p.add_argument("--jpeg-quality", type=int, default=70)
+    p.add_argument("--frame-port", type=int, default=FRAME_PORT, help="raw frames for the recorder")
+    p.add_argument("--test-pattern", action="store_true", help="moving pattern instead of the camera (fake)")
+    p.add_argument("--no-pose-server", action="store_true",
+                   help="no TCP 65432 / sync (the mock sender serves poses; fake recording with video)")
     return p.parse_args(argv)
 
 

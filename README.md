@@ -80,22 +80,29 @@ MACQ_STATION=arm4090 macq console --real         # real robot; --fake (default) 
 MACQ_STATION=arm4090 macq console --install-desktop   # app menu entry "macq 콘솔 (arm4090)", real mode
 ```
 
-It runs the same programs as the terminal commands below, each in its own
-process group on a pseudo-terminal, and shows their state:
+The window is laid out like a body: operator gear on top (head = Quest,
+neck = Dynamixel, left / right hand = Nova 2), the robot below (left / right
+arm, left / right RH56F1 hand), recording at the bottom. Each part has one
+main button; everything else (logs, calibration, HandUMI app mode, force
+stop) is in the panel on the right when the part is clicked.
 
-| card | runs | keys |
+| part | main button | runs |
 |---|---|---|
-| Quest | `quest_usb.sh app` (HandUMI app, for the arms) / quest-view + `quest_usb.sh view` (head camera in the headset) / `vr`; fake: mock sender | |
-| 팔 | `macq teleop-real` right / left / both, translation scale, `--skip-can-repair` where s2r owns CAN | Space: follow |
-| 머리 | `macq head --unlock key`, records to quest-view, the console and the recorder | Space: follow / lock (home) |
-| 녹화 | `macq teleop-record`; requires only the streams whose producer runs | Space start/save, R, Q |
-| 장갑 | `nova2.sh up / driver`, `calibrate` per side | Enter per pose |
-| 손 | `hand_node` per side on the s2r domain, enable / disable topics | |
+| 머리 (Quest) | 연결 → 시작 | quest-view (head camera + pose server) and the page in the headset, then VR from the PC: the camera shows in the headset. Fake: mock sender + test pattern |
+| 목 (Dynamixel) | 시작 / Space / 정지 | `macq head --unlock key` |
+| 왼손·오른손 (Nova 2) | 연결 | `nova2.sh up`, then the glove driver as soon as both are connected (needs `ros_ws_setup.sh --full`: SenseCom) |
+| 로봇 팔 | 이 팔 사용 + 팔 시작 / Space / 정지 | `macq teleop-real` right / left / both |
+| 로봇 손 (RH56F1) | 켜기 / 끄기 | hand_node + enable in one confirmed step; 끄기 = open, then the node exits |
+| 녹화 | 녹화 시작, then Space / R / Q | `macq teleop-record` with every running stream: arms, head, hands, gloves, the Quest poses (controllers, HMD) and the head camera video taken from quest-view (TCP 47126, camera type `quest-view`) |
+
+The arms follow the headset view's (WebXR) controllers only after the direction
+check (머리 > 방향 확인): the window shows how far each controller moved in robot
+axes (forward / left / up) while the robot stays still; [방향 맞음] allows it.
 
 - Real mode: a unit that moves the robot (arm, head, record, hand enable) shows
   its exact command and starts only after [실기 실행]. Blockers are checked
   first: CAN up/FD and not held by s2r, head port free, a Quest pose source
-  (arms: the HandUMI app only; the WebXR page is not verified for the arms), the
+  (arms over the headset view only after the direction check), the
   RH56F1 EtherCAT driver present on `hands.ros_domain_id` (126) with nobody
   else publishing `/hand_<side>/angle_set`.
 - 정지 sends SIGINT once (arms home -> rest, head home, hands open); a second

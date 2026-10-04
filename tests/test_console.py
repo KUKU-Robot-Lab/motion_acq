@@ -385,3 +385,71 @@ def test_http_guard(console):
 
     asyncio.run(body())
     assert (Path(console.log_root) / "intents.jsonl").exists()
+
+
+# -- simplified flow (body view) -----------------------------------------------------------------------
+
+def test_quest_view_fake_is_a_test_pattern_without_the_pose_server():
+    assert units.quest_view(ARM4090, "fake").argv[-2:] == ("--test-pattern", "--no-pose-server")
+    assert units.quest_view(ARM4090, "real").argv[-1] == "quest-view"
+
+
+def test_record_takes_the_head_camera_from_quest_view(tmp_path):
+    launch = units.record(ARM4090, "real", "both", 0.5, streams={"head": 47101}, task="t", episodes=1,
+                          output_dir=tmp_path, cameras=("head",))
+    argv = list(launch.argv)
+    assert "--skip-cameras" not in argv and argv[argv.index("--cameras") + 1] == "head"
+    assert ARM4090.cameras == ("head",) and ARM5080.cameras == ()
+
+
+def test_quest_source_follows_the_mode(console, monkeypatch):
+    from motion_acq.console import gates
+
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key == "quest_view")
+    assert gates.quest_source(console) is None  # fake quest-view = test pattern, no poses
+    console.set_mode("real")
+    assert gates.quest_source(console) == "view"
+
+
+def test_webxr_arm_needs_the_direction_check(console, monkeypatch):
+    console.set_mode("real")
+    data = _fresh({"can": {"right": {"port": "can0", "up": True, "fd": True}}})
+    monkeypatch.setattr(console, "probe_raw", lambda name: data.get(name))
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key == "quest_view")
+    assert any("방향 확인" in b for b in console.blockers("arm"))
+    monkeypatch.setattr(console.direction, "stop", lambda: None)
+    assert console.action("direction:ok")["ok"] and console.settings["webxr_arm_ok"]
+    assert console.blockers("arm") == []
+    console.action("direction:reset")
+    assert any("방향 확인" in b for b in console.blockers("arm"))
+
+
+def test_hand_on_asks_once_for_node_and_enable(console, monkeypatch):
+    console.set_mode("real")
+    monkeypatch.setattr(console, "blockers", lambda key: [])
+    console.update_settings({"user": "op1"})
+    jobs = []
+    monkeypatch.setattr(console, "_job", lambda name, fn: jobs.append(name) or {"ok": True})
+    reply = console.action("hand_on:right")
+    assert reply["need_confirm"] and jobs == []
+    assert "hand_node" in reply["command"] and "enable" in reply["command"]
+    assert console.action("hand_on:right", confirm=True, token=reply["token"]) == {"ok": True}
+    assert jobs == ["hand_right"]
+
+
+def test_record_checklist_lists_every_stream(console, monkeypatch):
+    monkeypatch.setattr(console.sup, "running", lambda: ["mock_quest", "quest_view", "head"])
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key in ("mock_quest", "quest_view", "head"))
+    items = {i["name"]: i["ok"] for i in console.record_checklist()}
+    assert items["Quest 자세"] and items["카메라 영상"] and items["목"] and items["로봇 팔"]
+    assert not items["로봇 오른손"] and not items["로봇 왼손"]
+
+
+def test_direction_describe():
+    import numpy as np
+
+    from motion_acq.console.direction import describe
+
+    assert describe(np.array([0.12, 0.01, 0.0]))["main"] == "앞 12 cm"
+    assert describe(np.array([0.0, -0.05, 0.01]))["main"] == "오른 5 cm"
+    assert describe(np.array([0.0, 0.0, 0.005]))["main"] == "거의 그대로"

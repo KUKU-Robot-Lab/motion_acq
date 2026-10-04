@@ -76,6 +76,11 @@ class Station:
         return None if value is None else str(int(value))
 
     @property
+    def cameras(self) -> tuple[str, ...]:
+        """Cameras the recorder captures (arm4090: head, frames from quest-view)."""
+        return tuple(str(name) for name in (self.rig.get("cameras") or {}))
+
+    @property
     def can_auto_repair(self) -> bool:
         robot = (self.rig.get("robots") or {}).get(self.robot) or {}
         return bool((robot.get("can") or {}).get("auto_repair", True))
@@ -160,8 +165,11 @@ def tcp_calibration(station: Station) -> tuple[Path, bool]:
 
 # -- Quest ------------------------------------------------------------------------
 
-def quest_view(station: Station) -> Launch:
-    return Launch("quest_view", "헤드셋 영상 서버", (MACQ, "quest-view"), _base_env(station), stop_grace_s=5.0)
+def quest_view(station: Station, mode: str = "real") -> Launch:
+    """Real: head camera + pose server for the headset page. Fake: a moving test pattern only
+    (the mock sender keeps TCP 65432), so a fake recording still has video."""
+    argv = (MACQ, "quest-view") + (() if _real(mode) else ("--test-pattern", "--no-pose-server"))
+    return Launch("quest_view", "헤드셋 영상 서버", argv, _base_env(station), stop_grace_s=5.0)
 
 
 def mock_quest(station: Station) -> Launch:
@@ -226,19 +234,21 @@ def record_streams(station: Station, running: set[str]) -> dict[str, int]:
 
 
 def record(station: Station, mode: str, side: str, scale: float, *, streams: dict[str, int],
-           task: str, episodes: int, output_dir: Path) -> Launch:
+           task: str, episodes: int, output_dir: Path, cameras: tuple[str, ...] = ()) -> Launch:
     if not task.strip():
         raise UnitError("task description is empty")
     if not 1 <= int(episodes) <= 500:
         raise UnitError("episodes must be within 1..500")
     argv = [MACQ, "teleop-record", *_arm_common(station, mode, side, scale),
             "--task", task.strip(), "--num-episodes", str(int(episodes)), "--output-dir", str(output_dir)]
+    if cameras:
+        argv = [a for a in argv if a != "--skip-cameras"] + ["--cameras", ",".join(cameras)]
     if streams:
         for name, port in streams.items():
             argv += ["--sidecar", f"{name}={port}"]
     else:
         argv.append("--no-sidecars")
-    names = ", ".join(streams) or "팔만"
+    names = ", ".join([*streams, *(f"카메라 {c}" for c in cameras)]) or "팔만"
     return Launch("record", f"녹화 ({SIDE_KO[side]}, {names})", tuple(argv), _base_env(station), pty=True,
                   moves_robot=_real(mode),
                   summary=f"{SIDE_KO[side]}: 차렷 → home 이동 후 Space 로 에피소드 시작/저장, R 다시, Q 마침.",
@@ -304,8 +314,8 @@ def calibrate(station: Station, mode: str, side: str, user: str) -> Launch:
 
 # -- short tasks ---------------------------------------------------------------------------------------
 
-QUEST_TASKS = {"status": "Quest 상태", "app": "HandUMI 앱 모드", "view": "헤드셋 영상 열기", "vr": "VR 시작",
-               "launch": "HandUMI 앱 다시 시작"}
+QUEST_TASKS = {"status": "Quest 상태", "app": "HandUMI 앱 모드", "view": "헤드셋 영상 열기 + VR",
+               "page": "헤드셋에 영상 페이지 열기", "vr": "VR 시작", "launch": "HandUMI 앱 다시 시작"}
 GLOVE_TASKS = {"up": "SenseCom 시작 + 장갑 연결", "driver": "장갑 드라이버 시작", "status": "장갑 상태"}
 
 

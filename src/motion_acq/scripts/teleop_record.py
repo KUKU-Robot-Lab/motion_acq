@@ -58,7 +58,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -96,6 +96,7 @@ from motion_acq.dataset.raw import (
     camera_health_features,
     capture_timing_features,
     feetech_features,
+    raw_tracking_features,
 )
 from motion_acq.feetech import FeetechGripperPair, FeetechGripperSampler, GripperWidths
 from motion_acq.config import STATION_ENV
@@ -204,6 +205,9 @@ class _CaptureSnapshot:
     record_time_ns: int
     tracking_time_ns: int
     submitted_s: float
+    # Quest device poses (controllers, HMD), workspace, tracked flags and clock of the
+    # tracking sample this row's command came from (HandUMI raw tracking schema).
+    tracking: dict[str, np.ndarray] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -707,6 +711,7 @@ class AsyncEpisodeCapture:
                     snapshot.target_time_ns, snapshot.record_time_ns
                 ),
                 **sidecar_frame,
+                **snapshot.tracking,
                 "calibration_id": np.array([-1], dtype=np.int64),
                 "source_kind": np.array([1], dtype=np.int64),
             },
@@ -859,6 +864,7 @@ def build_features(
     features["observation.state"] = state_action
     features["action"] = dict(state_action)
     features.update(feetech_features())
+    features.update(raw_tracking_features())
     features.update(capture_timing_features())
     features.update(camera_health_features(cam_names))
     if record_audio:
@@ -1803,6 +1809,7 @@ def record_episode(
                     record_time_ns=record_time_ns,
                     tracking_time_ns=tracking_time_ns,
                     submitted_s=time.perf_counter(),
+                    tracking=sample.tracking_frame(),
                 )
             )
         except DatasetWriteError as exc:

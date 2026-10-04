@@ -107,9 +107,17 @@ def test_gripper_motor_is_only_touched_when_enabled(enabled):
 def test_doctor_accepts_explicit_empty_cameras() -> None:
     from motion_acq.scripts.doctor import collect_doctor_checks
 
-    checks = collect_doctor_checks(station_rig_config("arm4090"), robot="openarmv1")
+    checks = collect_doctor_checks(station_rig_config("arm5080"), robot="openarmv1")
     cameras = [c for c in checks if c.name == "cameras"]
     assert cameras and cameras[0].status == "pass"
+
+
+def test_doctor_checks_the_quest_view_head_camera_stream() -> None:
+    from motion_acq.scripts.doctor import collect_doctor_checks
+
+    checks = collect_doctor_checks(station_rig_config("arm4090"), robot="openarm_rh56f1")
+    head = [c for c in checks if c.name == "camera:head"]
+    assert head and "quest-view frames 127.0.0.1:47126" in head[0].detail
 
 
 def test_doctor_still_fails_without_cameras_key(tmp_path) -> None:

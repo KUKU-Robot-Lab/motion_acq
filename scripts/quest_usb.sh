@@ -6,6 +6,7 @@
 #   scripts/quest_usb.sh forward   # adb forward tcp:65432 -> Quest 65432
 #   scripts/quest_usb.sh launch    # (re)start the app in the headset over adb
 #   scripts/quest_usb.sh view      # head camera page instead of the app (macq quest-view runs), enters VR
+#   scripts/quest_usb.sh page      # the same page, without entering VR (the console's [연결]; vr = [시작])
 #   scripts/quest_usb.sh vr        # (re)enter VR on the open page from the PC; vr --status = page state
 #   scripts/quest_usb.sh app       # back to the HandUMI app (forward + launch)
 #
@@ -78,7 +79,7 @@ cmd_launch() {
 
 VIEW_PORT="${QUEST_VIEW_PORT:-8787}"
 
-cmd_view() {
+cmd_page() {
   # The page reaches macq quest-view as http://localhost (adb reverse: a secure
   # context for WebXR, no certificate); quest-view itself serves port 65432.
   one_device
@@ -86,7 +87,12 @@ cmd_view() {
   "$ADB" reverse "tcp:$VIEW_PORT" "tcp:$VIEW_PORT"
   "$ADB" shell am force-stop "$PACKAGE" || true
   "$ADB" shell am start -a android.intent.action.VIEW -d "http://localhost:$VIEW_PORT" com.oculus.browser >/dev/null
-  echo "Quest Browser opened http://localhost:$VIEW_PORT; entering VR from here ..."
+  echo "Quest Browser opened http://localhost:$VIEW_PORT"
+}
+
+cmd_view() {
+  cmd_page
+  echo "entering VR from here ..."
   cmd_vr || echo "VR did not start from the PC; press 'VR 시작' in the headset (first time: allow VR)."
 }
 
@@ -112,7 +118,8 @@ case "${1:-status}" in
   forward) cmd_forward ;;
   launch) cmd_launch ;;
   view) cmd_view ;;
+  page) cmd_page ;;
   vr) shift; cmd_vr "$@" ;;
   app) cmd_app ;;
-  *) die "usage: $0 {status|install|forward|launch|view|vr|app}" ;;
+  *) die "usage: $0 {status|install|forward|launch|view|page|vr|app}" ;;
 esac

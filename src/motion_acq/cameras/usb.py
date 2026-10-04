@@ -284,6 +284,10 @@ def _make_camera(
             width=width,
             height=height,
         )
+    if normalized in {"quest-view", "questview"}:
+        from motion_acq.cameras.questview import QuestViewCameraDevice
+
+        return QuestViewCameraDevice(index_or_path=str(index_or_path), fps=fps, width=width, height=height)
     if normalized in {"zedmini", "zed-mini"}:
         if width != 1344 or height != 376:
             raise ValueError(
@@ -323,8 +327,10 @@ def _normalize_camera_type(value: object) -> str:
         return "opencv"
     if normalized in {"zedmini", "zed-mini"}:
         return "zedmini"
+    if normalized in {"quest-view", "questview"}:
+        return "quest-view"
     raise SystemExit(
-        f"Unsupported camera type {value!r}; expected 'opencv' or 'zedmini'."
+        f"Unsupported camera type {value!r}; expected 'opencv', 'zedmini' or 'quest-view'."
     )
 
 

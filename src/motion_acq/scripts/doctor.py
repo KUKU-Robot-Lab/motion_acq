@@ -86,6 +86,10 @@ def collect_doctor_checks(
     if isinstance(cameras, dict) and cameras:
         for name, raw in cameras.items():
             value = raw.get("index_or_path") if isinstance(raw, dict) else raw
+            kind = str(raw.get("type", "")).lower().replace("_", "-") if isinstance(raw, dict) else ""
+            if kind in {"quest-view", "questview"}:
+                checks.append(_quest_view_camera_check(name, str(value)))
+                continue
             path = (
                 Path(f"/dev/video{value}")
                 if isinstance(value, int)
@@ -233,3 +237,15 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def _quest_view_camera_check(name: str, address: str) -> DoctorCheck:
+    """A quest-view camera is a local TCP frame stream: reachable only while macq quest-view runs."""
+    import socket
+
+    host, _, port = address.rpartition(":")
+    try:
+        with socket.create_connection((host, int(port)), timeout=0.5):
+            return DoctorCheck(f"camera:{name}", "pass", f"quest-view frames {address}")
+    except (OSError, ValueError):
+        return DoctorCheck(f"camera:{name}", "warn", f"quest-view frames {address} (start macq quest-view)")

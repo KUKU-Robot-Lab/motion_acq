@@ -5,7 +5,15 @@
 
 station: arm4090
 
-cameras: {}
+# The head RealSense belongs to macq quest-view (shown in the headset); the
+# recorder takes the same frames from it over TCP (camera type quest-view).
+cameras:
+  head:
+    type: quest-view
+    index_or_path: "127.0.0.1:47126"
+    width: 640
+    height: 480
+    fps: 30
 
 recording:
   device: meta

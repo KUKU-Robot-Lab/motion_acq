@@ -12,7 +12,9 @@ import time
 
 from motion_acq.console import units
 
-EXCLUSIVE = ({"arm", "record"}, {"quest_view", "mock_quest"})
+# arm and record both own the CAN arms. quest_view and the mock never clash: the mock only runs in
+# fake mode, where quest-view serves a test pattern without the pose server.
+EXCLUSIVE = ({"arm", "record"},)
 QUEST_PRODUCERS = ("head", "arm", "record")
 FAST_STALE_S = 10.0
 ROS_STALE_S = 20.0
@@ -20,10 +22,10 @@ ROS_STALE_S = 20.0
 
 def quest_source(console) -> str | None:
     """Where the HandUMI pose stream on TCP 65432 comes from."""
-    if console.sup.is_running("quest_view"):
-        return "view"
     if console.sup.is_running("mock_quest"):
         return "mock"
+    if console.mode == "real" and console.sup.is_running("quest_view"):
+        return "view"
     owner = console.probe("quest_port") or {}
     if owner.get("name") and owner.get("name") != "adb":
         return "external"  # a quest-view / mock not started by this console
@@ -78,8 +80,8 @@ def _fast_probe_problems(console) -> list[str]:
 
 def _arm_blockers(console, source: str | None) -> list[str]:
     out = []
-    if source == "view":
-        out.append("헤드셋 영상 모드(WebXR)의 컨트롤러 자세는 팔에 아직 검증 전: HandUMI 앱 모드로 바꿀 것")
+    if source == "view" and not console.settings.get("webxr_arm_ok"):
+        out.append("헤드셋 영상(WebXR)으로 팔을 처음 움직이기 전에 머리(Quest) > 방향 확인을 마칠 것(로봇은 안 움직인다)")
     if source == "external":
         out.append(external_quest(console) + ": 그 프로그램을 끄고 HandUMI 앱 모드로")
     side = str(console.settings["arm_side"])
