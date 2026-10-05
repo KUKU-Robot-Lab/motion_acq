@@ -22,7 +22,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 RIDGE_LINEAR = 1e-2
-RIDGE_RBF = 1e-3
+RIDGE_RBF = 2e-2  # near-identical examples with different targets average instead of blowing up
 MIN_STD = {"angle": 0.02, "tipdist": 2.0, "position": 2.0}  # floors for the input spread (rad, mm, mm)
 
 
@@ -120,7 +120,8 @@ class Conflict:
 
 def fit(inputs: Sequence[str], joints: Sequence[str],
         samples: Mapping[str, Sequence[Mapping[str, float]]], targets: Mapping[str, Mapping[str, float]],
-        fallback_pose: str, *, min_distance: float = 1.0, min_target_gap: float = 0.15) -> ExampleMap:
+        fallback_pose: str, *, min_distance: float = 1.0, min_target_gap: float = 0.15,
+        check_conflicts: bool = True) -> ExampleMap:
     """Fit the map from example samples {pose: [signals]} and robot targets {pose: {joint: rad}}.
 
     Raises ExampleMapError listing conflicting poses (too close on the glove, different on
@@ -149,7 +150,7 @@ def fit(inputs: Sequence[str], joints: Sequence[str],
             gap = max(abs(targets[a][j] - targets[b][j]) for j in joints)
             if dist < min_distance and gap > min_target_gap:
                 conflicts.append(Conflict((a, b), dist, gap))
-    if conflicts:
+    if conflicts and check_conflicts:
         raise ConflictError(conflicts)
     # affine ridge
     za = np.hstack([z, np.ones((len(z), 1))])
@@ -180,14 +181,14 @@ class ConflictError(ExampleMapError):
 
 def fit_groups(groups: Mapping[str, tuple[Sequence[str], Sequence[str]]],
                samples: Mapping[str, Sequence[Mapping[str, float]]], targets: Mapping[str, Mapping[str, float]],
-               fallback_pose: str) -> dict[str, ExampleMap]:
+               fallback_pose: str, check_conflicts: bool = True) -> dict[str, ExampleMap]:
     """One map per joint group, each from its own inputs (10.05: with every input in one map,
     poses away from the examples fell back to the affine average and the thumb rotation sat
     at 1.2-1.7 rad). Conflicts of all groups are raised together."""
     models, conflicts = {}, []
     for name, (inputs, joints) in groups.items():
         try:
-            models[name] = fit(inputs, joints, samples, targets, fallback_pose)
+            models[name] = fit(inputs, joints, samples, targets, fallback_pose, check_conflicts=check_conflicts)
         except ConflictError as exc:
             conflicts += [Conflict(c.poses, c.distance, c.target_gap, name) for c in exc.conflicts]
     if conflicts:

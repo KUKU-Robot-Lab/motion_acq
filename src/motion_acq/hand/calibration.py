@@ -183,24 +183,28 @@ def run_session(
 
     samples = {pose: take(pose) for pose in order}
     targets = {p: examples[p][1] for p in order}
-    conflicts_seen: dict[tuple[str, str], int] = {}
+    redone = False
     while True:
         try:
-            models = fit_groups(groups, samples, targets, OPEN_POSE)
+            models = fit_groups(groups, samples, targets, OPEN_POSE, check_conflicts=not redone)
         except ConflictError as exc:
-            for c in exc.conflicts:
-                conflicts_seen[c.poses] = conflicts_seen.get(c.poses, 0) + 1
-                if conflicts_seen[c.poses] >= max_tries:
-                    raise CalibrationError(f"{c.poses[0]} / {c.poses[1]}: {max_tries}번 해도 장갑에서 구별되지 "
-                                           "않습니다") from exc
+            # 10.05: a human cannot always isolate a finger (ring curls the middle too): ask once
+            # for the poses that collide, then keep what the glove gives (the map averages them)
+            redone = True
             redo = poses_to_redo([c.poses for c in exc.conflicts])
             say(f"  장갑에서 비슷하게 읽히는 자세가 있습니다 ({exc}): "
-                f"{', '.join(f'{order.index(p) + 1}번' for p in redo)} 자세를 다시 합니다")
+                f"{', '.join(f'{order.index(p) + 1}번' for p in redo)} 자세를 한 번 더 합니다 "
+                "(그래도 비슷하면 그대로 저장합니다)")
             for pose in redo:
                 samples[pose] = take(pose)
             continue
         except ExampleMapError as exc:
             raise CalibrationError(str(exc)) from exc
+        if redone:
+            try:
+                fit_groups(groups, samples, targets, OPEN_POSE)
+            except ConflictError as exc:
+                say(f"  주의: 여전히 비슷하게 읽히는 자세가 있어 둘의 중간으로 따라갑니다 ({exc})")
         medians = {p: {n: statistics.median(s[n] for s in samples[p]) for n in inputs} for p in order}
         return HandCalibration(side, user, models, medians)
 

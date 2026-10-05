@@ -30,15 +30,18 @@ groups:
     joints: [thumb_1, thumb_2]
     inputs: [thumb_brake, thumb_mcp, thumb_pip, thumb_tip_x, thumb_tip_y, thumb_tip_z,
              tipdist_index, tipdist_middle, tipdist_ring, tipdist_pinky]
+  # a finger also sees the thumb tip: "finger curled" and "pinching that finger" curl the
+  # glove finger alike (10.05 calibration: index / pinch_index 0.55-0.97 apart, flagged on
+  # both hands), the thumb position is what differs
   index:
     joints: [index_1]
-    inputs: [index_mcp, index_pip, tipdist_index]
+    inputs: [index_mcp, index_pip, tipdist_index, thumb_tip_x, thumb_tip_y, thumb_tip_z]
   middle:
     joints: [middle_1]
-    inputs: [middle_mcp, middle_pip, tipdist_middle]
+    inputs: [middle_mcp, middle_pip, tipdist_middle, thumb_tip_x, thumb_tip_y, thumb_tip_z]
   ring:
     joints: [ring_1, pinky_1]
-    inputs: [ring_mcp, ring_pip, tipdist_ring]
+    inputs: [ring_mcp, ring_pip, tipdist_ring, thumb_tip_x, thumb_tip_y, thumb_tip_z]
 
 # RH56F1 joint range the map may command (rad). thumb_1: larger = register down =
 # across the palm (verified 10.05 on the right hand: 852 -> 620 toward the palm,

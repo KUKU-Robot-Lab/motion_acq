@@ -123,3 +123,43 @@ def test_the_fewest_poses_are_redone():
 
     assert poses_to_redo([("flat", "index"), ("index", "middle"), ("index", "ring")]) == ["index"]
     assert sorted(poses_to_redo([("a", "b"), ("c", "d")])) == ["a", "c"]
+
+
+def _as_done(pose: str, angles: dict) -> list[dict[str, float]]:
+    import numpy as np
+
+    rng = np.random.default_rng(len(pose))
+    return [{k: v + float(rng.normal(0.0, 0.5 if k.startswith(("tipdist", "thumb_tip")) else 0.004))
+             for k, v in angles.items()} for _ in range(30)]
+
+
+def test_a_pinch_with_the_finger_curled_far_still_calibrates():
+    """10.05 22:01-22:05, both hands: "index / pinch_index look alike" three times and the run
+    failed. The operator curls the index almost as far in the pinch as alone; the thumb tip
+    is what differs, which the index map now sees."""
+    from motion_acq.hand.synthetic import synthetic_angles
+
+    pinch = _as_done("pinch_index", synthetic_angles({"index": 0.9}, 0.5, 0.35, ("index", 1.0)))
+    op = Operator({"pinch_index": [pinch] * 3})
+    cal = session(op)
+    assert op.recorded == ORDER  # nothing asked twice
+    alone = cal.predict(synthetic_angles({"index": 1.0}, 0.0, 0.0))
+    pinching = cal.predict(synthetic_angles({"index": 0.9}, 0.5, 0.35, ("index", 1.0)))
+    assert alone["index_1"] > 1.4 and alone["thumb_1"] == pytest.approx(1.57, abs=0.1)
+    assert pinching["index_1"] == pytest.approx(0.73, abs=0.08)
+    assert pinching["thumb_1"] == pytest.approx(1.54, abs=0.08)
+
+
+def test_fingers_a_human_cannot_isolate_are_saved_with_a_warning_not_a_failure():
+    """10.05 22:03 right hand: "middle / ring look alike" (curling the ring curls the middle).
+    Asked once more, then saved: the map follows between the two."""
+    from motion_acq.hand.synthetic import synthetic_angles
+
+    ring_with_middle = _as_done("ring", synthetic_angles({"ring": 1.0, "middle": 0.95}, 0.0, 0.0))
+    op = Operator({"ring": [ring_with_middle] * 3})
+    cal = session(op)
+    assert any("한 번 더" in s for s in op.said) and any("주의" in s for s in op.said)
+    q = cal.predict(synthetic_angles({"ring": 1.0, "middle": 0.95}, 0.0, 0.0))
+    for j, (lo, hi) in CONFIG.limits_rad.items():
+        assert lo - 0.3 <= q[j] <= hi + 0.3, j  # averaged, never wild
+    assert q["ring_1"] > 1.2
