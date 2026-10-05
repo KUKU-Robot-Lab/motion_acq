@@ -11,6 +11,7 @@ import yaml
 
 from motion_acq.filters import OneEuroFilter, RateLimiter
 from motion_acq.hand.calibration import HandCalibration
+from motion_acq.hand.feedback import FeedbackConfig, feedback_config
 from motion_acq.hand.nova2 import FeatureSpec, features
 from motion_acq.hand.rh56f1 import Rh56f1Map
 
@@ -36,6 +37,8 @@ class HandRetargetConfig:
     joints: tuple[JointMap, ...]
     home_rad: Mapping[str, float]
     min_span_rad: float = 0.2
+    end_margin_open: float = 0.0  # n below this -> 0 (see stretch)
+    end_margin_closed: float = 0.0  # n above 1 - this -> 1
     min_cutoff_hz: float = 1.5
     beta: float = 0.3
     d_cutoff_hz: float = 1.0
@@ -46,6 +49,7 @@ class HandRetargetConfig:
     stale_s: float = 0.2
     driver_speed: int = 2000
     driver_force: int = 600
+    feedback: FeedbackConfig = FeedbackConfig()
 
 
 def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConfig:
@@ -67,12 +71,17 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         if open_pose not in poses or closed_pose not in poses:
             raise ValueError(f"feature_poses names an undefined pose: {open_pose}, {closed_pose}")
     flt, lim, drv = raw.get("filter") or {}, raw.get("limits") or {}, raw.get("driver") or {}
+    margins = raw.get("end_margins") or {}
+    m_open, m_closed = float(margins.get("open", 0.0)), float(margins.get("closed", 0.0))
+    if m_open < 0.0 or m_closed < 0.0 or m_open + m_closed >= 0.9:
+        raise ValueError(f"end_margins open {m_open} / closed {m_closed}: each >= 0, together < 0.9")
     home = {k: float(v) for k, v in raw["home_rad"].items()}
     if set(home) != {jm.joint for jm in joints}:
         raise ValueError("home_rad must give every mapped joint")
     return HandRetargetConfig(
         features=specs, feature_poses=feature_poses, poses=poses, joints=joints, home_rad=home,
         min_span_rad=float(raw.get("min_span_rad", 0.2)),
+        end_margin_open=m_open, end_margin_closed=m_closed,
         min_cutoff_hz=float(flt.get("min_cutoff_hz", 1.5)), beta=float(flt.get("beta", 0.3)),
         d_cutoff_hz=float(flt.get("d_cutoff_hz", 1.0)),
         max_velocity_rad_s=float(lim.get("max_velocity_rad_s", 2.0)),
@@ -80,7 +89,15 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         max_step_dt_s=float(lim.get("max_step_dt_s", 0.1)),
         rate_hz=float(raw.get("rate_hz", 30.0)), stale_s=float(raw.get("stale_s", 0.2)),
         driver_speed=int(drv.get("speed", 2000)), driver_force=int(drv.get("force", 600)),
+        feedback=feedback_config(raw.get("feedback")),
     )
+
+
+def stretch(n: float, margin_open: float, margin_closed: float) -> float:
+    """Calibrated n with both ends reached early: the operator's working fist or open
+    hand is a little short of the calibration poses (10.05: 85-89 %)."""
+    span = 1.0 - margin_open - margin_closed
+    return min(max((n - margin_open) / span, 0.0), 1.0)
 
 
 class HandState(str, Enum):
@@ -185,7 +202,9 @@ class HandRetargeter:
             return HandStep(HandState.HOLD, None, None, None, self.command(), self._last_registers)
         self.state = HandState.RUNNING
         feats = features(angles, self.config.features)
-        norm = self.calibration.normalize(feats)
+        cfg = self.config
+        norm = {k: stretch(v, cfg.end_margin_open, cfg.end_margin_closed)
+                for k, v in self.calibration.normalize(feats).items()}
         q_target, q_cmd = {}, {}
         for jm in self.config.joints:
             q_target[jm.joint] = jm.target(self.amplitude * norm[jm.feature])

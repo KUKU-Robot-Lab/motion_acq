@@ -8,18 +8,19 @@
 #    rh56f1_hand_map.yaml (per-side calibration).
 # Entries marked VERIFY are unconfirmed until the glove is worn (G6).
 #
-# Feature sources follow bumsu's working Nova 2 -> RH56F1 teleop on the same
-# gloves (inspire_hand senseglove_teleop mapping.py, calibrated 2026-10-02):
-# one joint per finger (pip), thumb_pip for the bend, thumb_brake for the
-# rotation. Nova 2 has no little-finger sensor, so pinky follows ring.
-# His measured open -> fist spans: finger pip ~1.67-1.70 rad, thumb_pip
-# 0.71 rad, thumb_brake 1.05 rad (rising toward opposition).
+# Feature sources: bumsu's Nova 2 -> RH56F1 teleop (inspire_hand
+# senseglove_teleop mapping.py, 2026-10-02) used the pip alone per finger.
+# 10.05 user test: bending a finger at its base (mcp) alone barely moved the
+# robot finger (right index mcp swung 0.13 -> 1.12 rad unused), so a finger is
+# mcp + pip. dip is not used: senseglove_ros reports it equal to pip (corr 1.00).
+# thumb_pip for the bend, thumb_brake for the rotation. Nova 2 has no
+# little-finger sensor (pinky_* = ring_*), so pinky follows ring.
 
 features:
-  index: {index_pip: 1.0}
-  middle: {middle_pip: 1.0}
-  ring: {ring_pip: 1.0}
-  pinky: {ring_pip: 1.0}
+  index: {index_mcp: 1.0, index_pip: 1.0}
+  middle: {middle_mcp: 1.0, middle_pip: 1.0}
+  ring: {ring_mcp: 1.0, ring_pip: 1.0}
+  pinky: {ring_mcp: 1.0, ring_pip: 1.0}
   thumb_bend: {thumb_pip: 1.0}
   thumb_opposition: {thumb_brake: 1.0}
 
@@ -42,24 +43,64 @@ feature_poses:
 # Minimum |closed - open| per feature for a calibration to be accepted (rad).
 min_span_rad: 0.2
 
+# Calibrated n is stretched so its ends are reached before the calibration
+# poses: n' = clip((n - open) / (1 - open - closed), 0, 1). 10.05 user test:
+# a working power grip reached only 85-89 % of the calibration fist (right
+# middle / ring), so the robot hand never closed fully.
+end_margins: {open: 0.05, closed: 0.15}
+
 joints:
   index_1: {feature: index, open_rad: 0.0, closed_rad: 1.5285594}
   middle_1: {feature: middle, open_rad: 0.0, closed_rad: 1.5285594}
   ring_1: {feature: ring, open_rad: 0.0, closed_rad: 1.5285594}
   pinky_1: {feature: pinky, open_rad: 0.0, closed_rad: 1.5285594}
   thumb_2: {feature: thumb_bend, open_rad: 0.0, closed_rad: 0.474555}
-  # thumb_1: smaller rad = more opposition (register up). open = contract
-  # hand_home 1.57 (sim2real); VERIFY the opposed end on the hand.
-  thumb_1: {feature: thumb_opposition, open_rad: 1.57, closed_rad: 0.3}
+  # thumb_1: larger rad = register down = across the palm (opposition).
+  # Verified 10.05 on the right hand: 852 (1.57) -> 738 / 620 swings the thumb
+  # toward the palm with room left, 852 -> 1138 swings it away from the palm.
+  # (The 0.3 used before was away from the palm: the robot thumb opened when
+  # the operator closed his.) 1.95 = register ~636 right / ~698 left.
+  thumb_1: {feature: thumb_opposition, open_rad: 1.57, closed_rad: 1.95}
 
 # sim2real contract hand_home: RH56F1 open (thumb_1 1.57, the rest 0).
 home_rad: {thumb_1: 1.57, thumb_2: 0.0, index_1: 0.0, middle_1: 0.0, ring_1: 0.0, pinky_1: 0.0}
 
-filter: {min_cutoff_hz: 1.5, beta: 0.3, d_cutoff_hz: 1.0}
-# RH56F1 measured ~135-140 deg/s (2.4 rad/s) at speed 2000 (sim2real 09.30).
-limits: {max_velocity_rad_s: 2.0, max_acceleration_rad_s2: 20.0, max_step_dt_s: 0.1}
+# 10.05 user test: the hand lagged the glove by 220-350 ms, 160-270 ms of it
+# here (a 1.5 Hz One Euro filter and a 2.0 rad/s limit). The glove is quiet
+# (still-hand noise 0.0005-0.0016 rad per joint, under one register), so the
+# filter only guards single-sample glitches now and the limit stays above the
+# RH56F1's own ~2.4 rad/s (speed 2000, sim2real 09.30): replaying the 10.05
+# logs, glove -> command lag 0-8 ms (was 75-283 ms). What is left is the hand
+# itself (~60 ms dead time + ~100 ms rise, sim2real RH56F1_TUNING_0930) and
+# EtherCAT at 500 Hz.
+filter: {min_cutoff_hz: 20.0, beta: 0.0, d_cutoff_hz: 1.0}
+limits: {max_velocity_rad_s: 8.0, max_acceleration_rad_s2: 400.0, max_step_dt_s: 0.1}
 rate_hz: 120.0     # = sim2real RH56F1 EtherCAT hand command rate (10.03); glove 60 Hz -> 2 ticks per sample
 stale_s: 0.2       # no glove sample for this long -> HOLD
 driver:
   speed: 2000      # SetSpeed1, same as sim2real pd hw_speed
   force: 600       # SetForce1 [g], same as sim2real pd hw_force
+
+# RH56F1 sensors -> Nova 2 haptics (motion_acq.hand.feedback; 10.05 user: the
+# glove limits the operator to what the hand can do and shows contact). Only
+# while the hand follows the glove; all off otherwise and when the node exits.
+# Brakes act on flexion only (thumb, index, middle, ring; pinky -> ring).
+# Starting values, to be tuned on the worn glove.
+feedback:
+  enabled: true
+  tip_on_n: 0.3          # robot tip force where the glove brake starts (N)
+  tip_full_n: 3.0        # ... and where it is full
+  joint_force_on: 150    # RH56F1 joint force (force_actual) while its command is ahead: robot finger held back
+  joint_force_full: 450  # free motion stays under ~70 (sim2real RH56F1_TUNING_0930); force limit 600
+  press_rad: 0.05        # command ahead of position by this before the joint force counts
+  limit_rad: 0.03        # command within this of the closed end: the robot finger cannot curl further
+  limit_level: 1.0       # brake level then (0 = do not limit at the closed end)
+  brake_on: 0.15         # hysteresis: a brake starts at this level and releases below brake_off
+  brake_off: 0.05
+  max_brake: 1.0
+  palm_on_n: 0.5         # palm contact -> wrist strap squeeze
+  palm_full_n: 5.0
+  max_squeeze: 0.5
+  pulse_s: 0.08          # first touch of a finger: vibration pulse
+  pulse_level: 0.6
+  sensor_stale_s: 0.3

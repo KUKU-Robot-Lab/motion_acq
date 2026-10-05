@@ -2,11 +2,15 @@
 # STEP 3 fake end-to-end check (no glove, no hand): fake Nova 2 -> calibrate ->
 # hand_node -> fake RH56F1, isolated on ROS_DOMAIN_ID=177 localhost-only.
 #
-#   scripts/fake_hand_check.sh [right|left] [seconds]
+#   scripts/fake_hand_check.sh [right|left] [seconds] [object register]
+#
+# The fake hand has an object in the index finger's way (register 1300 by
+# default, -1 = none): the log must show the glove index brake while it presses.
 set -euo pipefail
 
 SIDE="${1:-right}"
 SECONDS_RUN="${2:-20}"
+OBJECT_REG="${3:-1300}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISTRO="${ROS_DISTRO:-}"
 if [[ -z "$DISTRO" ]]; then
@@ -40,7 +44,7 @@ trap - EXIT
 echo "== 2. fake chain for ${SECONDS_RUN}s (glove drops 1 s every 8 s)"
 START_MARK="$(date +%s)"
 timeout --foreground --signal=INT "$SECONDS_RUN" ros2 launch motion_acq_hand fake_hand.launch.py \
-  side:="$SIDE" calibration:="$CAL" dropout_every_s:=8.0 dropout_s:=1.0 \
+  side:="$SIDE" calibration:="$CAL" dropout_every_s:=8.0 dropout_s:=1.0 object_index_reg:="$OBJECT_REG" \
   > "$ROOT/logs/hand/fake_chain.log" 2>&1 || true
 sleep 1
 

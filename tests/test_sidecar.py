@@ -93,6 +93,17 @@ def test_hand_frame_layout_and_status():
     assert spec.to_frame({**record, "mode": "fault"})["observation.hand.left.status"].tolist() == [3]
     assert spec.to_frame({**record, "mode": "disabled", "state": "idle"})["observation.hand.left.status"].tolist() == [0]
     assert spec.to_frame({**record, "state": "homing"})["observation.hand.left.status"].tolist() == [4]
+    assert np.all(frame["observation.hand.left.tip_force"] == 0)  # no sensor data in the record
+    sensed = spec.to_frame({**record, "tip_force_n": {"pinky": 0.5, "ring": 0.0, "middle": 0.0, "index": 2.0,
+                                                      "thumb": 1.0},
+                            "joint_force": {j: 10.0 * i for i, j in enumerate(HAND_JOINTS)},
+                            "haptics": {"brake": {"thumb": 0.0, "index": 1.0, "middle": 0.0, "ring": 0.2},
+                                        "squeeze": 0.1, "vibration": {"thumb_dip": 0.0, "index_dip": 0.6,
+                                                                      "palm_index": 0.0, "palm_pinky": 0.0}}})
+    assert sensed["observation.hand.left.tip_force"].tolist() == pytest.approx([1.0, 2.0, 0.0, 0.0, 0.5])
+    assert sensed["observation.hand.left.joint_force"].tolist() == pytest.approx([0, 10, 20, 30, 40, 50])
+    assert sensed["action.glove.left.haptics"].tolist() == pytest.approx([0, 1, 0, 0.2, 0.1, 0, 0.6, 0, 0])
+    assert set(sensed) == set(spec.features)
     broken = spec.to_frame({**record, "glove_angles": [1.0] * 19, "measured_rad": None})
     assert np.all(broken["observation.glove.left.angles"] == 0)
     assert np.all(broken["observation.hand.left.state"] == 0)

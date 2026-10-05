@@ -11,6 +11,7 @@ import sys
 from collections import Counter
 
 REG_RANGE = {0: (900, 1740), 1: (900, 1740), 2: (900, 1740), 3: (900, 1740), 4: (1100, 1350), 5: (600, 1750)}
+MAX_VELOCITY_RAD_S = 8.0  # configs/hands/nova2_to_rh56f1.yaml limits.max_velocity_rad_s (10.05)
 
 
 def main(path: str) -> int:
@@ -28,8 +29,12 @@ def main(path: str) -> int:
             if not lo <= value <= hi:
                 failures.append(f"slot {slot} register {value} outside [{lo}, {hi}]")
                 break
-    if any(r.get("fault") for r in rows):
-        failures.append(f"fault: {next(r['fault'] for r in rows if r.get('fault'))}")
+    # A fault while walking home at the end is the fake driver stopping with the launch (both get
+    # the SIGINT); any other fault fails the check.
+    faults = [i for i, r in enumerate(rows) if r.get("fault")
+              and not (i > 0 and rows[i - 1].get("phase") == "return_home" and i >= len(rows) - 100)]
+    if faults:
+        failures.append(f"fault: {rows[faults[0]]['fault']}")
     # The first command after enable must start at the measured hand pose.
     first = running[0] if running else None
     if first and first["measured_registers"]:
@@ -56,8 +61,17 @@ def main(path: str) -> int:
         dt = b["t_mono_s"] - a["t_mono_s"]
         if 0 < dt < 0.2:
             worst = max(worst, max(abs(b["q_command_rad"][j] - a["q_command_rad"][j]) / dt for j in a["q_command_rad"]))
-    if worst > 2.0 * 1.1:
-        failures.append(f"joint speed {worst:.2f} rad/s above the 2.0 limit")
+    if worst > MAX_VELOCITY_RAD_S * 1.1:
+        failures.append(f"joint speed {worst:.2f} rad/s above the {MAX_VELOCITY_RAD_S} limit")
+    # Feedback (10.05): robot index contact -> glove index brake while following; never when not.
+    contact = [r for r in running if (r.get("tip_force_n") or {}).get("index", 0.0) >= 0.3]
+    braked = [r for r in contact if ((r.get("haptics") or {}).get("brake") or {}).get("index", 0.0) > 0.0]
+    if contact and not braked:
+        failures.append(f"{len(contact)} cycles of index contact but no glove brake")
+    idle_haptics = [r for r in rows if r["state"] != "running" and any(
+        v > 0.0 for v in ((r.get("haptics") or {}).get("brake") or {}).values())]
+    if idle_haptics:
+        failures.append(f"{len(idle_haptics)} cycles braked the glove while not following it")
     lag = []
     for r in running[30:]:
         if r["measured_registers"] is not None:
@@ -72,6 +86,7 @@ def main(path: str) -> int:
     print(f"cycles {len(rows)}  states {dict(states)}  modes {dict(modes)}")
     print(f"cycle period mean {sum(period) / max(len(period), 1) * 1000:.1f} ms  max {max(period, default=0) * 1000:.1f} ms")
     print(f"register span per slot (pinky ring middle index thumb_bend thumb_rot): {span}")
+    print(f"index contact cycles {len(contact)}, glove index brake on in {len(braked)}")
     print(f"max joint speed {worst:.2f} rad/s;  fake hand lag median {sorted(lag)[len(lag) // 2] if lag else '-'} reg")
     if failures:
         print("FAIL: " + "; ".join(dict.fromkeys(failures)))

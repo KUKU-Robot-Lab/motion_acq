@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping, Sequence
 
+from motion_acq.hand.feedback import OFF, HapticFeedback, Haptics
 from motion_acq.hand.nova2 import SIDE_PREFIX, glove_joint_names
 from motion_acq.hand.retarget import HandRetargeter, HandState
 from motion_acq.hand.rh56f1 import N_SLOTS, Rh56f1Map
@@ -77,6 +78,7 @@ class Outputs:
     angle: list[int] | None = None
     speed: list[int] | None = None
     force: list[int] | None = None
+    haptics: Haptics = OFF  # Nova 2 feedback for this tick (all off unless following the glove)
     record: dict = field(default_factory=dict)
 
 
@@ -118,6 +120,9 @@ class HandController:
         self.last_refusal: str | None = None
         self.home_rad = dict(retargeter.config.home_rad)
         self._home_registers = hand_map.to_registers(self.home_rad, side=side)
+        self.feedback = HapticFeedback(retargeter.config.feedback,
+                                       {jm.joint: jm.closed_rad for jm in retargeter.config.joints
+                                        if jm.closed_rad > jm.open_rad})
 
     # -- inputs -----------------------------------------------------------
     def on_glove(self, angles: Mapping[str, float], t: float) -> None:
@@ -127,6 +132,12 @@ class HandController:
 
     def glove_frozen(self, t: float) -> bool:
         return self.glove is not None and t - self._glove_changed_t > self.config.glove_frozen_s
+
+    def on_touch(self, finger_forces, palm_data, t: float) -> None:
+        self.feedback.on_touch(finger_forces, palm_data, t)
+
+    def on_joint_force(self, names, values, t: float) -> None:
+        self.feedback.on_joint_force(names, values, t)
 
     def on_glove_error(self) -> None:
         self.glove_errors += 1
@@ -246,6 +257,12 @@ class HandController:
             step = self._step_enabled(t)
             if step.state in (HandState.RUNNING, HandState.HOMING) and step.registers is not None:
                 out.angle = list(step.registers)
+        following = (self.mode is Mode.ENABLED and self.phase is Phase.FOLLOW
+                      and step is not None and step.state is HandState.RUNNING)
+        out.haptics = self.feedback.update(t, active=following,
+                                           q_command=step.q_command if step else None,
+                                           q_measured=self._measured_rad())
+        sensors = self.feedback.sensors(t)
         glove_age = None if self.glove is None else round(t - self.glove[1], 4)
         out.record = {
             "t_mono_s": round(t, 6),
@@ -267,5 +284,7 @@ class HandController:
             "measured_rad": self._measured_rad(),
             "glove_angles": self._glove_vector(),
             "hand_id": out.hand_id,
+            **sensors,
+            "haptics": out.haptics.to_dict(),
         }
         return out

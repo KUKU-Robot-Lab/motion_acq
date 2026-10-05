@@ -37,12 +37,14 @@ from typing import Any, Callable
 
 import numpy as np
 
+from motion_acq.hand.feedback import HAPTIC_JOINTS
 from motion_acq.hand.nova2 import glove_joint_names
 
 log = logging.getLogger(__name__)
 
 # RH56F1 joint order of the hand map (configs/hands/rh56f1_hand_map.yaml joint_order).
 HAND_JOINTS = ("thumb_1", "thumb_2", "index_1", "middle_1", "ring_1", "pinky_1")
+TIP_ORDER = ("thumb", "index", "middle", "ring", "pinky")
 STATUS_MISSING = -1
 _HEAD_STATUS = {"idle": 0, "locked": 0, "running": 1, "hold": 2}
 _HAND_STATUS = {"idle": 0, "running": 1, "hold": 2, "homing": 4}
@@ -102,9 +104,18 @@ def hand_spec(side: str) -> StreamSpec:
     glove = list(glove_joint_names(side))
 
     def to_frame(record: dict | None) -> dict[str, np.ndarray]:
-        state = action = angles = None
+        state = action = angles = tips = jforce = haptics = None
         status = STATUS_MISSING
         if record is not None:
+            tip = record.get("tip_force_n")
+            tips = _vector([tip.get(f) for f in TIP_ORDER], 5) if tip else None
+            force = record.get("joint_force")
+            jforce = _vector([force.get(j) for j in HAND_JOINTS], 6) if force else None
+            hap = record.get("haptics")
+            if hap:
+                levels = ([hap["brake"].get(b) for b in ("thumb", "index", "middle", "ring")] + [hap.get("squeeze")]
+                          + [hap["vibration"].get(v) for v in HAPTIC_JOINTS[5:]])
+                haptics = _vector(levels, len(HAPTIC_JOINTS))
             measured = record.get("measured_rad")
             state = _vector([measured[j] for j in HAND_JOINTS], 6) if measured else None
             command = record.get("q_command_rad")
@@ -121,6 +132,9 @@ def hand_spec(side: str) -> StreamSpec:
             f"action.hand.{side}": action if action is not None else np.zeros(6, np.float32),
             f"observation.glove.{side}.angles": angles if angles is not None else np.zeros(20, np.float32),
             f"observation.hand.{side}.status": np.array([status], dtype=np.int64),
+            f"observation.hand.{side}.tip_force": tips if tips is not None else np.zeros(5, np.float32),
+            f"observation.hand.{side}.joint_force": jforce if jforce is not None else np.zeros(6, np.float32),
+            f"action.glove.{side}.haptics": haptics if haptics is not None else np.zeros(len(HAPTIC_JOINTS), np.float32),
         }
 
     return StreamSpec(f"hand_{side}", {
@@ -128,6 +142,11 @@ def hand_spec(side: str) -> StreamSpec:
         f"action.hand.{side}": _feature(joints),
         f"observation.glove.{side}.angles": _feature(glove),
         f"observation.hand.{side}.status": _feature(["status"], "int64"),
+        # RH56F1 sensors (10.05): tip normal force (N), motor force per joint (driver units, g)
+        f"observation.hand.{side}.tip_force": _feature([f"{prefix}_tip_{f}" for f in TIP_ORDER]),
+        f"observation.hand.{side}.joint_force": _feature([f"{prefix}_hf_{j}" for j in HAND_JOINTS]),
+        # Nova 2 feedback sent (0..1): brakes, strap, vibration (motion_acq.hand.feedback.HAPTIC_JOINTS)
+        f"action.glove.{side}.haptics": _feature([f"{prefix}_{j}" for j in HAPTIC_JOINTS]),
     }, to_frame)
 
 

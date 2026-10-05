@@ -243,10 +243,11 @@ def test_amplitude_scales_travel():
 
 
 @pytest.mark.parametrize("side", ["right", "left"])
-def test_thumb_rotation_register_rises_with_opposition(side):
+def test_thumb_rotation_register_falls_toward_opposition(side):
+    """10.05 on the hand: a lower thumb_1 register is across the palm; the mapping closes toward it."""
     regs = [HAND_MAP.to_registers({**CONFIG.home_rad, "thumb_1": q}, side=side)[5]
-            for q in (1.57, 1.2, 0.8, 0.3)]
-    assert regs == sorted(regs) and regs[0] < regs[-1]
+            for q in (1.57, 1.7, 1.85, 1.95)]
+    assert regs == sorted(regs, reverse=True) and regs[0] > regs[-1]
 
 
 def test_left_hand_full_range():
@@ -314,3 +315,26 @@ def test_frozen_glove_holds_until_it_changes_again():
     assert out.record["state"] == "hold" and out.record["glove_frozen"] and out.angle is None
     out = rig.step(synthetic_angles(0.61, 0.3, 0.2))
     assert out.record["state"] == "running" and out.angle is not None
+
+
+def test_haptics_only_while_following_and_sensors_recorded():
+    """10.05: robot tip contact brakes the glove finger only once the hand follows the glove."""
+    rig = Rig(make_controller())
+    touch = [0, 0, 0, 400, 0]  # index 4 N
+    rig.ctl.on_touch(touch, [0] * 9, rig.t)
+    out = rig.step(POSE_ANGLES["open"])
+    assert out.haptics.brake["index"] == 0.0  # disabled
+    rig.ctl.request_enable(True)
+    for _ in range(120):
+        rig.ctl.on_touch(touch, [0] * 9, rig.t)
+        rig.ctl.on_joint_force(["r_hj_index_1"], [20], rig.t)
+        out = rig.step(POSE_ANGLES["open"])
+    assert out.record["state"] == "running"
+    assert out.haptics.brake["index"] == 1.0
+    assert out.record["haptics"]["brake"]["index"] == 1.0
+    assert out.record["tip_force_n"]["index"] == pytest.approx(4.0)
+    assert out.record["joint_force"] == {"index_1": 20.0}
+    rig.ctl.request_enable(False)
+    rig.ctl.on_touch(touch, [0] * 9, rig.t)
+    out = rig.step(POSE_ANGLES["open"])
+    assert out.haptics.brake["index"] == 0.0  # returning home: no feedback

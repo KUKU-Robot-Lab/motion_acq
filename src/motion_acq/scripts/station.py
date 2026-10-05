@@ -180,18 +180,24 @@ def sensecom_started_at() -> float | None:
     return max(starts) if starts else None
 
 
-def calibration_current(path: Path, sensecom_start: float | None) -> tuple[bool, str]:
-    """A hand calibration is only valid for the SenseCom run it was taken in.
+def calibration_stale(path: Path, sensecom_start: float | None) -> bool:
+    """The file was taken before the running SenseCom started."""
+    return sensecom_start is not None and path.exists() and path.stat().st_mtime < sensecom_start
 
-    After a SenseCom restart the raw glove ranges shift (bumsu 09-22: four
-    fingers stayed bent until he recalibrated), so a file older than the
-    running SenseCom must be redone. A glove power cycle shifts them too, and
-    cannot be seen from here.
+
+def calibration_current(path: Path, sensecom_start: float | None) -> tuple[bool, str]:
+    """A hand calibration file the hand node can use, and what to tell the operator.
+
+    After a SenseCom restart the raw glove ranges can shift (bumsu 09-22: four
+    fingers stayed bent until he recalibrated). 10.05 user: refusing the file
+    then made the calibration look lost after every glove reconnect, so an
+    older file is still used and only flagged; the operator recalibrates when
+    the hand no longer opens or closes fully.
     """
     if not path.exists():
         return False, f"{path} missing (ros2 run motion_acq_hand calibrate)"
-    if sensecom_start is not None and path.stat().st_mtime < sensecom_start:
-        return False, f"{path} predates the running SenseCom: recalibrate"
+    if calibration_stale(path, sensecom_start):
+        return True, f"{path} (taken before this SenseCom start: recalibrate if the hand no longer opens or closes fully)"
     return True, str(path)
 
 

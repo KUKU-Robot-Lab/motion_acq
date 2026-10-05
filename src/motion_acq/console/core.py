@@ -635,7 +635,7 @@ class Console:
         return snap
 
     def calibration(self) -> dict:
-        from motion_acq.scripts.station import calibration_current
+        from motion_acq.scripts.station import calibration_current, calibration_stale
 
         real = self.mode == "real"
         user = str(self.settings["user"])
@@ -647,7 +647,10 @@ class Console:
             path = units.calibration_file(user, side, fake=not real)
             ok, detail = calibration_current(path, sensecom)
             short = str(path.relative_to(ROOT))
-            out[side] = {"ok": ok, "detail": short if ok else detail.replace(str(path), short)}
+            stale = ok and calibration_stale(path, sensecom)
+            out[side] = {"ok": ok, "stale": stale,
+                         "detail": f"{short} (SenseCom 재시작 전 보정: 손이 끝까지 안 펴지거나 안 쥐어지면 다시 보정)"
+                         if stale else short if ok else detail.replace(str(path), short)}
         return out
 
     def snapshot(self) -> dict:

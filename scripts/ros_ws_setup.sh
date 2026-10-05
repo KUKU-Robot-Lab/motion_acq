@@ -51,6 +51,16 @@ if [[ -n "$OLD_PIN" && "$OLD_PIN" != "$(git -C "$EXT" rev-parse HEAD)" ]]; then
 fi
 if [[ "$FULL" -eq 1 ]]; then
   git -C "$EXT" sparse-checkout disable
+  # our patches onto the pinned checkout (ros_ws/patches/README.md); one already in is skipped
+  for patch in "$WS"/patches/senseglove_ros_*.patch; do
+    if git -C "$EXT" apply --reverse --check "$patch" 2>/dev/null; then
+      echo "patch in: $(basename "$patch")"
+    else
+      git -C "$EXT" apply "$patch" || { echo "error: $(basename "$patch") does not apply to $(git -C "$EXT" rev-parse --short HEAD)" >&2; exit 1; }
+      echo "patched: $(basename "$patch")"
+      rm -rf "$WS"/build/senseglove_hardware "$WS"/install/senseglove_hardware
+    fi
+  done
 else
   git -C "$EXT" sparse-checkout set senseglove/senseglove_msgs
 fi

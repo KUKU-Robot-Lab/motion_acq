@@ -180,10 +180,11 @@ def test_glove_driver_is_not_a_can_holder():
     assert can_holders("") == []
 
 
-def test_hand_calibration_must_postdate_sensecom(tmp_path):
+def test_hand_calibration_from_before_sensecom_is_kept_but_flagged(tmp_path):
+    """10.05 user: the calibration looked lost after every glove reconnect."""
     import os
 
-    from motion_acq.scripts.station import _process_start_epoch, calibration_current
+    from motion_acq.scripts.station import _process_start_epoch, calibration_current, calibration_stale
 
     cal = tmp_path / "op1_right.yaml"
     assert not calibration_current(cal, None)[0]
@@ -192,7 +193,9 @@ def test_hand_calibration_must_postdate_sensecom(tmp_path):
     assert calibration_current(cal, None)[0]
     assert calibration_current(cal, 999.0)[0]
     ok, detail = calibration_current(cal, 1001.0)
-    assert not ok and "recalibrate" in detail
+    assert ok and "recalibrate" in detail
+    assert calibration_stale(cal, 1001.0) and not calibration_stale(cal, 999.0)
+    assert not calibration_stale(cal, None)
     import time
     start = _process_start_epoch(os.getpid())
     assert start is not None and start <= time.time()

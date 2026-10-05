@@ -15,6 +15,13 @@ enable_on_start is only accepted on the isolated fake domain. Every cycle is
 logged to <log_dir>/hand_<side>_<time>.jsonl and, if udp_target is set, sent
 as one JSON datagram to each HOST:PORT of that comma-separated list (recorder
 sidecar, macq console).
+
+Feedback (10.05): the RH56F1 tip / palm forces (touch_data) and joint forces
+(force_actual) drive the Nova 2 brakes, strap and vibration through the glove
+driver's haptics_controller (forward_command_controller, percent per joint,
+motion_acq_hand config/nova2_<side>_controllers.yaml); motion_acq.hand.feedback
+has the rules. haptics:=false turns it off. All off when not following the
+glove and when the node exits.
 """
 
 # ruff: noqa: I001  -- motion_acq_hand.common must be imported first (it puts motion_acq on sys.path)
@@ -38,16 +45,25 @@ from motion_acq_hand.common import (
 
 import rclpy
 from rclpy.node import Node
-from rh56f1_interfaces.msg import GetAngleAct1, SetAngle1, SetForce1, SetSpeed1
+from rh56f1_interfaces.msg import GetAngleAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1, TouchData1
 from senseglove_msgs.msg import SenseGloveState
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float64MultiArray, String
 
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.controller import ControllerConfig, HandController
+from motion_acq.hand.feedback import OFF
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state
 from motion_acq.hand.retarget import DEFAULT_RETARGET, HandRetargeter, load_hand_retarget_config
 from motion_acq.hand.rh56f1 import DEFAULT_MAP, load_rh56f1_map
 from motion_acq.sidecar import parse_udp_targets
+
+
+HAPTICS_MIN_PERIOD_S = 1.0 / 60.0  # the glove driver's update rate
+
+
+def haptics_topic_for(glove_topic: str) -> str:
+    """<glove ns>/senseglove_states -> <glove ns>/haptics_controller/commands."""
+    return f"{glove_topic.rsplit('/', 1)[0]}/haptics_controller/commands"
 
 
 class HandNode(Node):
@@ -62,6 +78,8 @@ class HandNode(Node):
         amplitude = float(declare(self, "amplitude", 1.0))
         log_dir = Path(str(declare(self, "log_dir", str(REPO_ROOT / "logs" / "hand"))))
         udp_target = str(declare(self, "udp_target", ""))
+        haptics = bool(declare(self, "haptics", True))
+        haptics_topic = str(declare(self, "haptics_topic", haptics_topic_for(topic)))
         if not calibration:
             raise SystemExit("calibration:=<file> is required (run motion_acq_hand calibrate first)")
         if enable_on_start and not fake_isolated():
@@ -88,6 +106,10 @@ class HandNode(Node):
         self.create_subscription(SenseGloveState, topic, self._on_glove, glove_qos())
         self.create_subscription(GetAngleAct1, f"{ns}/angle_actual", self._on_actual, 10)
         self.create_subscription(Bool, f"/motion_acq/hand_{self.side}/enable", self._on_enable, 10)
+        self.create_subscription(TouchData1, f"{ns}/touch_data", self._on_touch, 10)
+        self.create_subscription(GetForceAct1, f"{ns}/force_actual", self._on_force, 10)
+        self.haptics_pub = self.create_publisher(Float64MultiArray, haptics_topic, 10) if haptics else None
+        self._haptics_sent: tuple[list[float], float] | None = None
 
         self.log_file = self._open_log(log_dir)
         # recorder sidecar and the console: comma-separated HOST:PORT list
@@ -97,7 +119,8 @@ class HandNode(Node):
         self.create_timer(1.0 / config.rate_hz, self._tick)
         self.get_logger().info(
             f"hand {self.side}: glove {topic} -> {ns}/angle_set at {config.rate_hz:g} Hz, "
-            f"amplitude {amplitude:g}, speed {speed}, force {force} "
+            f"amplitude {amplitude:g}, speed {speed}, force {force}, "
+            f"haptics {haptics_topic if haptics else 'off'} "
             f"({'enable on start (fake)' if enable_on_start else 'disabled until enabled'})"
         )
 
@@ -118,6 +141,28 @@ class HandNode(Node):
 
     def _on_actual(self, msg: GetAngleAct1) -> None:
         self.controller.on_measured([int(v) for v in msg.joint_values], int(msg.hand_id), time.monotonic())
+
+    def _on_touch(self, msg: TouchData1) -> None:
+        try:
+            self.controller.on_touch(list(msg.finger_forces), list(msg.palm_data), time.monotonic())
+        except ValueError as exc:
+            self.get_logger().warning(f"bad touch_data: {exc}", throttle_duration_sec=2.0)
+
+    def _on_force(self, msg: GetForceAct1) -> None:
+        self.controller.on_joint_force(list(msg.joint_names), list(msg.joint_values), time.monotonic())
+
+    def send_haptics(self, efforts: list[float], t: float, *, force: bool = False) -> None:
+        """Glove haptics at most at the glove rate (60 Hz); unchanged levels are re-sent every
+        0.5 s while any is on (the controller holds the last command, so off is sent on change)."""
+        if self.haptics_pub is None:
+            return
+        last = self._haptics_sent
+        changed = last is None or efforts != last[0]
+        if not force and last is not None:
+            if t - last[1] < HAPTICS_MIN_PERIOD_S or (not changed and (not any(efforts) or t - last[1] < 0.5)):
+                return
+        self.haptics_pub.publish(Float64MultiArray(data=[float(e) for e in efforts]))
+        self._haptics_sent = (list(efforts), t)
 
     def _on_enable(self, msg: Bool) -> None:
         self.get_logger().info(f"enable request: {bool(msg.data)}")
@@ -142,12 +187,17 @@ class HandNode(Node):
                 self._publish(self.force_pub, SetForce1, out.hand_id, out.force)
             if out.angle is not None:
                 self._publish(self.angle_pub, SetAngle1, out.hand_id, out.angle)
+        self.send_haptics(out.haptics.efforts(), time.monotonic())
         mode = self.controller.mode
         if mode is not self._last_mode:
             self._last_mode = mode
             detail = self.controller.fault_reason or ""
-            log = self.get_logger().error if detail else self.get_logger().info
-            log(f"hand {self.side} -> {mode.value} {detail}".rstrip())
+            # one call site per severity: rclpy refuses a site that changes severity (crashed the node
+            # when the fake driver stopped first and the hand faulted after an info here)
+            if detail:
+                self.get_logger().error(f"hand {self.side} -> {mode.value} {detail}")
+            else:
+                self.get_logger().info(f"hand {self.side} -> {mode.value}")
         if out.record.get("refusal"):
             self.get_logger().warning(f"enable refused: {out.record['refusal']}", throttle_duration_sec=2.0)
         line = json.dumps(out.record)
@@ -180,6 +230,8 @@ class HandNode(Node):
 
     def destroy_node(self) -> None:
         try:
+            for _ in range(3):  # the glove controller holds the last command: leave it off
+                self.send_haptics(OFF.efforts(), time.monotonic(), force=True)
             self.log_file.close()
         finally:
             super().destroy_node()

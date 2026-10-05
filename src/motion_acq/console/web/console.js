@@ -340,13 +340,13 @@ function detailGlove(s) {
   for (const [side, glove] of Object.entries(g.gloves || {})) {
     rows.push([`${SIDE_KO[side]}손 ${glove.serial}`, `${glove.connected ? "BLE 연결" : "BLE 미연결"} · 토픽 ${(ros.glove_topics || {})[side] ? "있음" : "없음"}`]);
     const cal = (s.calibration || {})[side];
-    if (cal) rows.push([`${SIDE_KO[side]}손 보정`, cal.ok ? "유효" : cal.detail, cal.ok ? "ok" : "warn"]);
+    if (cal) rows.push([`${SIDE_KO[side]}손 보정`, cal.ok && !cal.stale ? "유효" : cal.detail, cal.ok && !cal.stale ? "ok" : "warn"]);
   }
   rows.push(["드라이버", (g.driver_pids || []).length ? `PID ${g.driver_pids.join(", ")}` : "꺼짐"]);
   if (jobLine("glove")) rows.push(["최근", jobLine("glove"), job("glove").state === "failed" ? "bad" : ""]);
   const calib = ["calib_right", "calib_left"].find(running);
   return `<h3>장갑 · Nova 2</h3>${facts(rows)}
-    <p class="hint">파일럿: <b>${esc(s.settings.user || "없음 (맨 위 오른쪽에 이름을 넣는다)")}</b>. 순서: [오른손 보정] → 화면 안내 자세마다 [Enter: 이 자세 기록] → [왼손 보정]. 보정은 파일럿마다 따로 저장되고, SenseCom 을 다시 켜면 다시 한다.</p>
+    <p class="hint">파일럿: <b>${esc(s.settings.user || "없음 (맨 위 오른쪽에 이름을 넣는다)")}</b>. 순서: [오른손 보정] → 화면 안내 자세마다 [Enter: 이 자세 기록] → [왼손 보정]. 보정은 파일럿마다 따로 저장되고 장갑을 다시 연결해도 남는다. 손이 끝까지 안 펴지거나 안 쥐어지면 다시 보정한다.</p>
     <div class="actions">${btn("오른손 보정", { "data-start": "calib_right" }, "small")}${btn("왼손 보정", { "data-start": "calib_left" }, "small")}
       ${btn("Enter: 이 자세 기록", { "data-key": calib || "", "data-text": "\n", disabled: !calib }, "key small")}
       ${btn("드라이버 정지", { "data-action": "glove_driver_stop", disabled: !(g.driver_pids || []).length }, "ghost small")}</div>
@@ -383,7 +383,7 @@ function detailHand(s, side) {
     if (rec.refusal) rows.push(["켜기 거부", rec.refusal, "bad"]);
   }
   const cal = (s.calibration || {})[side];
-  if (cal) rows.push(["장갑 보정", cal.detail, cal.ok ? "ok" : "warn"]);
+  if (cal) rows.push(["장갑 보정", cal.detail, cal.ok && !cal.stale ? "ok" : "warn"]);
   if (jobLine(key)) rows.push(["최근", jobLine(key), job(key).state === "failed" ? "bad" : ""]);
   const driverOff = real() && running(`ecat_${side}`) && !running(key)
     ? btn("드라이버 내리기", { "data-action": `driver_off:${side}` }, "ghost small") : "";

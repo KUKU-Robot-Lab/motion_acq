@@ -14,6 +14,7 @@ from motion_acq.hand.nova2 import (
     glove_joint_names,
 )
 from motion_acq.hand.retarget import (
+    DEFAULT_RETARGET,
     HandRetargeter,
     HandState,
     load_hand_retarget_config,
@@ -115,7 +116,7 @@ def test_open_fist_and_opposition_map_to_rh56f1_ends():
     assert step.registers == HAND_MAP.to_registers(step.q_command, side="right")
     assert step.registers[:4] == [926, 920, 900, 905]
     _, step = run(rt, POSE_ANGLES["thumb_opposed"], 90, t)
-    assert step.q_command["thumb_1"] == pytest.approx(0.3, abs=1e-3)
+    assert step.q_command["thumb_1"] == pytest.approx(1.95, abs=1e-3)
     assert step.q_command["index_1"] == pytest.approx(0.0, abs=1e-3)
 
 
@@ -215,11 +216,56 @@ def test_glove_inventory_validation(tmp_path):
 
 
 def test_features_follow_the_glove_joints_that_move():
-    """bumsu's Nova 2 teleop: pip per finger, pinky = ring (no sensor), thumb_brake rotates."""
+    """mcp + pip per finger (10.05: a base-only bend was lost), pinky = ring (no sensor), thumb_brake rotates."""
     assert {s.name: dict(s.weights) for s in CONFIG.features} == {
-        "index": {"index_pip": 1.0}, "middle": {"middle_pip": 1.0}, "ring": {"ring_pip": 1.0},
-        "pinky": {"ring_pip": 1.0}, "thumb_bend": {"thumb_pip": 1.0},
+        "index": {"index_mcp": 1.0, "index_pip": 1.0}, "middle": {"middle_mcp": 1.0, "middle_pip": 1.0},
+        "ring": {"ring_mcp": 1.0, "ring_pip": 1.0}, "pinky": {"ring_mcp": 1.0, "ring_pip": 1.0},
+        "thumb_bend": {"thumb_pip": 1.0},
         "thumb_opposition": {"thumb_brake": 1.0},
     }
     cal = make_calibration()
     assert cal.ranges["thumb_opposition"].closed > cal.ranges["thumb_opposition"].open
+
+
+def test_a_base_only_bend_moves_the_robot_finger():
+    """10.05 user: bending a finger only at its base (mcp) barely moved the robot finger."""
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    t, _ = run(rt, POSE_ANGLES["open"], 30)
+    base = dict(POSE_ANGLES["open"], index_mcp=POSE_ANGLES["fist"]["index_mcp"])
+    _, step = run(rt, base, 60, t)
+    assert step.q_command["index_1"] > 0.5
+    assert step.q_command["middle_1"] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_a_working_grip_short_of_the_calibration_fist_closes_fully():
+    """10.05 user: the power grip reached only 85-89 % of the calibration fist."""
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    t, _ = run(rt, POSE_ANGLES["open"], 30)
+    short = synthetic_angles(0.87, 0.87, 0.0)
+    _, step = run(rt, short, 90, t)
+    assert step.q_command["index_1"] == pytest.approx(1.5285594, abs=1e-3)
+    assert step.q_command["thumb_2"] == pytest.approx(0.474555, abs=1e-3)
+
+
+@pytest.mark.parametrize("side", ["right", "left"])
+def test_closing_the_thumb_sends_it_across_the_palm(side):
+    """10.05, right hand: register 852 -> 620 swings the thumb across the palm, 852 -> 1138 away."""
+    rt = HandRetargeter(CONFIG, make_calibration(side), HAND_MAP, side)
+    rt.start(None, 0.0)
+    t, home = run(rt, POSE_ANGLES["open"], 30)
+    _, opposed = run(rt, POSE_ANGLES["thumb_opposed"], 90, t)
+    assert opposed.registers[5] < home.registers[5] - 150
+    assert opposed.registers[5] >= 600
+
+
+def test_end_margins_are_checked(tmp_path):
+    import yaml
+
+    raw = yaml.safe_load(DEFAULT_RETARGET.read_text(encoding="utf-8"))
+    raw["end_margins"] = {"open": 0.5, "closed": 0.5}
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="end_margins"):
+        load_hand_retarget_config(bad)
