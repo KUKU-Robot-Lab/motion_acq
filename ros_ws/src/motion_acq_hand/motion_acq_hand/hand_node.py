@@ -52,6 +52,7 @@ from std_msgs.msg import Bool, Float64MultiArray, String
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.controller import ControllerConfig, HandController
 from motion_acq.hand.feedback import HAPTICS_BEAT_S, HAPTICS_MIN_PERIOD_S, OFF, haptics_topic_for, heartbeat
+from motion_acq.hand.kinematic import glove_points
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state, tip_signals
 from motion_acq.hand.retarget import DEFAULT_RETARGET, HandRetargeter, load_hand_retarget_config
 from motion_acq.hand.rh56f1 import DEFAULT_MAP, load_rh56f1_map
@@ -128,6 +129,8 @@ class HandNode(Node):
         try:
             angles = angles_from_state(list(msg.joint_names), list(msg.position), self.side)
             angles.update(tip_signals([(p.x, p.y, p.z) for p in msg.finger_tip_position]))
+            angles.update(glove_points([(p.x, p.y, p.z) for p in msg.hand_position],
+                                     [(p.x, p.y, p.z) for p in msg.finger_tip_position]))
         except GloveDataError as exc:
             self.controller.on_glove_error()
             self.get_logger().warning(f"bad glove sample: {exc}", throttle_duration_sec=2.0)

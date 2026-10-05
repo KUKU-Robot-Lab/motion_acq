@@ -16,6 +16,20 @@
 # The joint values, then One Euro filtered and rate limited, go to registers with
 # rh56f1_hand_map.yaml (per-side calibration).
 
+# Retargeting method (10.06 user: retarget the Nova 2 hand onto the RH56F1).
+#   kinematic: the glove's hand model (knuckles, fingertips) is aligned to the robot hand
+#     from the open hand (calibration or [편 손 맞춤]) and each tick the robot joints are
+#     the ones whose fingertips best match the operator's (motion_acq.hand.kinematic;
+#     pinches put the tips together). Falls back to the example map on a tick without
+#     hand model data or while the calibration has no alignment yet.
+#   examples: the example-pose map below only.
+method: kinematic
+kinematic:
+  near_m: 0.045      # operator thumb-to-finger distance (robot scale) where the pinch term starts
+  touch_m: 0.015     # ... and where the robot tips are put together
+  pinch_weight: 8.0
+  smooth_weight: 0.0002
+
 # One map per joint group, each from the glove inputs that group needs (10.05 left
 # test: with all inputs in one map the thumb rotation sat at 1.2-1.7 rad, since a pose
 # away from every example falls back to the affine average). dip is not used

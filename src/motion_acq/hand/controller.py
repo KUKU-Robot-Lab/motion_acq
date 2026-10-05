@@ -315,6 +315,7 @@ class HandController:
             "normalized": step.normalized if step else None,
             "q_target_rad": step.q_target if step else None,
             "missing_inputs": self.retargeter.missing_inputs or None,
+            "method": self.retargeter.method_used if following else None,
             "q_command_rad": step.q_command if step else None,
             "registers": out.angle,
             "measured_registers": None if self.measured is None else self.measured[0],

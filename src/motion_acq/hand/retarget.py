@@ -18,6 +18,7 @@ import yaml
 from motion_acq.filters import OneEuroFilter, RateLimiter
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.feedback import FeedbackConfig, feedback_config
+from motion_acq.hand.kinematic import KinematicConfig, KinematicRetargeter, TipTables, points_from_signals, table_path
 from motion_acq.hand.rh56f1 import Rh56f1Map
 
 DEFAULT_RETARGET = Path(__file__).resolve().parents[3] / "configs" / "hands" / "nova2_to_rh56f1.yaml"
@@ -46,6 +47,8 @@ class HandRetargetConfig:
     driver_speed: int = 2000
     driver_force: int = 600
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
+    method: str = "examples"  # "kinematic": fingertip retargeting when the calibration has an alignment
+    kinematic: KinematicConfig = field(default_factory=KinematicConfig)
 
     @property
     def joints(self) -> tuple[str, ...]:
@@ -87,6 +90,9 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
     if "open" not in examples:
         raise ValueError("examples need an 'open' pose (the quick re-zero pose)")
     flt, lim, drv = raw.get("filter") or {}, raw.get("limits") or {}, raw.get("driver") or {}
+    method = str(raw.get("method", "examples"))
+    if method not in ("examples", "kinematic"):
+        raise ValueError(f"method must be examples or kinematic, not {method!r}")
     return HandRetargetConfig(
         groups=groups, examples=examples, limits_rad=limits, home_rad=home,
         min_cutoff_hz=float(flt.get("min_cutoff_hz", 20.0)), beta=float(flt.get("beta", 0.0)),
@@ -97,6 +103,8 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         rate_hz=float(raw.get("rate_hz", 120.0)), stale_s=float(raw.get("stale_s", 0.2)),
         driver_speed=int(drv.get("speed", 2000)), driver_force=int(drv.get("force", 600)),
         feedback=feedback_config(raw.get("feedback")),
+        method=method,
+        kinematic=KinematicConfig(**{k: float(v) for k, v in (raw.get("kinematic") or {}).items()}),
     )
 
 
@@ -146,6 +154,11 @@ class HandRetargeter:
         self.side = side
         self.state = HandState.IDLE
         self.missing_inputs: list[str] = []
+        self.method_used: str | None = None
+        self.kinematic = None
+        if config.method == "kinematic" and calibration.alignment is not None:
+            self.kinematic = KinematicRetargeter(TipTables.load(table_path(side)), calibration.alignment,
+                                                 config.kinematic)
         self._last_t: float | None = None
         self._filters = {j: OneEuroFilter(config.min_cutoff_hz, config.beta, config.d_cutoff_hz)
                          for j in config.joints}
@@ -187,8 +200,13 @@ class HandRetargeter:
 
     def target(self, signals: Mapping[str, float]) -> tuple[dict[str, float], dict[str, float]]:
         """(raw map output, limited and amplitude-scaled target) for one glove sample."""
-        raw = self.calibration.predict(signals)
-        self.missing_inputs = self.calibration.missing_inputs(signals)
+        points = points_from_signals(signals) if self.kinematic is not None else None
+        if points is not None:
+            raw = self.kinematic.solve(points)
+            self.missing_inputs, self.method_used = [], "kinematic"
+        else:  # examples map: the method itself, or no hand model data / alignment this tick
+            raw = self.calibration.predict(signals)
+            self.missing_inputs, self.method_used = self.calibration.missing_inputs(signals), "examples"
         home = self.config.home_rad
         out = {}
         for j, (lo, hi) in self.config.limits_rad.items():
@@ -213,5 +231,7 @@ class HandRetargeter:
             smoothed = self._filters[j](q_target[j], t_s)
             q_cmd[j] = self._limiters[j](smoothed, dt)
         self._last_registers = self.hand_map.to_registers(q_cmd, side=self.side)
-        inputs = {n: float(signals[n]) for n in self.calibration.inputs if n in signals}
+        names = self.calibration.inputs if self.method_used == "examples" else [
+            n for n in signals if n.startswith(("knuckle_", "tip_"))]
+        inputs = {n: float(signals[n]) for n in names if n in signals}
         return HandStep(HandState.RUNNING, inputs, raw, q_target, q_cmd, self._last_registers)

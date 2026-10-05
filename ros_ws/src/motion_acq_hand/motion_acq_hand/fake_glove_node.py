@@ -29,7 +29,7 @@ from rclpy.node import Node
 from senseglove_msgs.msg import KinematicsVect3D, SenseGloveState
 from std_msgs.msg import String
 
-from motion_acq.hand.synthetic import POSE_ANGLES, synthetic_angles, synthetic_state, synthetic_tips
+from motion_acq.hand.synthetic import POSE_ANGLES, synthetic_angles, synthetic_hand_model, synthetic_state
 
 
 class FakeGlove(Node):
@@ -82,9 +82,9 @@ class FakeGlove(Node):
         msg.joint_names = names
         msg.position = [float(p) for p in positions]
         msg.absolute_velocity = [0.0] * len(names)
-        msg.hand_position = [KinematicsVect3D() for _ in range(20)]
-        msg.finger_tip_position = [KinematicsVect3D(x=float(x), y=float(y), z=float(z))
-                                   for x, y, z in synthetic_tips(angles)]
+        hand, tips = synthetic_hand_model(angles, self.side)  # the glove's hand model, from RH56F1 tables
+        msg.hand_position = [KinematicsVect3D(x=x, y=y, z=z) for x, y, z in hand]
+        msg.finger_tip_position = [KinematicsVect3D(x=x, y=y, z=z) for x, y, z in tips]
         msg.imu_orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
         self.pub.publish(msg)
 

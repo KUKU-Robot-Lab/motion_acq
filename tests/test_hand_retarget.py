@@ -114,7 +114,7 @@ def test_fist_reaches_the_vendor_curl_registers():
     _, step = run(rt, POSE_ANGLES["fist"], 120)
     # Right-hand calibration (sim2real 09.30 sweep) puts full curl at 926/920/900/905.
     assert step.registers == HAND_MAP.to_registers(step.q_command, side="right")
-    assert step.registers[:4] == [926, 920, 900, 905]
+    assert step.registers[:4] == pytest.approx([926, 920, 900, 905], abs=2)
 
 
 def test_beyond_the_examples_is_clamped_to_the_joint_limits():

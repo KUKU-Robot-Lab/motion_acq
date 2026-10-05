@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Mapping
 
+import numpy as np
+
 from motion_acq.hand.nova2 import FINGERS, PARTS, SIDE_PREFIX, THUMB_TIP_KEYS, TIP_DIST_KEYS
 
 OPEN = {"brake": 0.0, "mcp": 0.05, "pip": 0.07, "dip": 0.07}
@@ -59,6 +61,9 @@ def synthetic_angles(curl: float | Mapping[str, float], thumb_bend: float, thumb
         finger, amount = pinch
         key = f"tipdist_{finger}"
         angles[key] = _lerp(angles[key], TIP_TOUCH, amount)
+    # the robot pose this hand shape corresponds to (for synthetic_hand_model; not a glove signal)
+    angles.update({"q_thumb_1": 1.57 + 0.43 * thumb_opposition - 0.77 * spread, "q_thumb_2": 0.4746 * thumb_bend,
+                   **{f"q_{f}_1": 1.5286 * curls[f] for f in CURLED}})
     # thumb tip (mm, hand frame): swings across the palm with opposition, out with spread
     tip = (20.0 + 40.0 * thumb_opposition - 30.0 * spread, 60.0 - 50.0 * thumb_opposition + 20.0 * spread,
            30.0 * thumb_bend)
@@ -98,3 +103,44 @@ POSE_ANGLES = {
     "pinch_middle": synthetic_angles({"middle": 0.45}, 0.4, 0.65, ("middle", 1.0)),
     "pinch_ring": synthetic_angles({"ring": 0.5}, 0.35, 0.9, ("ring", 1.0)),
 }
+
+
+# The glove's hand model for a synthetic hand: the RH56F1 tip tables at the pose the hand
+# shape stands for, in a glove-like frame (mm, x mirrored as in a left-handed frame, offset).
+GLOVE_FROM_ROBOT = np.diag([-1100.0, 1100.0, 1100.0])
+GLOVE_OFFSET = np.array([12.0, -30.0, -150.0])
+
+
+def synthetic_hand_model(angles: Mapping[str, float], side: str) -> tuple[list[tuple], list[tuple]]:
+    """(hand_position 20, finger_tip_position 5) as SenseGloveState carries them."""
+    from motion_acq.hand.kinematic import FINGERS as KF
+
+    t = _tables(side)
+    q = {k[2:]: v for k, v in angles.items() if k.startswith("q_")}
+
+    def glove(x):
+        return tuple(float(v) for v in GLOVE_FROM_ROBOT @ np.asarray(x) + GLOVE_OFFSET)
+
+    def nearest(values, v):
+        return int(np.argmin(np.abs(values - v)))
+
+    tips = []
+    k = int(np.argmin((t.thumb_q[:, 0] - q.get("thumb_1", 1.57)) ** 2 + (t.thumb_q[:, 1] - q.get("thumb_2", 0.0)) ** 2))
+    tips.append(glove(t.thumb_tips[k]))
+    for f in KF:
+        tips.append(glove(t.finger_tips[f][nearest(t.finger_q, q.get(f"{f}_1", 0.0))]))
+    hand = [tips[0]] * 4  # thumb joints: only the tip is used
+    for i, f in enumerate(KF):
+        hand += [glove(t.knuckles[f])] * 3 + [tips[i + 1]]
+    return hand, tips
+
+
+_TABLE_CACHE: dict = {}
+
+
+def _tables(side: str):
+    from motion_acq.hand.kinematic import TipTables, table_path
+
+    if side not in _TABLE_CACHE:
+        _TABLE_CACHE[side] = TipTables.load(table_path(side))
+    return _TABLE_CACHE[side]

@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+import numpy as np
 import yaml
 
 from motion_acq.hand.example_map import ConflictError, ExampleMap, ExampleMapError, fit_groups, input_kind
+from motion_acq.hand.kinematic import Alignment, TipTables, fit_alignment, points_from_signals, table_path
 
 SCHEMA = "motion_acq/hand_calibration/v3"  # v3: one map per joint group, thumb tip position input
 OLD_SCHEMAS = ("motion_acq/hand_calibration/v1", "motion_acq/hand_calibration/v2")
@@ -38,6 +40,7 @@ class HandCalibration:
     created: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S"))
     rezeroed: str | None = None
     glove: str = "nova2"
+    alignment: Alignment | None = None  # glove hand model -> robot hand (kinematic retargeting), from the open hand
 
     def predict(self, signals: Mapping[str, float]) -> dict[str, float]:
         out: dict[str, float] = {}
@@ -62,6 +65,7 @@ class HandCalibration:
             "created": self.created, "rezeroed": self.rezeroed,
             "medians": {p: {k: float(v) for k, v in m.items()} for p, m in self.medians.items()},
             "models": {g: m.to_dict() for g, m in self.models.items()},
+            "kinematic_alignment": self.alignment.to_dict() if self.alignment is not None else None,
         }
 
     def save(self, path: Path) -> None:
@@ -88,8 +92,14 @@ class HandCalibration:
         medians = {str(p): {str(k): float(v) for k, v in m.items()} for p, m in (raw.get("medians") or {}).items()}
         if OPEN_POSE not in medians:
             raise CalibrationError(f"{path}: no {OPEN_POSE} pose medians")
+        alignment = None
+        if raw.get("kinematic_alignment"):
+            try:
+                alignment = Alignment.from_dict(raw["kinematic_alignment"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise CalibrationError(f"{path}: {exc}") from exc
         return cls(str(raw["side"]), str(raw.get("user", "")), models, medians, str(raw.get("created", "")),
-                   raw.get("rezeroed"))
+                   raw.get("rezeroed"), alignment=alignment)
 
 
 def rezero(calibration: HandCalibration, open_samples: Sequence[Mapping[str, float]]) -> HandCalibration:
@@ -101,8 +111,19 @@ def rezero(calibration: HandCalibration, open_samples: Sequence[Mapping[str, flo
     ref = calibration.medians[OPEN_POSE]
     models = {g: m.with_offset([now[n] - ref[n] if n in now and n in ref else 0.0 for n in m.inputs])
               for g, m in calibration.models.items()}
+    alignment = align_open_hand(calibration.side, open_samples) or calibration.alignment
     return HandCalibration(calibration.side, calibration.user, models, calibration.medians,
-                           calibration.created, time.strftime("%Y-%m-%dT%H:%M:%S"), calibration.glove)
+                           calibration.created, time.strftime("%Y-%m-%dT%H:%M:%S"), calibration.glove, alignment)
+
+
+def align_open_hand(side: str, open_samples: Sequence[Mapping[str, float]]) -> Alignment | None:
+    """Kinematic alignment from the open hand's knuckles and fingertips (None: no hand model data)."""
+    points = [points_from_signals(s) for s in open_samples]
+    points = [p for p in points if p is not None]
+    if len(points) < max(3, len(open_samples) // 2):
+        return None
+    median = {k: np.median(np.array([p[k] for p in points]), axis=0) for k in points[0]}
+    return fit_alignment(TipTables.load(table_path(side)), median)
 
 
 # -- operator session (the ROS calibrate node supplies ask / record / say) -----------------------------
@@ -206,7 +227,7 @@ def run_session(
             except ConflictError as exc:
                 say(f"  주의: 여전히 비슷하게 읽히는 자세가 있어 둘의 중간으로 따라갑니다 ({exc})")
         medians = {p: {n: statistics.median(s[n] for s in samples[p]) for n in inputs} for p in order}
-        return HandCalibration(side, user, models, medians)
+        return HandCalibration(side, user, models, medians, alignment=align_open_hand(side, samples[OPEN_POSE]))
 
 
 def fit_error(calibration: HandCalibration, examples: Mapping[str, tuple[str, Mapping[str, float]]]) -> float:

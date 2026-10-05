@@ -42,6 +42,7 @@ from std_msgs.msg import Float64MultiArray, String
 
 from motion_acq.hand.calibration import OPEN_POSE, CalibrationError, HandCalibration, fit_error, rezero, run_session
 from motion_acq.hand.feedback import HAPTICS_BEAT_S, OFF, haptics_topic_for, heartbeat, strap_only
+from motion_acq.hand.kinematic import glove_points
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state, tip_signals
 from motion_acq.hand.retarget import DEFAULT_RETARGET, load_hand_retarget_config
 
@@ -76,6 +77,8 @@ class Recorder(Node):
         try:
             signals = angles_from_state(list(msg.joint_names), list(msg.position), self.side)
             signals.update(tip_signals([(p.x, p.y, p.z) for p in msg.finger_tip_position]))
+            signals.update(glove_points([(p.x, p.y, p.z) for p in msg.hand_position],
+                                     [(p.x, p.y, p.z) for p in msg.finger_tip_position]))
         except GloveDataError:
             return
         self.samples.append(signals)
@@ -94,6 +97,16 @@ def record_pose(node: Recorder, seconds: float) -> list[dict[str, float]]:
     if len(samples) < 10:
         raise CalibrationError(f"{seconds} 초에 장갑 샘플 {len(samples)} 개뿐: 장갑 드라이버가 도는지 확인")
     return samples
+
+
+def alignment_line(calibration: HandCalibration) -> str:
+    a = calibration.alignment
+    if a is None:
+        return "  리타겟팅 정렬 없음: 장갑 손 모델(hand_position)이 오지 않는다 → 예시 자세 방식으로 따라간다"
+    import numpy as np
+
+    mirror = "거울 좌표" if np.linalg.det(a.rotation) < 0 else "일반 좌표"
+    return f"  리타겟팅 정렬: 크기 비 {a.scale * 1000:.2f} (로봇/사람), 장갑 {mirror}"
 
 
 def ask_enter(text: str) -> None:
@@ -152,12 +165,14 @@ def main(argv: list[str] | None = None) -> None:
             shift = ", ".join(f"{n} {v:+.2f}" for m in calibration.models.values()
                               for n, v in zip(m.inputs, m.offset) if abs(v) > 0.02)
             print(f"편 손 맞춤 저장됨: {out} ({shift or '거의 그대로'})")
+            print(alignment_line(calibration))
             return
         calibration = run_session(side=side, user=args.user, groups=config.groups,
                                   examples=examples, ask=ask, record=record, say=say)
         calibration.save(out)
         print(f"보정 저장됨: {out}")
         print(f"  예시 자세 {len(examples)}개, 예시에서의 최대 오차 {fit_error(calibration, examples):.3f} rad")
+        print(alignment_line(calibration))
     except CalibrationError as exc:
         raise SystemExit(f"calibration failed: {exc}") from exc
     finally:
