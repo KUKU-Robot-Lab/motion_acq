@@ -319,16 +319,55 @@ def test_haptics_only_while_following_and_sensors_recorded():
     out = rig.step(POSE_ANGLES["open"])
     assert out.haptics.brake["index"] == 0.0  # disabled
     rig.ctl.request_enable(True)
-    for _ in range(120):
-        rig.ctl.on_touch(touch, [0] * 9, rig.t)
-        rig.ctl.on_joint_force(["r_hj_index_1"], [20], rig.t)
+    for k in range(120):  # live readings are never exactly still (a frozen hand is a fault)
+        rig.ctl.on_touch([0, 0, 0, 400 + k % 2, 0], [0] * 9, rig.t)
+        rig.ctl.on_joint_force(["r_hj_index_1"], [20 + k % 2], rig.t)
         out = rig.step(POSE_ANGLES["open"])
     assert out.record["state"] == "running"
     assert out.haptics.brake["index"] == 1.0
     assert out.record["haptics"]["brake"]["index"] == 1.0
-    assert out.record["tip_force_n"]["index"] == pytest.approx(4.0)
-    assert out.record["joint_force"] == {"index_1": 20.0}
+    assert out.record["tip_force_n"]["index"] == pytest.approx(4.0, abs=0.02)
+    assert out.record["joint_force"]["index_1"] in (20.0, 21.0)
     rig.ctl.request_enable(False)
     rig.ctl.on_touch(touch, [0] * 9, rig.t)
     out = rig.step(POSE_ANGLES["open"])
     assert out.haptics.brake["index"] == 0.0  # returning home: no feedback
+
+
+def _sensors(rig, touch, force, t):
+    rig.ctl.on_touch(touch, [0] * 9, t)
+    rig.ctl.on_joint_force(["l_hj_index_1"], [force], t)
+
+
+def test_a_hand_that_stops_answering_is_a_fault_and_releases_the_glove():
+    """10.05 22:24: the left RH56F1 dropped off EtherCAT holding a cup; its state kept coming,
+    bit-identical, for 24 s. The hand ignored the open command and the stale contact kept
+    the glove braked."""
+    rig = Rig(make_controller())
+    rig.ctl.request_enable(True)
+    for k in range(120):
+        _sensors(rig, [0, 0, 0, 300 + k % 3, 0], 400 + k % 5, rig.t)
+        out = rig.step(POSE_ANGLES["fist"])
+    assert rig.ctl.mode is Mode.ENABLED and out.haptics.brake["index"] == 1.0
+    frozen_hand = list(rig.hand)
+    for _ in range(30):  # 1 s: same angles, same forces, still on time
+        _sensors(rig, [0, 0, 0, 300, 0], 400, rig.t)
+        rig.hand = list(frozen_hand)
+        out = rig.step(POSE_ANGLES["open"])
+    assert rig.ctl.mode is Mode.FAULT and "unchanged" in rig.ctl.fault_reason
+    assert out.haptics.brake["index"] == 0.0 and out.angle is None
+    rig.ctl.request_enable(False)
+    rig.step(POSE_ANGLES["open"])
+    rig.ctl.request_enable(True)
+    _sensors(rig, [0, 0, 0, 300, 0], 400, rig.t)
+    out = rig.step(POSE_ANGLES["open"])
+    assert rig.ctl.mode is not Mode.ENABLED and "frozen" in (out.record["refusal"] or "")
+
+
+def test_a_still_hand_without_sensor_streams_is_not_frozen():
+    """Only angles (an old driver): a hand at rest repeats its registers exactly."""
+    rig = Rig(make_controller())
+    rig.ctl.request_enable(True)
+    for _ in range(200):
+        out = rig.step(POSE_ANGLES["open"])
+    assert rig.ctl.mode is Mode.ENABLED and out.record["state"] == "running"

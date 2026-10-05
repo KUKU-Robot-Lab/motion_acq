@@ -40,6 +40,7 @@ class FakeRh56f1(Node):
         self.hand_id = int(declare(self, "hand_id", 1))
         self.ignored = 0
         self.object_index_reg = int(declare(self, "object_index_reg", -1))
+        self.ticks = 0
         home = load_rh56f1_map().to_registers(load_hand_retarget_config().home_rad, side=self.side)
         self.present = [float(v) for v in home]
         self.target = list(self.present)
@@ -95,7 +96,10 @@ class FakeRh56f1(Node):
         force = GetForceAct1()
         force.header.stamp = stamp
         force.hand_id = self.hand_id
-        force.joint_values = [CONTACT_JOINT_FORCE if pressing and i == INDEX_SLOT else 10 for i in range(N_SLOTS)]
+        self.ticks += 1
+        noise = self.ticks % 3  # live readings are never exactly still (hand_node faults a frozen hand)
+        force.joint_values = [CONTACT_JOINT_FORCE + noise if pressing and i == INDEX_SLOT else 10 + noise
+                              for i in range(N_SLOTS)]
         force.joint_names = self.joint_names
         self.force_pub.publish(force)
         touch = TouchData1()

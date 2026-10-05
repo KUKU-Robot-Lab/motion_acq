@@ -20,6 +20,14 @@ speed/force are sent at enable and re-sent every resend_s. Losing
 angle_actual for longer than measured_stale_s while enabled is a FAULT.
 A FAULT does not move the hand (its feedback cannot be trusted).
 
+Frozen hand: 10.05 22:24 the left RH56F1 dropped off EtherCAT during a firm cup grasp
+(master: "WKC -1 < 3 for 100 cycles") and the driver kept publishing its last state on
+time: angles, joint forces and tip forces bit-identical for 24 s. The hand ignored the
+open command, and the stale contact kept the glove braked. Live RH56F1 data changes at
+least every ~70 ms (forces are never exactly still), so with the force or touch stream
+present, a state with nothing changed for hand_frozen_s while enabled is a FAULT; the
+glove feedback goes off with it.
+
 Frozen glove: when SenseCom dies, senseglove_ros keeps publishing its last
 values on time and without error (seen on bumsu's setup, 2026-09-22). A glove
 whose 20 angles have not changed at all for glove_frozen_s is therefore
@@ -59,6 +67,7 @@ class ControllerConfig:
     glove_stale_s: float = 0.2
     glove_frozen_s: float = 1.0
     measured_stale_s: float = 0.5
+    hand_frozen_s: float = 0.5
     resend_s: float = 1.0
     home_timeout_s: float = 5.0
     home_tolerance_registers: int = 30  # ~3 deg on the fingers
@@ -121,6 +130,9 @@ class HandController:
         self.home_rad = dict(retargeter.config.home_rad)
         self._home_registers = hand_map.to_registers(self.home_rad, side=side)
         self.feedback = HapticFeedback(retargeter.config.feedback, retargeter.config.closed_rad)
+        self._last_reading: dict[str, object] = {}
+        self._hand_changed_t = -math.inf
+        self._sensor_streams = False
 
     # -- inputs -----------------------------------------------------------
     def on_glove(self, angles: Mapping[str, float], t: float) -> None:
@@ -132,16 +144,30 @@ class HandController:
         return self.glove is not None and t - self._glove_changed_t > self.config.glove_frozen_s
 
     def on_touch(self, finger_forces, palm_data, t: float) -> None:
+        self._hand_changed("touch", (tuple(finger_forces), tuple(palm_data)), t)
         self.feedback.on_touch(finger_forces, palm_data, t)
 
     def on_joint_force(self, names, values, t: float) -> None:
+        self._hand_changed("force", tuple(values), t)
         self.feedback.on_joint_force(names, values, t)
+
+    def _hand_changed(self, stream: str, value, t: float) -> None:
+        """Remember when any RH56F1 reading last changed (frozen-hand check)."""
+        if stream != "angle":
+            self._sensor_streams = True
+        if self._last_reading.get(stream) != value:
+            self._last_reading[stream] = value
+            self._hand_changed_t = t
+
+    def hand_frozen(self, t: float) -> bool:
+        return self._sensor_streams and t - self._hand_changed_t > self.config.hand_frozen_s
 
     def on_glove_error(self) -> None:
         self.glove_errors += 1
 
     def on_measured(self, registers: Sequence[int], hand_id: int, t: float) -> None:
         self.measured = ([int(v) for v in registers], int(hand_id), t)
+        self._hand_changed("angle", tuple(self.measured[0]), t)
 
     def request_enable(self, enable: bool) -> None:
         self.want_enable = bool(enable)
@@ -201,6 +227,8 @@ class HandController:
             return "driver topics have no subscriber"
         if not self._measured_fresh(t):
             return "no fresh angle_actual"
+        if self.hand_frozen(t):
+            return "RH56F1 readings frozen (EtherCAT link or hand power?): restart the hand driver"
         assert self.measured is not None
         reasons = implausible_registers(self.measured[0], self.hand_map, self.side)
         if reasons:
@@ -245,6 +273,11 @@ class HandController:
         if self.mode is Mode.ENABLED and not self._measured_fresh(t):
             self.mode = Mode.FAULT
             self.fault_reason = f"angle_actual lost for > {self.config.measured_stale_s} s"
+            self.retargeter.state = HandState.IDLE
+        if self.mode is Mode.ENABLED and self.hand_frozen(t):
+            self.mode = Mode.FAULT
+            self.fault_reason = (f"RH56F1 readings unchanged for > {self.config.hand_frozen_s} s: the hand stopped "
+                                 "answering (EtherCAT link or hand power?) / 손 응답 없음: 드라이버 로그의 WKC 확인")
             self.retargeter.state = HandState.IDLE
         step = None
         if self.mode is Mode.ENABLED:
