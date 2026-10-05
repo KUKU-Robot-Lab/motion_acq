@@ -171,6 +171,8 @@ class Console:
             return units.hand_driver(st, mode, key[5:])
         if key.startswith("calib_"):
             return units.calibrate(st, mode, key[6:], str(s["user"]))
+        if key.startswith("rezero_"):
+            return units.calibrate(st, mode, key[7:], str(s["user"]), rezero=True)
         raise UnitError(f"unknown unit {key!r}")
 
     def blockers(self, key: str) -> list[str]:
@@ -623,7 +625,7 @@ class Console:
         keys = ["quest_view"] + (["mock_quest"] if self.mode == "fake" else [])
         keys += (["head"] if self.station.has_head else []) + ["arm", "record"]
         for side in self.station.hands:
-            keys += [f"hand_{side}", f"calib_{side}"] + ([f"ecat_{side}"] if self.mode == "real" else [])
+            keys += [f"hand_{side}", f"calib_{side}", f"rezero_{side}"] + ([f"ecat_{side}"] if self.mode == "real" else [])
         return keys
 
     def _unit(self, key: str) -> dict:
@@ -649,7 +651,7 @@ class Console:
             short = str(path.relative_to(ROOT))
             stale = ok and calibration_stale(path, sensecom)
             out[side] = {"ok": ok, "stale": stale,
-                         "detail": f"{short} (SenseCom 재시작 전 보정: 손이 끝까지 안 펴지거나 안 쥐어지거나, 장갑 손가락이 계속 잠기면 다시 보정)"
+                         "detail": f"{short} (SenseCom 을 다시 켠 뒤: 손이 어긋나면 [편 손 맞춤] 2초)"
                          if stale else short if ok else detail.replace(str(path), short)}
         return out
 

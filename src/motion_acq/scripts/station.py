@@ -33,6 +33,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 from motion_acq.config import STATION_ENV, load_rig_config, station_rig_config
 from motion_acq.hand.nova2 import Nova2Glove, load_gloves
 
@@ -188,17 +190,21 @@ def calibration_stale(path: Path, sensecom_start: float | None) -> bool:
 def calibration_current(path: Path, sensecom_start: float | None) -> tuple[bool, str]:
     """A hand calibration file the hand node can use, and what to tell the operator.
 
-    After a SenseCom restart the raw glove ranges can shift (bumsu 09-22: four
-    fingers stayed bent until he recalibrated). 10.05 user: refusing the file
-    then made the calibration look lost after every glove reconnect, so an
-    older file is still used and only flagged; the operator recalibrates when
-    the hand no longer opens or closes fully.
+    10.05 user: a calibration is per user and is reused (calibrating every session is not
+    workable). A file older than the running SenseCom is still used; after a SenseCom
+    restart the readings can shift, which the 2 s open-hand re-zero (calibrate --rezero)
+    corrects. Only the old open/fist format (v1) must be redone.
     """
     if not path.exists():
         return False, f"{path} missing (ros2 run motion_acq_hand calibrate)"
+    try:
+        head = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        return False, f"{path} unreadable ({exc}): calibrate again"
+    if not isinstance(head, dict) or head.get("schema") != "motion_acq/hand_calibration/v2":
+        return False, f"{path} is the old open/fist calibration: calibrate again (example poses)"
     if calibration_stale(path, sensecom_start):
-        return True, (f"{path} (taken before this SenseCom start: recalibrate if the hand no longer opens or "
-                      "closes fully or a glove finger stays braked)")
+        return True, f"{path} (taken before this SenseCom start: re-zero with the open hand if the hand is off)"
     return True, str(path)
 
 

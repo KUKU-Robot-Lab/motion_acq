@@ -11,7 +11,8 @@ hand can do and lets him feel contact (10.05 user):
   its command is ahead of its position) brakes the matching glove finger in
   proportion; a robot finger at its closed end brakes it too (the operator
   cannot curl further than the robot). Pinky folds into the ring brake.
-* squeeze (palm strap): palm contact.
+* squeeze (palm strap): a constant hold (strap_hold) so the glove sits firmly and the
+  same way as when it was calibrated, plus palm contact on top.
 * vibration (thumb tip, index tip, palm index side, palm pinky side): a short
   pulse when a finger first touches.
 
@@ -62,6 +63,7 @@ class FeedbackConfig:
     pulse_s: float = 0.08
     pulse_level: float = 0.6
     sensor_stale_s: float = 0.3  # older sensor data counts as no contact
+    strap_hold: float = 0.0  # strap squeeze while following (holds the glove on the palm, 10.05 user)
 
     def __post_init__(self) -> None:
         pairs = ((self.tip_on_n, self.tip_full_n), (self.joint_force_on, self.joint_force_full),
@@ -70,7 +72,9 @@ class FeedbackConfig:
             raise ValueError("feedback thresholds need 0 <= on < full")
         if not 0.0 <= self.brake_off <= self.brake_on <= 1.0:
             raise ValueError("feedback needs 0 <= brake_off <= brake_on <= 1")
-        for name in ("max_brake", "max_squeeze", "pulse_level", "limit_level"):
+        if self.strap_hold > self.max_squeeze:
+            raise ValueError("feedback strap_hold must not exceed max_squeeze")
+        for name in ("max_brake", "max_squeeze", "pulse_level", "limit_level", "strap_hold"):
             if not 0.0 <= getattr(self, name) <= 1.0:
                 raise ValueError(f"feedback {name} must be in [0, 1]")
 
@@ -117,6 +121,25 @@ class Haptics:
 
     def to_dict(self) -> dict:
         return {"brake": dict(self.brake), "squeeze": self.squeeze, "vibration": dict(self.vibration)}
+
+
+HAPTICS_MIN_PERIOD_S = 1.0 / 60.0  # the glove driver's update rate
+HAPTICS_BEAT_S = 0.25  # re-send period of an unchanged command; the patched glove driver releases after 1 s
+
+
+def heartbeat(efforts: list[float], beat: bool) -> list[float]:
+    """Efforts with the on levels 0.01 % lower on every other send (visible as a change)."""
+    return [float(e) - 0.01 if beat and e > 0.0 else float(e) for e in efforts]
+
+
+def haptics_topic_for(glove_topic: str) -> str:
+    """<glove ns>/senseglove_states -> <glove ns>/haptics_controller/commands."""
+    return f"{glove_topic.rsplit('/', 1)[0]}/haptics_controller/commands"
+
+
+def strap_only(level: float) -> list[float]:
+    """Efforts (percent) with only the wrist strap on: holds the glove during calibration."""
+    return [100.0 * level if j == "palm_strap" else 0.0 for j in HAPTIC_JOINTS]
 
 
 OFF = Haptics({b: 0.0 for b in BRAKES}, 0.0, {v: 0.0 for v in VIBRATIONS})
@@ -187,7 +210,8 @@ class HapticFeedback:
             if t < until:
                 vibration[v] = cfg.pulse_level
         palm = self._fresh(self.palm, t) or 0.0
-        squeeze = cfg.max_squeeze * ramp(palm, cfg.palm_on_n, cfg.palm_full_n)
+        contact = (cfg.max_squeeze - cfg.strap_hold) * ramp(palm, cfg.palm_on_n, cfg.palm_full_n)
+        squeeze = cfg.strap_hold + contact
         return Haptics(brake, round(squeeze, 3), vibration)
 
     def _joint_level(self, joint: str, q_command, q_measured, force: Mapping[str, float]) -> float:

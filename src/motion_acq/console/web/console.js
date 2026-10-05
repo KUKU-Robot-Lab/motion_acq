@@ -11,6 +11,7 @@ let lastEventT = Date.now() / 1000;
 const SIDE_KO = { right: "오른", left: "왼" };
 const UNIT_KO = { quest_view: "영상 서버", mock_quest: "가짜 Quest", head: "목", arm: "팔", record: "녹화",
   hand_right: "로봇 오른손", hand_left: "로봇 왼손", calib_right: "오른손 보정", calib_left: "왼손 보정",
+  rezero_right: "오른손 편 손 맞춤", rezero_left: "왼손 편 손 맞춤",
   ecat_right: "로봇 오른손 드라이버", ecat_left: "로봇 왼손 드라이버" };
 const unitName = (k) => UNIT_KO[k] || k.replace(/^task_/, "작업 ");
 const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -344,10 +345,11 @@ function detailGlove(s) {
   }
   rows.push(["드라이버", (g.driver_pids || []).length ? `PID ${g.driver_pids.join(", ")}` : "꺼짐"]);
   if (jobLine("glove")) rows.push(["최근", jobLine("glove"), job("glove").state === "failed" ? "bad" : ""]);
-  const calib = ["calib_right", "calib_left"].find(running);
+  const calib = ["calib_right", "calib_left", "rezero_right", "rezero_left"].find(running);
   return `<h3>장갑 · Nova 2</h3>${facts(rows)}
-    <p class="hint">파일럿: <b>${esc(s.settings.user || "없음 (맨 위 오른쪽에 이름을 넣는다)")}</b>. 순서: [오른손 보정] → 화면 안내 자세마다 [Enter: 이 자세 기록] → [왼손 보정]. 보정은 파일럿마다 따로 저장되고 장갑을 다시 연결해도 남는다. 손이 끝까지 안 펴지거나 안 쥐어지면 다시 보정한다.</p>
+    <p class="hint">파일럿: <b>${esc(s.settings.user || "없음 (맨 위 오른쪽에 이름을 넣는다)")}</b>. 처음 한 번: [오른손 보정] → 화면 안내 예시 자세(11개)마다 [Enter: 이 자세 기록] → [왼손 보정]. 보정은 파일럿마다 저장되어 다음부터 그대로 쓴다. SenseCom 을 다시 켠 뒤 손이 어긋나면 [편 손 맞춤]: 손을 펴고 Enter 한 번(2초).</p>
     <div class="actions">${btn("오른손 보정", { "data-start": "calib_right" }, "small")}${btn("왼손 보정", { "data-start": "calib_left" }, "small")}
+      ${btn("오른손 편 손 맞춤", { "data-start": "rezero_right" }, "small")}${btn("왼손 편 손 맞춤", { "data-start": "rezero_left" }, "small")}
       ${btn("Enter: 이 자세 기록", { "data-key": calib || "", "data-text": "\n", disabled: !calib }, "key small")}
       ${btn("드라이버 정지", { "data-action": "glove_driver_stop", disabled: !(g.driver_pids || []).length }, "ghost small")}</div>
     <div class="actions">${logButton(calib || "task_glove_up")}</div>`;
@@ -413,7 +415,7 @@ function renderDetail(s) {
   const box = $("#detail");
   const html = DETAILS[selected](s);
   let tailKey = DETAIL_TAIL[selected];
-  if (tailKey === "calib") tailKey = ["calib_right", "calib_left"].find(running) || "task_glove_up";
+  if (tailKey === "calib") tailKey = ["calib_right", "calib_left", "rezero_right", "rezero_left"].find(running) || "task_glove_up";
   if (box.dataset.html !== html && !box.contains(document.activeElement)) {
     box.innerHTML = html + `<pre class="tail" id="detail-tail"></pre>`;
     box.dataset.html = html;
@@ -463,7 +465,7 @@ function renderAlerts(s) {
   for (const [key, u] of Object.entries(s.units || {})) {
     if (!u.prompt) continue;
     const yn = /\[y\/n\]/i.test(u.prompt);
-    items.push(`<div class="alert ${key.startsWith("calib") ? "warn" : ""}"><p><b>${esc(unitName(key))}</b> 이 입력을 기다린다: <code>${esc(u.prompt)}</code></p>
+    items.push(`<div class="alert ${(key.startsWith("calib") || key.startsWith("rezero")) ? "warn" : ""}"><p><b>${esc(unitName(key))}</b> 이 입력을 기다린다: <code>${esc(u.prompt)}</code></p>
       ${yn ? `<button type="button" class="btn" data-send="${esc(key)}" data-text="y&#10;">y</button><button type="button" class="btn" data-send="${esc(key)}" data-text="n&#10;">n</button>`
            : `<button type="button" class="btn danger" data-send="${esc(key)}" data-text="&#10;">Enter 보내기</button>`}</div>`);
   }

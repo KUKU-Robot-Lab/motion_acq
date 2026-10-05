@@ -10,27 +10,21 @@ from pathlib import Path
 import pytest
 import yaml
 
-from motion_acq.hand.calibration import CalibrationError, HandCalibration, calibrate
+from hand_fixtures import CONFIG, make_calibration
+
+from motion_acq.hand.calibration import CalibrationError, HandCalibration
 from motion_acq.hand.controller import (
     ControllerConfig,
     HandController,
     Mode,
     implausible_registers,
 )
-from motion_acq.hand.nova2 import features
-from motion_acq.hand.retarget import HandRetargeter, load_hand_retarget_config
+from motion_acq.hand.retarget import HandRetargeter
 from motion_acq.hand.rh56f1 import load_rh56f1_map
 from motion_acq.hand.synthetic import POSE_ANGLES, synthetic_angles
 
-CONFIG = load_hand_retarget_config()
 HAND_MAP = load_rh56f1_map()
 DT = 1 / 30
-
-
-def make_calibration(side: str) -> HandCalibration:
-    samples = {pose: [features(a, CONFIG.features)] for pose, a in POSE_ANGLES.items()}
-    return calibrate(side=side, user="t", pose_samples=samples,
-                     feature_poses=CONFIG.feature_poses, min_span=CONFIG.min_span_rad)
 
 
 def make_controller(side: str = "right", amplitude: float = 1.0, **cfg) -> HandController:
@@ -260,22 +254,22 @@ def test_left_hand_full_range():
     assert all(900 <= v <= 960 for v in out.angle[:4])
 
 
-def test_calibration_file_with_nan_or_zero_span_is_rejected(tmp_path):
-    good = make_calibration("right")
-    for bad in ({"open": 0.5, "closed": 0.5}, {"open": float("nan"), "closed": 1.0}):
-        data = good.to_dict()
-        data["ranges"]["index"] = bad
-        path = tmp_path / "bad.yaml"
-        path.write_text(yaml.safe_dump(data))
-        with pytest.raises(CalibrationError, match="not a usable range"):
-            HandCalibration.load(path)
+def test_calibration_file_with_nan_is_rejected(tmp_path):
+    data = make_calibration("right").to_dict()
+    data["model"]["bias"][0] = float("nan")
+    path = tmp_path / "bad.yaml"
+    path.write_text(yaml.safe_dump(data))
+    with pytest.raises(CalibrationError, match="non-finite"):
+        HandCalibration.load(path)
 
 
-def test_calibration_missing_a_feature_is_rejected():
+def test_calibration_for_other_joints_is_rejected():
+    import dataclasses
+
     cal = make_calibration("right")
-    partial = HandCalibration("right", "t", {k: v for k, v in cal.ranges.items() if k != "thumb_bend"})
-    with pytest.raises(ValueError, match="lacks features"):
-        HandRetargeter(CONFIG, partial, HAND_MAP, "right")
+    model = dataclasses.replace(cal.model, joints=cal.model.joints[:-1] + ("little_1",))
+    with pytest.raises(ValueError, match="recalibrate"):
+        HandRetargeter(CONFIG, dataclasses.replace(cal, model=model), HAND_MAP, "right")
 
 
 SIM2REAL = Path.home() / "rl_ws/sim2real/deploy/policy_control"

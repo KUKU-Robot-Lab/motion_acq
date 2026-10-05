@@ -188,12 +188,15 @@ def test_hand_calibration_from_before_sensecom_is_kept_but_flagged(tmp_path):
 
     cal = tmp_path / "op1_right.yaml"
     assert not calibration_current(cal, None)[0]
-    cal.write_text("x")
+    cal.write_text("schema: motion_acq/hand_calibration/v1\n")
+    ok, detail = calibration_current(cal, None)
+    assert not ok and "calibrate again" in detail  # 10.05: the old open/fist method must be redone
+    cal.write_text("schema: motion_acq/hand_calibration/v2\n")
     os.utime(cal, (1000.0, 1000.0))
     assert calibration_current(cal, None)[0]
     assert calibration_current(cal, 999.0)[0]
     ok, detail = calibration_current(cal, 1001.0)
-    assert ok and "recalibrate" in detail
+    assert ok and "re-zero" in detail
     assert calibration_stale(cal, 1001.0) and not calibration_stale(cal, 999.0)
     assert not calibration_stale(cal, None)
     import time

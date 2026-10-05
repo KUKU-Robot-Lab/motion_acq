@@ -87,11 +87,11 @@ def main(path: str) -> int:
     print(f"cycle period mean {sum(period) / max(len(period), 1) * 1000:.1f} ms  max {max(period, default=0) * 1000:.1f} ms")
     print(f"register span per slot (pinky ring middle index thumb_bend thumb_rot): {span}")
     print(f"index contact cycles {len(contact)}, glove index brake on in {len(braked)}")
-    pinch = Counter(r.get("pinch") for r in running if (r.get("pinch_weight") or 0.0) >= 0.5)
-    print(f"pinch (weight >= 0.5) cycles: {dict(pinch)}")
-    tips = any((r.get("features") or {}).get("pinch_index") is not None for r in running)
-    if tips and not pinch:
-        failures.append("glove tip data present but the pinch never engaged")
+    # 10.05 example-pose map: the glove tip distances must reach it (else no pinches)
+    no_tips = sum(1 for r in running if r.get("missing_inputs"))
+    print(f"cycles without glove tip data: {no_tips}")
+    if running and no_tips == len(running):
+        failures.append("the map never got the glove tip distances")
     print(f"max joint speed {worst:.2f} rad/s;  fake hand lag median {sorted(lag)[len(lag) // 2] if lag else '-'} reg")
     if failures:
         print("FAIL: " + "; ".join(dict.fromkeys(failures)))

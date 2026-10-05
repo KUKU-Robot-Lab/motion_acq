@@ -331,16 +331,23 @@ def hand_enable(station: Station, mode: str, side: str, on: bool) -> Launch:
                   stop_grace_s=5.0)
 
 
-def calibrate(station: Station, mode: str, side: str, user: str) -> Launch:
+def calibrate(station: Station, mode: str, side: str, user: str, *, rezero: bool = False) -> Launch:
+    """Full calibration (every example pose) or the 2 s open-hand re-zero of a saved one."""
     side = check_side(side)
     real = _real(mode)
     out = calibration_file(user, side, fake=not real)  # validates the owner name
     command = f"ros2 run motion_acq_hand calibrate --side {side} --user {user if real else 'fake'} --out {out}"
+    if rezero:
+        command += " --rezero"
     if not real:
         command += " --fake --yes"
     side_ko = "오른손" if side == "right" else "왼손"
+    if rezero:
+        return Launch(f"rezero_{side}", f"{side_ko} 편 손 맞춤", ros_argv(command), _ros_env(station, mode), pty=True,
+                      summary="손을 펴고 Enter: 저장된 보정을 오늘 장갑에 맞춘다 (2초).", stop_grace_s=3.0)
     return Launch(f"calib_{side}", f"{side_ko} 장갑 보정", ros_argv(command), _ros_env(station, mode), pty=True,
-                  summary="자세마다 Enter 로 기록한다.", stop_grace_s=3.0)
+                  summary="예시 자세마다 Enter 로 기록한다. 사용자마다 한 번, 다음부터는 저장된 보정을 쓴다.",
+                  stop_grace_s=3.0)
 
 
 # -- short tasks ---------------------------------------------------------------------------------------

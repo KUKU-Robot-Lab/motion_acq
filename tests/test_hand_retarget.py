@@ -6,30 +6,23 @@ import math
 
 import pytest
 
-from motion_acq.hand.calibration import CalibrationError, HandCalibration, calibrate
+from hand_fixtures import CONFIG, make_calibration
+
+from motion_acq.hand.calibration import CalibrationError, HandCalibration, rezero
 from motion_acq.hand.nova2 import (
     GloveDataError,
     angles_from_state,
-    features,
     glove_joint_names,
+    tip_distances,
 )
 from motion_acq.hand.retarget import (
-    DEFAULT_RETARGET,
     HandRetargeter,
     HandState,
-    load_hand_retarget_config,
 )
 from motion_acq.hand.rh56f1 import LEAVE, load_rh56f1_map
 from motion_acq.hand.synthetic import POSE_ANGLES, synthetic_angles, synthetic_state
 
-CONFIG = load_hand_retarget_config()
 HAND_MAP = load_rh56f1_map()
-
-
-def make_calibration(side: str = "right") -> HandCalibration:
-    samples = {pose: [features(a, CONFIG.features)] * 5 for pose, a in POSE_ANGLES.items()}
-    return calibrate(side=side, user="test", pose_samples=samples,
-                     feature_poses=CONFIG.feature_poses, min_span=CONFIG.min_span_rad)
 
 
 def run(rt: HandRetargeter, angles, steps: int, t0: float = 0.0, dt: float = 1 / 30):
@@ -68,29 +61,33 @@ def test_glove_state_parsing():
         angles_from_state(names, [math.nan] + positions[1:], "left")
 
 
-def test_calibration_ranges_and_roundtrip(tmp_path):
+def test_calibration_roundtrip_and_side(tmp_path):
     cal = make_calibration("left")
-    assert set(cal.ranges) == {s.name for s in CONFIG.features}
     path = tmp_path / "op_left.yaml"
     cal.save(path)
     loaded = HandCalibration.load(path, side="left")
-    assert loaded.ranges == cal.ranges
+    probe = POSE_ANGLES["pinch_middle"]
+    assert loaded.predict(probe) == pytest.approx(cal.predict(probe), abs=1e-9)
     with pytest.raises(CalibrationError, match="left hand calibration"):
         HandCalibration.load(path, side="right")
 
 
-def test_calibration_rejects_indistinct_poses():
-    samples = {pose: [features(POSE_ANGLES["open"], CONFIG.features)] for pose in POSE_ANGLES}
-    with pytest.raises(CalibrationError, match="redo those poses"):
-        calibrate(side="right", user="t", pose_samples=samples,
-                  feature_poses=CONFIG.feature_poses, min_span=CONFIG.min_span_rad)
+def test_old_open_fist_calibration_asks_for_a_new_one(tmp_path):
+    path = tmp_path / "op_right.yaml"
+    path.write_text("schema: motion_acq/hand_calibration/v1\nside: right\nranges: {index: {open: 0, closed: 1}}\n")
+    with pytest.raises(CalibrationError, match="calibrate again"):
+        HandCalibration.load(path, side="right")
 
 
-def test_calibration_requires_every_pose():
-    samples = {"open": [features(POSE_ANGLES["open"], CONFIG.features)]}
-    with pytest.raises(CalibrationError, match="not recorded"):
-        calibrate(side="right", user="t", pose_samples=samples,
-                  feature_poses=CONFIG.feature_poses, min_span=CONFIG.min_span_rad)
+def test_a_broken_calibration_file_is_rejected(tmp_path):
+    cal = make_calibration("right")
+    raw = cal.to_dict()
+    raw["model"]["std"][0] = 0.0
+    path = tmp_path / "bad.yaml"
+    import yaml
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(CalibrationError, match="zero spread"):
+        HandCalibration.load(path)
 
 
 def make_retargeter(side: str = "right") -> HandRetargeter:
@@ -103,31 +100,91 @@ def test_idle_until_started():
     assert step.state is HandState.IDLE and step.registers is None
 
 
-def test_open_fist_and_opposition_map_to_rh56f1_ends():
+@pytest.mark.parametrize("pose", sorted(CONFIG.examples))
+def test_every_example_pose_reaches_its_robot_pose(pose):
     rt = make_retargeter()
     rt.start(None, 0.0)
-    t, step = run(rt, POSE_ANGLES["open"], 60)
-    # open hand: fingers and thumb bend at home, the spread thumb out to 0.8 (10.05: full rotation range)
-    assert step.q_command == pytest.approx({**CONFIG.home_rad, "thumb_1": 0.8}, abs=1e-3)
-    t, step = run(rt, POSE_ANGLES["fist"], 90, t)
-    assert step.q_command["index_1"] == pytest.approx(1.5285594, abs=1e-3)
-    assert step.q_command["thumb_2"] == pytest.approx(0.474555, abs=1e-3)
-    assert step.q_command["thumb_1"] == pytest.approx(0.8, abs=1e-3)
-    assert rt.pinch_weight == 0.0  # the thumb near the fingers in a fist is not a pinch
+    _, step = run(rt, POSE_ANGLES[pose], 120)
+    assert step.q_command == pytest.approx(dict(CONFIG.examples[pose].target), abs=0.03)
+
+
+def test_fist_reaches_the_vendor_curl_registers():
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    _, step = run(rt, POSE_ANGLES["fist"], 120)
     # Right-hand calibration (sim2real 09.30 sweep) puts full curl at 926/920/900/905.
     assert step.registers == HAND_MAP.to_registers(step.q_command, side="right")
     assert step.registers[:4] == [926, 920, 900, 905]
-    _, step = run(rt, POSE_ANGLES["thumb_opposed"], 90, t)
-    assert step.q_command["thumb_1"] == pytest.approx(2.0, abs=1e-3)
-    assert step.q_command["index_1"] == pytest.approx(0.0, abs=1e-3)
 
 
-def test_beyond_calibrated_poses_is_clamped():
+def test_beyond_the_examples_is_clamped_to_the_joint_limits():
     rt = make_retargeter()
     rt.start(None, 0.0)
-    _, step = run(rt, synthetic_angles(1.5, 1.5, 1.5), 120)
-    assert all(0.0 <= n <= 1.0 for n in step.normalized.values())
-    assert step.q_command["index_1"] == pytest.approx(1.5285594, abs=1e-3)
+    _, step = run(rt, synthetic_angles(1.6, 1.6, 1.6), 120)
+    for j, (lo, hi) in CONFIG.limits_rad.items():
+        assert lo - 1e-9 <= step.q_command[j] <= hi + 1e-9
+
+
+@pytest.mark.parametrize("finger,joint", [("index", "index_1"), ("middle", "middle_1"), ("ring", "ring_1")])
+def test_one_finger_moves_only_its_robot_finger(finger, joint):
+    """10.05 user: moving one finger moved the robot thumb too (coupled glove signals: ring curl
+    reads as thumb rotation, a curling finger nears the thumb)."""
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    t, flat = run(rt, POSE_ANGLES["flat"], 60)
+    for amount in (0.3, 0.6, 1.0):
+        t, step = run(rt, synthetic_angles({finger: amount}, 0.0, 0.0), 60, t)
+        assert step.q_command[joint] > 0.4 * amount
+        for other in ("thumb_1", "thumb_2"):
+            assert step.q_command[other] == pytest.approx(flat.q_command[other], abs=0.08), (amount, other)
+        for other in {"index_1", "middle_1", "ring_1"} - {joint}:
+            assert step.q_command[other] < 0.1, (amount, other)
+
+
+def test_in_between_poses_interpolate_smoothly():
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    t, _ = run(rt, POSE_ANGLES["flat"], 30)
+    values = []
+    for amount in (0.0, 0.25, 0.5, 0.75, 1.0):
+        t, step = run(rt, synthetic_angles({"index": amount}, 0.0, 0.0), 60, t)
+        values.append(step.q_command["index_1"])
+    assert values == sorted(values) and values[-1] - values[0] > 1.3
+
+
+def test_a_pinch_approach_ends_at_the_tips_touching():
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    t, _ = run(rt, POSE_ANGLES["flat"], 30)
+    target = CONFIG.examples["pinch_index"].target
+    gaps = []
+    for amount in (0.0, 0.5, 1.0):
+        t, step = run(rt, synthetic_angles({"index": 0.45}, 0.5, 0.35, ("index", amount)), 90, t)
+        gaps.append(max(abs(step.q_command[j] - target[j]) for j in ("thumb_1", "thumb_2", "index_1")))
+    assert gaps == sorted(gaps, reverse=True) and gaps[-1] < 0.03
+
+
+def test_without_tip_data_the_joints_still_follow():
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    no_tips = {k: v for k, v in POSE_ANGLES["fist"].items() if not k.startswith("tipdist")}
+    _, step = run(rt, no_tips, 120)
+    assert step.q_command["index_1"] > 1.2
+    assert set(rt.missing_inputs) == {"tipdist_index", "tipdist_middle", "tipdist_ring"}
+
+
+def test_rezero_follows_a_shifted_glove_without_redoing_the_examples():
+    """After a SenseCom restart the readings shift (bumsu 09-22: fingers stayed bent): the
+    2 s open hand shifts the inputs back; the examples are not redone."""
+    cal = make_calibration()
+    shift = {k: (0.3 if k.endswith(("_mcp", "_pip", "_dip")) else 0.0) for k in POSE_ANGLES["open"]}
+    shifted = {p: {k: v + shift[k] for k, v in a.items()} for p, a in POSE_ANGLES.items()}
+    assert cal.predict(shifted["open"])["index_1"] > 0.15  # off before
+    fixed = rezero(cal, [shifted["open"]] * 20)
+    for pose in ("open", "fist", "index", "pinch_middle"):
+        q = fixed.predict(shifted[pose])
+        assert q == pytest.approx(dict(CONFIG.examples[pose].target), abs=0.05), pose
+    assert fixed.rezeroed is not None
 
 
 def test_rate_limit_per_joint():
@@ -217,98 +274,12 @@ def test_glove_inventory_validation(tmp_path):
         load_gloves(path)
 
 
-def test_features_follow_the_glove_joints_that_move():
-    """mcp + pip per finger (10.05: a base-only bend was lost), pinky = ring (no sensor), thumb_brake rotates."""
-    assert {s.name: dict(s.weights) for s in CONFIG.features} == {
-        "index": {"index_mcp": 1.0, "index_pip": 1.0}, "middle": {"middle_mcp": 1.0, "middle_pip": 1.0},
-        "ring": {"ring_mcp": 1.0, "ring_pip": 1.0}, "pinky": {"ring_mcp": 1.0, "ring_pip": 1.0},
-        "thumb_bend": {"thumb_pip": 1.0},
-        "pinch_index": {"tipdist_index": 1.0}, "pinch_middle": {"tipdist_middle": 1.0},
-        "pinch_ring": {"tipdist_ring": 1.0},
-        "thumb_opposition": {"thumb_brake": 1.0},
-    }
-    cal = make_calibration()
-    assert cal.ranges["thumb_opposition"].closed > cal.ranges["thumb_opposition"].open
-
-
-def test_a_base_only_bend_moves_the_robot_finger():
-    """10.05 user: bending a finger only at its base (mcp) barely moved the robot finger."""
-    rt = make_retargeter()
-    rt.start(None, 0.0)
-    t, _ = run(rt, POSE_ANGLES["open"], 30)
-    base = dict(POSE_ANGLES["open"], index_mcp=POSE_ANGLES["fist"]["index_mcp"])
-    _, step = run(rt, base, 60, t)
-    assert step.q_command["index_1"] > 0.5
-    assert step.q_command["middle_1"] == pytest.approx(0.0, abs=1e-3)
-
-
-def test_a_working_grip_short_of_the_calibration_fist_closes_fully():
-    """10.05 user: the power grip reached only 85-89 % of the calibration fist."""
-    rt = make_retargeter()
-    rt.start(None, 0.0)
-    t, _ = run(rt, POSE_ANGLES["open"], 30)
-    short = synthetic_angles(0.87, 0.87, 0.0)
-    _, step = run(rt, short, 90, t)
-    assert step.q_command["index_1"] == pytest.approx(1.5285594, abs=1e-3)
-    assert step.q_command["thumb_2"] == pytest.approx(0.474555, abs=1e-3)
-
-
-@pytest.mark.parametrize("side", ["right", "left"])
-def test_closing_the_thumb_sends_it_across_the_palm(side):
-    """10.05, right hand: register 852 -> 620 swings the thumb across the palm, 852 -> 1138 away."""
-    rt = HandRetargeter(CONFIG, make_calibration(side), HAND_MAP, side)
-    rt.start(None, 0.0)
-    t, home = run(rt, POSE_ANGLES["open"], 30)
-    _, opposed = run(rt, POSE_ANGLES["thumb_opposed"], 90, t)
-    assert opposed.registers[5] < home.registers[5] - 400
-    assert opposed.registers[5] >= 600
-
-
-def test_end_margins_are_checked(tmp_path):
-    import yaml
-
-    raw = yaml.safe_load(DEFAULT_RETARGET.read_text(encoding="utf-8"))
-    raw["end_margins"] = {"open": 0.5, "closed": 0.5}
-    bad = tmp_path / "bad.yaml"
-    bad.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
-    with pytest.raises(ValueError, match="end_margins"):
-        load_hand_retarget_config(bad)
-
-
-@pytest.mark.parametrize("pose,finger", [("pinch_index", "index_1"), ("pinch_middle", "middle_1"),
-                                         ("pinch_ring", "ring_1")])
-def test_a_pinch_puts_the_robot_tips_together(pose, finger):
-    """10.05 user: the thumb must be able to meet the other fingers. The calibrated touch
-    sends the joints to the FK pose where the RH56F1 tips meet."""
-    rt = make_retargeter()
-    rt.start(None, 0.0)
-    t, _ = run(rt, POSE_ANGLES["open"], 30)
-    _, step = run(rt, POSE_ANGLES[pose], 120, t)
-    target = CONFIG.pinch_targets[pose]
-    assert rt.pinch == pose and rt.pinch_weight == pytest.approx(1.0)
-    for joint in ("thumb_1", "thumb_2", finger):
-        assert step.q_command[joint] == pytest.approx(target[joint], abs=1e-3)
-
-
-def test_pinch_blends_in_smoothly_as_the_thumb_nears():
-    rt = make_retargeter()
-    rt.start(None, 0.0)
-    t, _ = run(rt, POSE_ANGLES["open"], 30)
-    weights = []
-    for amount in (0.0, 0.3, 0.55, 0.7, 0.85, 1.0):
-        t, _ = run(rt, synthetic_angles(0.45, 0.4, 0.3, ("index", amount)), 20, t)
-        weights.append(rt.pinch_weight if rt.pinch == "pinch_index" else 0.0)
-    assert weights[0] == 0.0 and weights[-1] == pytest.approx(1.0)
-    assert weights == sorted(weights) and 0.0 < weights[3] < 1.0
-
-
-def test_without_tip_data_the_joints_still_follow():
-    rt = make_retargeter()
-    rt.start(None, 0.0)
-    no_tips = {k: v for k, v in POSE_ANGLES["fist"].items() if not k.startswith("tipdist")}
-    _, step = run(rt, no_tips, 90)
-    assert step.q_command["index_1"] == pytest.approx(1.5285594, abs=1e-3)
-    assert rt.pinch is None
+def test_tip_distances_from_the_glove():
+    tips = [(0, 0, 0), (30, 40, 0), (0, 0, 50), (60, 80, 0), (1, 0, 0)]
+    d = tip_distances(tips)
+    assert d["tipdist_index"] == pytest.approx(50.0) and d["tipdist_ring"] == pytest.approx(100.0)
+    assert tip_distances([(0, 0, 0)] * 5) == {}  # not filled
+    assert tip_distances(tips[:3]) == {}
 
 
 def test_pinch_targets_are_where_the_rh56f1_tips_meet():
@@ -323,20 +294,6 @@ def test_pinch_targets_are_where_the_rh56f1_tips_meet():
             pytest.skip("vendor URDF not on this host")
         fk = TipFk(urdf)
         assert fk.tip_distance(CONFIG.home_rad, "index") > 0.08  # open hand: tips far apart
-        for pose, target in CONFIG.pinch_targets.items():
-            assert fk.tip_distance(target, pose.removeprefix("pinch_")) < 0.012, (side, pose)
-
-
-def test_curling_one_finger_toward_a_still_thumb_does_not_move_the_robot_thumb():
-    """10.05 user: moving one finger moved the robot thumb. Its tip came near the still thumb
-    (pinch distance), which pulled the thumb into the pinch pose."""
-    rt = make_retargeter()
-    rt.start(None, 0.0)
-    t, before = run(rt, POSE_ANGLES["open"], 30)
-    curled = dict(POSE_ANGLES["open"], index_mcp=0.7, index_pip=0.9, index_dip=0.45,
-                  tipdist_index=POSE_ANGLES["pinch_index"]["tipdist_index"])
-    _, step = run(rt, curled, 90, t)
-    assert rt.pinch_weight == 0.0
-    assert step.q_command["thumb_1"] == pytest.approx(before.q_command["thumb_1"], abs=1e-3)
-    assert step.q_command["thumb_2"] == pytest.approx(before.q_command["thumb_2"], abs=1e-3)
-    assert step.q_command["index_1"] > 0.5
+        for pose, example in CONFIG.examples.items():
+            if pose.startswith("pinch_"):
+                assert fk.tip_distance(example.target, pose.removeprefix("pinch_")) < 0.012, (side, pose)

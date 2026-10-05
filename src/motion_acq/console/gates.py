@@ -64,10 +64,13 @@ def blockers(console, key: str) -> list[str]:
             out += hand_blockers(console, key[5:], console.probe("ros"), starting=True)
         if key.startswith("ecat_"):
             out += driver_blockers(console, key[5:])
-        if key.startswith("calib_"):
+        if key.startswith(("calib_", "rezero_")):
+            side = key.split("_", 1)[1]
             ros = fresh_ros(console, console.probe("ros"))
-            if ros is None or not (ros.get("glove_topics") or {}).get(key[6:]):
+            if ros is None or not (ros.get("glove_topics") or {}).get(side):
                 out.append("장갑 토픽 없음: 장갑 연결과 드라이버 먼저")
+            if key.startswith("rezero_") and not (console.calibration().get(side) or {}).get("ok"):
+                out.append("저장된 보정이 없다: 먼저 [보정]")
     elif key.startswith("hand_") and not units.calibration_file("", key[5:], fake=True).exists():
         out.append(f"fake 보정 파일 없음: 먼저 [{key[5:]} 보정] 또는 scripts/fake_hand_check.sh {key[5:]}")
     return out

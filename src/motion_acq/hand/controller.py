@@ -120,9 +120,7 @@ class HandController:
         self.last_refusal: str | None = None
         self.home_rad = dict(retargeter.config.home_rad)
         self._home_registers = hand_map.to_registers(self.home_rad, side=side)
-        self.feedback = HapticFeedback(retargeter.config.feedback,
-                                       {jm.joint: jm.closed_rad for jm in retargeter.config.joints
-                                        if jm.closed_rad > jm.open_rad})
+        self.feedback = HapticFeedback(retargeter.config.feedback, retargeter.config.closed_rad)
 
     # -- inputs -----------------------------------------------------------
     def on_glove(self, angles: Mapping[str, float], t: float) -> None:
@@ -278,8 +276,7 @@ class HandController:
             "features": step.features if step else None,
             "normalized": step.normalized if step else None,
             "q_target_rad": step.q_target if step else None,
-            "pinch": self.retargeter.pinch if following else None,
-            "pinch_weight": round(self.retargeter.pinch_weight, 3) if following else 0.0,
+            "missing_inputs": self.retargeter.missing_inputs or None,
             "q_command_rad": step.q_command if step else None,
             "registers": out.angle,
             "measured_registers": None if self.measured is None else self.measured[0],

@@ -51,25 +51,11 @@ from std_msgs.msg import Bool, Float64MultiArray, String
 
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.controller import ControllerConfig, HandController
-from motion_acq.hand.feedback import OFF
+from motion_acq.hand.feedback import HAPTICS_BEAT_S, HAPTICS_MIN_PERIOD_S, OFF, haptics_topic_for, heartbeat
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state, tip_distances
 from motion_acq.hand.retarget import DEFAULT_RETARGET, HandRetargeter, load_hand_retarget_config
 from motion_acq.hand.rh56f1 import DEFAULT_MAP, load_rh56f1_map
 from motion_acq.sidecar import parse_udp_targets
-
-
-HAPTICS_MIN_PERIOD_S = 1.0 / 60.0  # the glove driver's update rate
-HAPTICS_BEAT_S = 0.25  # re-send period of an unchanged command; the glove driver releases after 1 s
-
-
-def heartbeat(efforts: list[float], beat: bool) -> list[float]:
-    """Efforts with the on levels 0.01 % lower on every other send (visible as a change)."""
-    return [float(e) - 0.01 if beat and e > 0.0 else float(e) for e in efforts]
-
-
-def haptics_topic_for(glove_topic: str) -> str:
-    """<glove ns>/senseglove_states -> <glove ns>/haptics_controller/commands."""
-    return f"{glove_topic.rsplit('/', 1)[0]}/haptics_controller/commands"
 
 
 class HandNode(Node):
