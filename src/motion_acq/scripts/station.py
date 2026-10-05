@@ -201,8 +201,8 @@ def calibration_current(path: Path, sensecom_start: float | None) -> tuple[bool,
         head = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as exc:
         return False, f"{path} unreadable ({exc}): calibrate again"
-    if not isinstance(head, dict) or head.get("schema") != "motion_acq/hand_calibration/v2":
-        return False, f"{path} is the old open/fist calibration: calibrate again (example poses)"
+    if not isinstance(head, dict) or head.get("schema") != "motion_acq/hand_calibration/v3":
+        return False, f"{path} is an older calibration format: calibrate again (example poses)"
     if calibration_stale(path, sensecom_start):
         return True, f"{path} (taken before this SenseCom start: re-zero with the open hand if the hand is off)"
     return True, str(path)

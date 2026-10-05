@@ -121,10 +121,13 @@ def angles_from_state(
 
 
 # Thumb-to-finger tip distances from SenseGloveState.finger_tip_position (thumb first;
-# senseglove_ros fills it with the SGCore hand model's distal joint positions, mm). They
-# join the angle dict under these keys so a feature can use them (pinch_* features).
+# senseglove_ros fills it with the SGCore hand model's distal joint positions, mm, in the
+# hand frame). They join the angle dict under these keys. The thumb tip position is the
+# thumb rotation the robot's thumb_1 needs: the glove's own thumb_brake saturates (10.05
+# left calibration: 0.95-1.01 in the thumb bent, opposed and every pinch pose).
 TIP_FINGERS = ("thumb", "index", "middle", "ring", "pinky")
 TIP_DIST_KEYS = tuple(f"tipdist_{f}" for f in TIP_FINGERS[1:])
+THUMB_TIP_KEYS = ("thumb_tip_x", "thumb_tip_y", "thumb_tip_z")
 
 
 def tip_distances(tips: Sequence[Sequence[float]]) -> dict[str, float]:
@@ -138,6 +141,14 @@ def tip_distances(tips: Sequence[Sequence[float]]) -> dict[str, float]:
         return {}
     thumb = points[0]
     return {key: math.dist(thumb, p) for key, p in zip(TIP_DIST_KEYS, points[1:])}
+
+
+def tip_signals(tips: Sequence[Sequence[float]]) -> dict[str, float]:
+    """Tip distances plus the thumb tip position; {} when the glove sends no usable tips."""
+    out = tip_distances(tips)
+    if out:
+        out.update({k: float(v) for k, v in zip(THUMB_TIP_KEYS, tips[0])})
+    return out
 
 
 def features(angles: Mapping[str, float], specs: Sequence[FeatureSpec]) -> dict[str, float]:

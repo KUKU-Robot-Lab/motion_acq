@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from motion_acq.hand.nova2 import FINGERS, PARTS, SIDE_PREFIX, TIP_DIST_KEYS
+from motion_acq.hand.nova2 import FINGERS, PARTS, SIDE_PREFIX, THUMB_TIP_KEYS, TIP_DIST_KEYS
 
 OPEN = {"brake": 0.0, "mcp": 0.05, "pip": 0.07, "dip": 0.07}
 FIST = {"brake": 0.0, "mcp": 1.40, "pip": 1.74, "dip": 1.74}
@@ -59,16 +59,21 @@ def synthetic_angles(curl: float | Mapping[str, float], thumb_bend: float, thumb
         finger, amount = pinch
         key = f"tipdist_{finger}"
         angles[key] = _lerp(angles[key], TIP_TOUCH, amount)
+    # thumb tip (mm, hand frame): swings across the palm with opposition, out with spread
+    tip = (20.0 + 40.0 * thumb_opposition - 30.0 * spread, 60.0 - 50.0 * thumb_opposition + 20.0 * spread,
+           30.0 * thumb_bend)
+    angles.update(zip(THUMB_TIP_KEYS, tip))
     return angles
 
 
 def synthetic_tips(angles: Mapping[str, float]) -> list[tuple[float, float, float]]:
     """finger_tip_position (thumb first) whose thumb-to-finger distances are the tipdist_* values."""
     axes = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (-1.0, 0.0, 0.0))
-    tips = [(0.0, 0.0, 0.0)]
+    thumb = tuple(angles.get(k, 0.0) for k in THUMB_TIP_KEYS)
+    tips = [thumb]
     for key, axis in zip(TIP_DIST_KEYS, axes):
         d = angles.get(key, 0.0)
-        tips.append((axis[0] * d, axis[1] * d, axis[2] * d))
+        tips.append((thumb[0] + axis[0] * d, thumb[1] + axis[1] * d, thumb[2] + axis[2] * d))
     return tips
 
 

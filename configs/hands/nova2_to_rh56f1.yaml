@@ -10,16 +10,35 @@
 # finger brought its tip to a still thumb, corr 0.81-0.93), and "index curled,
 # thumb still" teaches the map to keep them apart. After a SenseCom restart or a
 # glove power cycle, a 2 s open-hand re-zero shifts the inputs (calibrate --rezero).
+# The four finger groups map each robot finger from its own glove finger, so moving one
+# finger cannot move another robot finger.
 #
 # The joint values, then One Euro filtered and rate limited, go to registers with
 # rh56f1_hand_map.yaml (per-side calibration).
 
-# Glove inputs of the map. dip is not used (senseglove_ros reports it equal to pip),
-# nor pinky_* (no little-finger sensor: equal to ring_*) or the finger brakes (always 0).
-# tipdist_*: thumb-to-finger tip distance from SenseGloveState.finger_tip_position
-# (SGCore hand model, mm); a glove without tip data uses the open pose's values.
-inputs: [thumb_brake, thumb_mcp, thumb_pip, index_mcp, index_pip, middle_mcp, middle_pip, ring_mcp, ring_pip,
-         tipdist_index, tipdist_middle, tipdist_ring]
+# One map per joint group, each from the glove inputs that group needs (10.05 left
+# test: with all inputs in one map the thumb rotation sat at 1.2-1.7 rad, since a pose
+# away from every example falls back to the affine average). dip is not used
+# (senseglove_ros reports it equal to pip), nor pinky_* (no little-finger sensor: equal
+# to ring_*) or the finger brakes (always 0). tipdist_*: thumb-to-finger tip distance and
+# thumb_tip_*: thumb tip position, both from SenseGloveState.finger_tip_position (SGCore
+# hand model, mm, hand frame). The thumb tip position is what drives thumb_1: the glove's
+# thumb_brake saturates (0.95-1.01 in the thumb bent, opposed and every pinch pose). A
+# glove without tip data uses the open pose's values for them.
+groups:
+  thumb:
+    joints: [thumb_1, thumb_2]
+    inputs: [thumb_brake, thumb_mcp, thumb_pip, thumb_tip_x, thumb_tip_y, thumb_tip_z,
+             tipdist_index, tipdist_middle, tipdist_ring, tipdist_pinky]
+  index:
+    joints: [index_1]
+    inputs: [index_mcp, index_pip, tipdist_index]
+  middle:
+    joints: [middle_1]
+    inputs: [middle_mcp, middle_pip, tipdist_middle]
+  ring:
+    joints: [ring_1, pinky_1]
+    inputs: [ring_mcp, ring_pip, tipdist_ring]
 
 # RH56F1 joint range the map may command (rad). thumb_1: larger = register down =
 # across the palm (verified 10.05 on the right hand: 852 -> 620 toward the palm,

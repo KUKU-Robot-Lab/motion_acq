@@ -23,7 +23,7 @@ import numpy as np
 
 RIDGE_LINEAR = 1e-2
 RIDGE_RBF = 1e-3
-MIN_STD = {"angle": 0.02, "tipdist": 2.0}  # floors for the input spread (rad, glove tip unit)
+MIN_STD = {"angle": 0.02, "tipdist": 2.0, "position": 2.0}  # floors for the input spread (rad, mm, mm)
 
 
 class ExampleMapError(ValueError):
@@ -31,7 +31,10 @@ class ExampleMapError(ValueError):
 
 
 def input_kind(name: str) -> str:
-    return "tipdist" if name.startswith("tipdist_") else "angle"
+    """angle (rad), tipdist (thumb-to-finger distance, mm) or position (thumb tip coordinate, mm)."""
+    if name.startswith("tipdist_"):
+        return "tipdist"
+    return "position" if name.startswith("thumb_tip_") else "angle"
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,7 @@ class Conflict:
     poses: tuple[str, str]
     distance: float  # standardized input distance
     target_gap: float  # largest joint difference (rad)
+    group: str = ""
 
 
 def fit(inputs: Sequence[str], joints: Sequence[str],
@@ -168,6 +172,24 @@ def fit(inputs: Sequence[str], joints: Sequence[str],
 class ConflictError(ExampleMapError):
     def __init__(self, conflicts: Sequence[Conflict]) -> None:
         self.conflicts = list(conflicts)
-        super().__init__("; ".join(f"{c.poses[0]} / {c.poses[1]} look alike on the glove (distance "
+        super().__init__("; ".join(f"{c.group + ': ' if c.group else ''}{c.poses[0]} / {c.poses[1]} look alike "
+                                   f"on the glove (distance "
                                    f"{c.distance:.2f}) but differ on the robot by {c.target_gap:.2f} rad"
                                    for c in self.conflicts))
+
+
+def fit_groups(groups: Mapping[str, tuple[Sequence[str], Sequence[str]]],
+               samples: Mapping[str, Sequence[Mapping[str, float]]], targets: Mapping[str, Mapping[str, float]],
+               fallback_pose: str) -> dict[str, ExampleMap]:
+    """One map per joint group, each from its own inputs (10.05: with every input in one map,
+    poses away from the examples fell back to the affine average and the thumb rotation sat
+    at 1.2-1.7 rad). Conflicts of all groups are raised together."""
+    models, conflicts = {}, []
+    for name, (inputs, joints) in groups.items():
+        try:
+            models[name] = fit(inputs, joints, samples, targets, fallback_pose)
+        except ConflictError as exc:
+            conflicts += [Conflict(c.poses, c.distance, c.target_gap, name) for c in exc.conflicts]
+    if conflicts:
+        raise ConflictError(conflicts)
+    return models

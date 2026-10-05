@@ -18,10 +18,10 @@ from typing import Callable, Mapping, Sequence
 
 import yaml
 
-from motion_acq.hand.example_map import ConflictError, ExampleMap, ExampleMapError, fit, input_kind
+from motion_acq.hand.example_map import ConflictError, ExampleMap, ExampleMapError, fit_groups, input_kind
 
-SCHEMA = "motion_acq/hand_calibration/v2"
-OLD_SCHEMA = "motion_acq/hand_calibration/v1"
+SCHEMA = "motion_acq/hand_calibration/v3"  # v3: one map per joint group, thumb tip position input
+OLD_SCHEMAS = ("motion_acq/hand_calibration/v1", "motion_acq/hand_calibration/v2")
 OPEN_POSE = "open"
 
 
@@ -33,21 +33,35 @@ class CalibrationError(ValueError):
 class HandCalibration:
     side: str
     user: str
-    model: ExampleMap
+    models: Mapping[str, ExampleMap]  # joint group -> its map
     medians: Mapping[str, Mapping[str, float]]  # example pose -> input -> median (raw, at calibration)
     created: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S"))
     rezeroed: str | None = None
     glove: str = "nova2"
 
     def predict(self, signals: Mapping[str, float]) -> dict[str, float]:
-        return self.model.predict(signals)
+        out: dict[str, float] = {}
+        for model in self.models.values():
+            out.update(model.predict(signals))
+        return out
+
+    @property
+    def joints(self) -> tuple[str, ...]:
+        return tuple(j for m in self.models.values() for j in m.joints)
+
+    @property
+    def inputs(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(n for m in self.models.values() for n in m.inputs))
+
+    def missing_inputs(self, signals: Mapping[str, float]) -> list[str]:
+        return [n for n in self.inputs if n not in signals]
 
     def to_dict(self) -> dict:
         return {
             "schema": SCHEMA, "glove": self.glove, "side": self.side, "user": self.user,
             "created": self.created, "rezeroed": self.rezeroed,
             "medians": {p: {k: float(v) for k, v in m.items()} for p, m in self.medians.items()},
-            "model": self.model.to_dict(),
+            "models": {g: m.to_dict() for g, m in self.models.items()},
         }
 
     def save(self, path: Path) -> None:
@@ -59,39 +73,41 @@ class HandCalibration:
     @classmethod
     def load(cls, path: Path, *, side: str | None = None) -> HandCalibration:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-        if raw.get("schema") == OLD_SCHEMA:
-            raise CalibrationError(f"{path} is the old open/fist calibration: calibrate again (example poses)")
+        if raw.get("schema") in OLD_SCHEMAS:
+            raise CalibrationError(f"{path} is an older calibration format: calibrate again (example poses)")
         if raw.get("schema") != SCHEMA:
             raise CalibrationError(f"{path}: schema {raw.get('schema')!r}, expected {SCHEMA}")
         if side is not None and raw.get("side") != side:
             raise CalibrationError(f"{path} is a {raw.get('side')} hand calibration, not {side}")
         try:
-            model = ExampleMap.from_dict(raw.get("model") or {})
+            models = {str(g): ExampleMap.from_dict(m) for g, m in (raw.get("models") or {}).items()}
         except ExampleMapError as exc:
             raise CalibrationError(f"{path}: {exc}") from exc
+        if not models:
+            raise CalibrationError(f"{path}: no maps")
         medians = {str(p): {str(k): float(v) for k, v in m.items()} for p, m in (raw.get("medians") or {}).items()}
         if OPEN_POSE not in medians:
             raise CalibrationError(f"{path}: no {OPEN_POSE} pose medians")
-        return cls(str(raw["side"]), str(raw.get("user", "")), model, medians, str(raw.get("created", "")),
+        return cls(str(raw["side"]), str(raw.get("user", "")), models, medians, str(raw.get("created", "")),
                    raw.get("rezeroed"))
 
 
 def rezero(calibration: HandCalibration, open_samples: Sequence[Mapping[str, float]]) -> HandCalibration:
     """Shift the inputs so today's open hand reads like the calibration's (2 s, no examples)."""
-    model = calibration.model
-    now = {n: statistics.median(s[n] for s in open_samples) for n in model.inputs
+    now = {n: statistics.median(s[n] for s in open_samples) for n in calibration.inputs
            if open_samples and all(n in s for s in open_samples)}
     if not now:
         raise CalibrationError("no glove values in the open-hand recording")
     ref = calibration.medians[OPEN_POSE]
-    offset = [now[n] - ref[n] if n in now and n in ref else 0.0 for n in model.inputs]
-    return HandCalibration(calibration.side, calibration.user, model.with_offset(offset), calibration.medians,
+    models = {g: m.with_offset([now[n] - ref[n] if n in now and n in ref else 0.0 for n in m.inputs])
+              for g, m in calibration.models.items()}
+    return HandCalibration(calibration.side, calibration.user, models, calibration.medians,
                            calibration.created, time.strftime("%Y-%m-%dT%H:%M:%S"), calibration.glove)
 
 
 # -- operator session (the ROS calibrate node supplies ask / record / say) -----------------------------
 
-MAX_STD = {"angle": 0.08, "tipdist": 0.10}  # rad / fraction of the distance: "held still"
+MAX_STD = {"angle": 0.08, "tipdist": 0.10, "position": 6.0}  # rad / fraction of the distance / mm: "held still"
 SIDE_KO = {"right": "오른손", "left": "왼손"}
 
 
@@ -103,18 +119,33 @@ def unsteady_inputs(samples: Sequence[Mapping[str, float]], inputs: Sequence[str
         if len(values) < 2:
             continue
         spread = statistics.pstdev(values)
-        limit = MAX_STD["angle"] if input_kind(n) == "angle" else MAX_STD["tipdist"] * abs(statistics.fmean(values))
+        kind = input_kind(n)
+        limit = MAX_STD["tipdist"] * abs(statistics.fmean(values)) if kind == "tipdist" else MAX_STD[kind]
         if spread > limit:
             out[n] = spread
     return out
+
+
+def poses_to_redo(pairs: Sequence[tuple[str, str]]) -> list[str]:
+    """Fewest poses covering every conflicting pair: one badly done pose usually collides with
+    many others (an "index only" done flat collides with every flat-index pose); redo just it."""
+    left, redo = [tuple(p) for p in pairs], []
+    while left:
+        counts: dict[str, int] = {}
+        for pair in left:
+            for pose in pair:
+                counts[pose] = counts.get(pose, 0) + 1
+        pick = max(counts, key=lambda pose: counts[pose])
+        redo.append(pick)
+        left = [pair for pair in left if pick not in pair]
+    return redo
 
 
 def run_session(
     *,
     side: str,
     user: str,
-    inputs: Sequence[str],
-    joints: Sequence[str],
+    groups: Mapping[str, tuple[Sequence[str], Sequence[str]]],  # joint group -> (inputs, joints)
     examples: Mapping[str, tuple[str, Mapping[str, float]]],  # pose -> (prompt, robot target)
     ask: Callable[[str], None],
     record: Callable[[str], Sequence[Mapping[str, float]]],
@@ -127,6 +158,7 @@ def run_session(
     returns the glove signals of that pose (CalibrationError: no usable recording). A pose
     that moved, or two poses the glove cannot tell apart, are asked again."""
     order = list(examples)
+    inputs = list(dict.fromkeys(n for ins, _ in groups.values() for n in ins))
     if OPEN_POSE not in order:
         raise CalibrationError(f"the examples need an {OPEN_POSE!r} pose")
     side_ko = SIDE_KO.get(side, side)
@@ -154,15 +186,14 @@ def run_session(
     conflicts_seen: dict[tuple[str, str], int] = {}
     while True:
         try:
-            model = fit(inputs, joints, samples, targets, OPEN_POSE)
+            models = fit_groups(groups, samples, targets, OPEN_POSE)
         except ConflictError as exc:
-            redo: list[str] = []
             for c in exc.conflicts:
                 conflicts_seen[c.poses] = conflicts_seen.get(c.poses, 0) + 1
                 if conflicts_seen[c.poses] >= max_tries:
                     raise CalibrationError(f"{c.poses[0]} / {c.poses[1]}: {max_tries}번 해도 장갑에서 구별되지 "
                                            "않습니다") from exc
-                redo += [p for p in c.poses if p not in redo]
+            redo = poses_to_redo([c.poses for c in exc.conflicts])
             say(f"  장갑에서 비슷하게 읽히는 자세가 있습니다 ({exc}): "
                 f"{', '.join(f'{order.index(p) + 1}번' for p in redo)} 자세를 다시 합니다")
             for pose in redo:
@@ -171,7 +202,7 @@ def run_session(
         except ExampleMapError as exc:
             raise CalibrationError(str(exc)) from exc
         medians = {p: {n: statistics.median(s[n] for s in samples[p]) for n in inputs} for p in order}
-        return HandCalibration(side, user, model, medians)
+        return HandCalibration(side, user, models, medians)
 
 
 def fit_error(calibration: HandCalibration, examples: Mapping[str, tuple[str, Mapping[str, float]]]) -> float:

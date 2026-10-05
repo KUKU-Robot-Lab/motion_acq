@@ -31,7 +31,7 @@ class Example:
 
 @dataclass(frozen=True)
 class HandRetargetConfig:
-    inputs: tuple[str, ...]
+    groups: Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]]  # joint group -> (inputs, joints)
     examples: Mapping[str, Example]
     limits_rad: Mapping[str, tuple[float, float]]  # every RH56F1 joint: (min, max) the map may command
     home_rad: Mapping[str, float]
@@ -52,6 +52,10 @@ class HandRetargetConfig:
         return tuple(self.limits_rad)
 
     @property
+    def inputs(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(n for ins, _ in self.groups.values() for n in ins))
+
+    @property
     def closed_rad(self) -> dict[str, float]:
         """Flexion joints (home at their lower end): where they cannot curl further."""
         return {j: hi for j, (lo, hi) in self.limits_rad.items() if abs(self.home_rad[j] - lo) < 1e-9}
@@ -59,7 +63,8 @@ class HandRetargetConfig:
 
 def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConfig:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    inputs = tuple(str(n) for n in raw["inputs"])
+    groups = {str(g): (tuple(str(n) for n in v["inputs"]), tuple(str(j) for j in v["joints"]))
+              for g, v in raw["groups"].items()}
     limits = {str(j): (float(v[0]), float(v[1])) for j, v in raw["limits_rad"].items()}
     for j, (lo, hi) in limits.items():
         if not lo < hi:
@@ -67,6 +72,9 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
     home = {str(k): float(v) for k, v in raw["home_rad"].items()}
     if set(home) != set(limits):
         raise ValueError("home_rad and limits_rad must list the same joints")
+    grouped = [j for _, joints in groups.values() for j in joints]
+    if sorted(grouped) != sorted(limits):
+        raise ValueError(f"groups must cover every joint exactly once: {grouped} vs {sorted(limits)}")
     examples = {}
     for pose, entry in raw["examples"].items():
         target = {str(j): float(v) for j, v in entry["target"].items()}
@@ -80,7 +88,7 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         raise ValueError("examples need an 'open' pose (the quick re-zero pose)")
     flt, lim, drv = raw.get("filter") or {}, raw.get("limits") or {}, raw.get("driver") or {}
     return HandRetargetConfig(
-        inputs=inputs, examples=examples, limits_rad=limits, home_rad=home,
+        groups=groups, examples=examples, limits_rad=limits, home_rad=home,
         min_cutoff_hz=float(flt.get("min_cutoff_hz", 20.0)), beta=float(flt.get("beta", 0.0)),
         d_cutoff_hz=float(flt.get("d_cutoff_hz", 1.0)),
         max_velocity_rad_s=float(lim.get("max_velocity_rad_s", 8.0)),
@@ -123,8 +131,8 @@ class HandRetargeter:
     ) -> None:
         if calibration.side != side:
             raise ValueError(f"calibration is for the {calibration.side} hand, not {side}")
-        if set(calibration.model.joints) != set(config.joints):
-            raise ValueError(f"calibration maps {sorted(calibration.model.joints)}, the hand has "
+        if set(calibration.joints) != set(config.joints):
+            raise ValueError(f"calibration maps {sorted(calibration.joints)}, the hand has "
                              f"{sorted(config.joints)}; recalibrate")
         if not 0.0 < amplitude <= 1.0:
             raise ValueError(f"amplitude must be in (0, 1], not {amplitude}")
@@ -180,7 +188,7 @@ class HandRetargeter:
     def target(self, signals: Mapping[str, float]) -> tuple[dict[str, float], dict[str, float]]:
         """(raw map output, limited and amplitude-scaled target) for one glove sample."""
         raw = self.calibration.predict(signals)
-        _, self.missing_inputs = self.calibration.model.vector(signals)
+        self.missing_inputs = self.calibration.missing_inputs(signals)
         home = self.config.home_rad
         out = {}
         for j, (lo, hi) in self.config.limits_rad.items():
@@ -205,5 +213,5 @@ class HandRetargeter:
             smoothed = self._filters[j](q_target[j], t_s)
             q_cmd[j] = self._limiters[j](smoothed, dt)
         self._last_registers = self.hand_map.to_registers(q_cmd, side=self.side)
-        inputs = {n: float(signals[n]) for n in self.calibration.model.inputs if n in signals}
+        inputs = {n: float(signals[n]) for n in self.calibration.inputs if n in signals}
         return HandStep(HandState.RUNNING, inputs, raw, q_target, q_cmd, self._last_registers)

@@ -26,5 +26,5 @@ def examples() -> dict:
 
 
 def make_calibration(side: str = "right") -> HandCalibration:
-    return run_session(side=side, user="test", inputs=CONFIG.inputs, joints=CONFIG.joints, examples=examples(),
+    return run_session(side=side, user="test", groups=CONFIG.groups, examples=examples(),
                        ask=lambda text: None, record=lambda pose: held(pose), say=lambda text: None)

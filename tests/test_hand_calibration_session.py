@@ -44,7 +44,7 @@ class Operator:
 
 
 def session(op: Operator, **kw):
-    return run_session(side="right", user="t", inputs=CONFIG.inputs, joints=CONFIG.joints, examples=examples(),
+    return run_session(side="right", user="t", groups=CONFIG.groups, examples=examples(),
                        ask=op.ask, record=op.record, say=op.say, **kw)
 
 
@@ -86,7 +86,7 @@ def test_two_poses_the_glove_cannot_tell_apart_are_redone():
     op = Operator({"index": [held("flat", seed=7), held("index")]})
     session(op)
     assert op.recorded[:len(ORDER)] == ORDER
-    assert set(op.recorded[len(ORDER):]) == {"flat", "index"}
+    assert op.recorded[len(ORDER):] == ["index"]  # the one pose that collides with the others
     assert any("비슷하게 읽히는" in s for s in op.said)
 
 
@@ -116,3 +116,10 @@ def test_a_glove_without_tip_data_cannot_calibrate():
                for p in ORDER}
     with pytest.raises(CalibrationError, match="tip data"):
         session(Operator(no_tips))
+
+
+def test_the_fewest_poses_are_redone():
+    from motion_acq.hand.calibration import poses_to_redo
+
+    assert poses_to_redo([("flat", "index"), ("index", "middle"), ("index", "ring")]) == ["index"]
+    assert sorted(poses_to_redo([("a", "b"), ("c", "d")])) == ["a", "c"]

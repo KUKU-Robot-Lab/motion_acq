@@ -42,7 +42,7 @@ from std_msgs.msg import Float64MultiArray, String
 
 from motion_acq.hand.calibration import OPEN_POSE, CalibrationError, HandCalibration, fit_error, rezero, run_session
 from motion_acq.hand.feedback import HAPTICS_BEAT_S, OFF, haptics_topic_for, heartbeat, strap_only
-from motion_acq.hand.nova2 import GloveDataError, angles_from_state, tip_distances
+from motion_acq.hand.nova2 import GloveDataError, angles_from_state, tip_signals
 from motion_acq.hand.retarget import DEFAULT_RETARGET, load_hand_retarget_config
 
 
@@ -75,7 +75,7 @@ class Recorder(Node):
             return
         try:
             signals = angles_from_state(list(msg.joint_names), list(msg.position), self.side)
-            signals.update(tip_distances([(p.x, p.y, p.z) for p in msg.finger_tip_position]))
+            signals.update(tip_signals([(p.x, p.y, p.z) for p in msg.finger_tip_position]))
         except GloveDataError:
             return
         self.samples.append(signals)
@@ -149,11 +149,11 @@ def main(argv: list[str] | None = None) -> None:
             say("  기록 중: 그대로 멈춰 있으세요")
             calibration = rezero(saved, record(OPEN_POSE))
             calibration.save(out)
-            shift = ", ".join(f"{n} {v:+.2f}" for n, v in zip(calibration.model.inputs, calibration.model.offset)
-                              if abs(v) > 0.02)
+            shift = ", ".join(f"{n} {v:+.2f}" for m in calibration.models.values()
+                              for n, v in zip(m.inputs, m.offset) if abs(v) > 0.02)
             print(f"편 손 맞춤 저장됨: {out} ({shift or '거의 그대로'})")
             return
-        calibration = run_session(side=side, user=args.user, inputs=config.inputs, joints=config.joints,
+        calibration = run_session(side=side, user=args.user, groups=config.groups,
                                   examples=examples, ask=ask, record=record, say=say)
         calibration.save(out)
         print(f"보정 저장됨: {out}")

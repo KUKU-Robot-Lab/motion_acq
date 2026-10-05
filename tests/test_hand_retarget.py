@@ -82,7 +82,7 @@ def test_old_open_fist_calibration_asks_for_a_new_one(tmp_path):
 def test_a_broken_calibration_file_is_rejected(tmp_path):
     cal = make_calibration("right")
     raw = cal.to_dict()
-    raw["model"]["std"][0] = 0.0
+    raw["models"]["thumb"]["std"][0] = 0.0
     path = tmp_path / "bad.yaml"
     import yaml
     path.write_text(yaml.safe_dump(raw))
@@ -167,10 +167,11 @@ def test_a_pinch_approach_ends_at_the_tips_touching():
 def test_without_tip_data_the_joints_still_follow():
     rt = make_retargeter()
     rt.start(None, 0.0)
-    no_tips = {k: v for k, v in POSE_ANGLES["fist"].items() if not k.startswith("tipdist")}
+    no_tips = {k: v for k, v in POSE_ANGLES["fist"].items() if not k.startswith(("tipdist", "thumb_tip"))}
     _, step = run(rt, no_tips, 120)
     assert step.q_command["index_1"] > 1.2
-    assert set(rt.missing_inputs) == {"tipdist_index", "tipdist_middle", "tipdist_ring"}
+    assert set(rt.missing_inputs) == {"tipdist_index", "tipdist_middle", "tipdist_ring", "tipdist_pinky",
+                                      "thumb_tip_x", "thumb_tip_y", "thumb_tip_z"}
 
 
 def test_rezero_follows_a_shifted_glove_without_redoing_the_examples():
@@ -297,3 +298,17 @@ def test_pinch_targets_are_where_the_rh56f1_tips_meet():
         for pose, example in CONFIG.examples.items():
             if pose.startswith("pinch_"):
                 assert fk.tip_distance(example.target, pose.removeprefix("pinch_")) < 0.012, (side, pose)
+
+
+def test_thumb_rotation_follows_the_thumb_over_its_whole_range():
+    """10.05 left test: the robot thumb rotation (j1) sat at 1.2-1.7 rad. Spread out -> 0.8,
+    beside the index -> 1.57, across the palm -> 2.0, monotonic in between."""
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    t, _ = run(rt, POSE_ANGLES["flat"], 30)
+    seq = []
+    for spread, opp in ((1.0, 0.0), (0.5, 0.0), (0.0, 0.0), (0.0, 0.33), (0.0, 0.66), (0.0, 1.0)):
+        t, step = run(rt, synthetic_angles(0.0, 0.3 * opp, opp, spread=spread), 60, t)
+        seq.append(step.q_command["thumb_1"])
+    assert seq == sorted(seq)
+    assert seq[0] < 1.0 and seq[2] == pytest.approx(1.57, abs=0.1) and seq[-1] > 1.9

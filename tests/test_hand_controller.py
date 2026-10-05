@@ -256,7 +256,7 @@ def test_left_hand_full_range():
 
 def test_calibration_file_with_nan_is_rejected(tmp_path):
     data = make_calibration("right").to_dict()
-    data["model"]["bias"][0] = float("nan")
+    data["models"]["thumb"]["bias"][0] = float("nan")
     path = tmp_path / "bad.yaml"
     path.write_text(yaml.safe_dump(data))
     with pytest.raises(CalibrationError, match="non-finite"):
@@ -267,9 +267,9 @@ def test_calibration_for_other_joints_is_rejected():
     import dataclasses
 
     cal = make_calibration("right")
-    model = dataclasses.replace(cal.model, joints=cal.model.joints[:-1] + ("little_1",))
+    ring = dataclasses.replace(cal.models["ring"], joints=("ring_1", "little_1"))
     with pytest.raises(ValueError, match="recalibrate"):
-        HandRetargeter(CONFIG, dataclasses.replace(cal, model=model), HAND_MAP, "right")
+        HandRetargeter(CONFIG, dataclasses.replace(cal, models={**cal.models, "ring": ring}), HAND_MAP, "right")
 
 
 SIM2REAL = Path.home() / "rl_ws/sim2real/deploy/policy_control"
