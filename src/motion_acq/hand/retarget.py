@@ -125,6 +125,11 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
 
 
 FIST_GATE = (0.8, 0.95)  # pinch fades out as its finger curls past this n (a fist, not a pinch)
+# The pinch needs the operator's thumb to take part: n of its bend or rotation from 0.15 (no pinch)
+# to 0.4 (full). 10.05 log: curling one finger alone brings its tip to a still thumb too (finger
+# curl vs its pinch distance correlated 0.81-0.93), which moved the robot thumb.
+THUMB_GATE = (0.15, 0.4)
+THUMB_FEATURES = ("thumb_bend", "thumb_opposition")
 
 
 def pinch_blend(q: Mapping[str, float], norm: Mapping[str, float], targets: Mapping[str, Mapping[str, float]],
@@ -136,7 +141,8 @@ def pinch_blend(q: Mapping[str, float], norm: Mapping[str, float], targets: Mapp
     bend and finger curl (vendor URDF FK, 10.05); joint-by-joint mapping of the operator's
     hand misses it. As a pinch feature's n goes from start to 1 (calibrated touch) the joints
     of that pinch move smoothly to its pose. In a fist the thumb also lies near the
-    fingers: a pinch whose finger (finger_features) is curled past FIST_GATE fades out.
+    fingers: a pinch whose finger (finger_features) is curled past FIST_GATE fades out, and a
+    finger curling toward a still thumb is no pinch (THUMB_GATE).
     Returns (q, pinch feature or None, weight).
     """
     best, weight = None, 0.0
@@ -146,6 +152,8 @@ def pinch_blend(q: Mapping[str, float], norm: Mapping[str, float], targets: Mapp
             w = x * x * (3.0 - 2.0 * x)  # smoothstep
             curl = max((norm.get(f, 0.0) for f in (finger_features or {}).get(feature, ())), default=0.0)
             w *= 1.0 - min(max((curl - FIST_GATE[0]) / (FIST_GATE[1] - FIST_GATE[0]), 0.0), 1.0)
+            thumb = max((norm.get(f, 0.0) for f in THUMB_FEATURES), default=0.0)
+            w *= min(max((thumb - THUMB_GATE[0]) / (THUMB_GATE[1] - THUMB_GATE[0]), 0.0), 1.0)
             if w > weight:
                 best, weight = feature, w
     if best is None:

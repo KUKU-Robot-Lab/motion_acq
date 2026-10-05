@@ -325,3 +325,18 @@ def test_pinch_targets_are_where_the_rh56f1_tips_meet():
         assert fk.tip_distance(CONFIG.home_rad, "index") > 0.08  # open hand: tips far apart
         for pose, target in CONFIG.pinch_targets.items():
             assert fk.tip_distance(target, pose.removeprefix("pinch_")) < 0.012, (side, pose)
+
+
+def test_curling_one_finger_toward_a_still_thumb_does_not_move_the_robot_thumb():
+    """10.05 user: moving one finger moved the robot thumb. Its tip came near the still thumb
+    (pinch distance), which pulled the thumb into the pinch pose."""
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    t, before = run(rt, POSE_ANGLES["open"], 30)
+    curled = dict(POSE_ANGLES["open"], index_mcp=0.7, index_pip=0.9, index_dip=0.45,
+                  tipdist_index=POSE_ANGLES["pinch_index"]["tipdist_index"])
+    _, step = run(rt, curled, 90, t)
+    assert rt.pinch_weight == 0.0
+    assert step.q_command["thumb_1"] == pytest.approx(before.q_command["thumb_1"], abs=1e-3)
+    assert step.q_command["thumb_2"] == pytest.approx(before.q_command["thumb_2"], abs=1e-3)
+    assert step.q_command["index_1"] > 0.5
