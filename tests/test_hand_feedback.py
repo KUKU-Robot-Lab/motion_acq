@@ -141,3 +141,20 @@ def test_config_checks():
         feedback_config({"tip_on_n": 3.0, "tip_full_n": 1.0})
     with pytest.raises(ValueError):
         feedback_config({"max_squeeze": 2.0})
+
+
+def test_heartbeat_changes_only_on_levels():
+    """The patched glove driver releases a command unchanged for 1 s: the hand node alternates it."""
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "ros_ws/src/motion_acq_hand/motion_acq_hand/hand_node.py"
+    source = path.read_text(encoding="utf-8")
+    start = source.index("def heartbeat(")
+    namespace: dict = {}
+    exec(source[start:source.index("\n\n\n", start)], namespace)  # pure helper, no ROS imports
+    heartbeat = namespace["heartbeat"]
+    efforts = [100.0, 0.0, 30.0, 0.0, 0.0, 0.0, 60.0, 0.0, 0.0]
+    assert heartbeat(efforts, False) == efforts
+    beat = heartbeat(efforts, True)
+    assert beat != efforts and beat[1] == 0.0 and beat[0] == pytest.approx(99.99)
+    assert heartbeat([0.0] * 9, True) == [0.0] * 9

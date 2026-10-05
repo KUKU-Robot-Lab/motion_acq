@@ -43,6 +43,14 @@ if [[ ! -d "$EXT/.git" ]]; then
 fi
 git -C "$EXT" fetch --quiet origin "$BRANCH"
 OLD_PIN="$(git -C "$EXT" rev-parse HEAD 2>/dev/null || true)"
+if [[ -n "$OLD_PIN" && "$OLD_PIN" != "$(git -C "$EXT" rev-parse "$PIN")" ]]; then
+  # take our patches out before switching pins (a patched file would block the checkout or carry over)
+  for patch in "$WS"/patches/senseglove_ros_*.patch; do
+    if git -C "$EXT" apply --reverse --check "$patch" 2>/dev/null; then
+      git -C "$EXT" apply --reverse "$patch" && echo "unpatched for the pin change: $(basename "$patch")"
+    fi
+  done
+fi
 git -C "$EXT" checkout --quiet --detach "$PIN"
 if [[ -n "$OLD_PIN" && "$OLD_PIN" != "$(git -C "$EXT" rev-parse HEAD)" ]]; then
   # a new pin: drop the old senseglove build so nothing links against the previous libraries

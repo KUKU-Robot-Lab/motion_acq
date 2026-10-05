@@ -59,6 +59,12 @@ from motion_acq.sidecar import parse_udp_targets
 
 
 HAPTICS_MIN_PERIOD_S = 1.0 / 60.0  # the glove driver's update rate
+HAPTICS_BEAT_S = 0.25  # re-send period of an unchanged command; the glove driver releases after 1 s
+
+
+def heartbeat(efforts: list[float], beat: bool) -> list[float]:
+    """Efforts with the on levels 0.01 % lower on every other send (visible as a change)."""
+    return [float(e) - 0.01 if beat and e > 0.0 else float(e) for e in efforts]
 
 
 def haptics_topic_for(glove_topic: str) -> str:
@@ -110,6 +116,7 @@ class HandNode(Node):
         self.create_subscription(GetForceAct1, f"{ns}/force_actual", self._on_force, 10)
         self.haptics_pub = self.create_publisher(Float64MultiArray, haptics_topic, 10) if haptics else None
         self._haptics_sent: tuple[list[float], float] | None = None
+        self._haptics_beat = False
 
         self.log_file = self._open_log(log_dir)
         # recorder sidecar and the console: comma-separated HOST:PORT list
@@ -152,16 +159,21 @@ class HandNode(Node):
         self.controller.on_joint_force(list(msg.joint_names), list(msg.joint_values), time.monotonic())
 
     def send_haptics(self, efforts: list[float], t: float, *, force: bool = False) -> None:
-        """Glove haptics at most at the glove rate (60 Hz); unchanged levels are re-sent every
-        0.5 s while any is on (the controller holds the last command, so off is sent on change)."""
+        """Glove haptics at most at the glove rate (60 Hz). While any level is on it is re-sent every
+        HAPTICS_BEAT_S with the on levels alternately 0.01 % lower: the patched glove driver releases
+        a command that has not changed for 1 s, so the glove lets go if this node dies."""
         if self.haptics_pub is None:
             return
         last = self._haptics_sent
         changed = last is None or efforts != last[0]
         if not force and last is not None:
-            if t - last[1] < HAPTICS_MIN_PERIOD_S or (not changed and (not any(efforts) or t - last[1] < 0.5)):
+            if t - last[1] < HAPTICS_MIN_PERIOD_S:
                 return
-        self.haptics_pub.publish(Float64MultiArray(data=[float(e) for e in efforts]))
+            if not changed and (not any(efforts) or t - last[1] < HAPTICS_BEAT_S):
+                return
+        self._haptics_beat = not self._haptics_beat
+        data = heartbeat(efforts, self._haptics_beat)
+        self.haptics_pub.publish(Float64MultiArray(data=data))
         self._haptics_sent = (list(efforts), t)
 
     def _on_enable(self, msg: Bool) -> None:

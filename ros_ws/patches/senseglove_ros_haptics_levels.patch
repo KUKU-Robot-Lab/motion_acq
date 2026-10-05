@@ -2,26 +2,38 @@ senseglove_ros humble-dev a14a468: graded Nova 2 haptics (motion_acq 10.05).
 Applied by scripts/ros_ws_setup.sh --full; see ros_ws/patches/README.md.
 
 diff --git a/senseglove/senseglove_control/senseglove_hardware/include/senseglove_hardware/senseglove_robot.hpp b/senseglove/senseglove_control/senseglove_hardware/include/senseglove_hardware/senseglove_robot.hpp
-index ac3b18c..83f25d0 100644
+index ac3b18c..32fedc6 100644
 --- a/senseglove/senseglove_control/senseglove_hardware/include/senseglove_hardware/senseglove_robot.hpp
 +++ b/senseglove/senseglove_control/senseglove_hardware/include/senseglove_hardware/senseglove_robot.hpp
-@@ -46,8 +46,9 @@ public:
+@@ -46,9 +46,11 @@ public:
    static constexpr int JOINTS_PER_FINGER = 4;
    static constexpr int DISTAL_JOINT_INDEX = 3;
  
 -  static constexpr float MIN_TOTAL_FFB_THRESHOLD = 10.0f;
 -  static constexpr float MIN_TOTAL_VIBRATION_THRESHOLD = 10.0f;
+-  static constexpr float STRAP_SAFETY_THRESHOLD = 10.0f;
 +  // motion_acq patch: sums of 0..1 levels (were 10, in percent passed on unscaled)
 +  static constexpr float MIN_TOTAL_FFB_THRESHOLD = 0.005f;
 +  static constexpr float MIN_TOTAL_VIBRATION_THRESHOLD = 0.005f;
-   static constexpr float STRAP_SAFETY_THRESHOLD = 10.0f;
++  static constexpr float STRAP_SAFETY_THRESHOLD = 10.0f;  // upstream, unused after the motion_acq patch
++  static constexpr float MAX_SQUEEZE_LEVEL = 0.5f;        // motion_acq patch: wrist strap at most half
  
    // Construct a SenseGlove robot
+   SenseGloveRobot(std::shared_ptr<SGCore::HapticGlove> hapticglove,
+@@ -212,6 +214,8 @@ private:
+   bool vibrationQueued_ = false;
+   bool effortActive_ = false;
+   bool vibrationActive_ = false;
++  bool effortWasOn_ = false;     // motion_acq patch: levels were on last cycle (flush the zeros once)
++  bool vibrationWasOn_ = false;
+ 
+   void computeJointCounts();
+   void updateJointPositions(const std::vector<std::vector<SGCore::Kinematics::Vect3D>>& poseAngles);
 diff --git a/senseglove/senseglove_control/senseglove_hardware/src/senseglove_robot.cpp b/senseglove/senseglove_control/senseglove_hardware/src/senseglove_robot.cpp
-index 3b8b0f5..04cc3c2 100644
+index 3b8b0f5..8f4dd8c 100644
 --- a/senseglove/senseglove_control/senseglove_hardware/src/senseglove_robot.cpp
 +++ b/senseglove/senseglove_control/senseglove_hardware/src/senseglove_robot.cpp
-@@ -185,15 +185,18 @@ bool SenseGloveRobot::getImuRotation(SGCore::Kinematics::Quat& outIMU) const
+@@ -185,18 +185,26 @@ bool SenseGloveRobot::getImuRotation(SGCore::Kinematics::Quat& outIMU) const
  
  void SenseGloveRobot::queueEffort(const std::vector<double>& effortCommand)
  {
@@ -41,8 +53,17 @@ index 3b8b0f5..04cc3c2 100644
 +    totalEffort += effortLevels_[i];
  
    effortQueued_ = false;
-   if (totalEffort > MIN_TOTAL_FFB_THRESHOLD)
-@@ -210,11 +213,15 @@ void SenseGloveRobot::queueEffort(const std::vector<double>& effortCommand)
+-  if (totalEffort > MIN_TOTAL_FFB_THRESHOLD)
++  // motion_acq patch: also queue the zeros right after an active cycle; otherwise a channel that
++  // drops to 0 while the other stays on is never flushed and keeps its last level
++  const bool effortOn = totalEffort > MIN_TOTAL_FFB_THRESHOLD;
++  const bool flushZeros = !effortOn && effortWasOn_;
++  effortWasOn_ = effortOn;
++  if (effortOn || flushZeros)
+   {
+     bool ffbQueued = false;
+     bool squeezeQueued = false;
+@@ -210,11 +218,15 @@ void SenseGloveRobot::queueEffort(const std::vector<double>& effortCommand)
          ffbQueued = novaglovePtr_->QueueForceFeedbackLevels(effortLevels_);
          break;
        case GloveType::Nova2:
@@ -51,7 +72,7 @@ index 3b8b0f5..04cc3c2 100644
 -        ffbQueued = nova2glovePtr_->QueueForceFeedbackLevels(effortLevels_);
 +      {
 +        // the last effort joint is the wrist strap (squeeze), the others the finger brakes
-+        squeezeLevel_ = effortLevels_.empty() ? 0.0f : effortLevels_.back();
++        squeezeLevel_ = effortLevels_.empty() ? 0.0f : std::min(effortLevels_.back(), MAX_SQUEEZE_LEVEL);
 +        std::vector<float> brakes(effortLevels_.begin(), effortLevels_.empty() ? effortLevels_.end()
 +                                                                                  : effortLevels_.end() - 1);
 +        ffbQueued = nova2glovePtr_->QueueForceFeedbackLevels(brakes);
@@ -61,7 +82,7 @@ index 3b8b0f5..04cc3c2 100644
        default:
          break;
      }
-@@ -225,14 +232,14 @@ void SenseGloveRobot::queueEffort(const std::vector<double>& effortCommand)
+@@ -225,17 +237,20 @@ void SenseGloveRobot::queueEffort(const std::vector<double>& effortCommand)
  void SenseGloveRobot::queueVibrations(const std::vector<double>& vibrationCommand)
  {
    const size_t copySize = std::min(vibrationCommand.size(), vibrationLevels_.size());
@@ -78,4 +99,67 @@ index 3b8b0f5..04cc3c2 100644
 +    totalVibration += vibrationLevels_[i];
  
    vibrationQueued_ = false;
-   if (totalVibration > MIN_TOTAL_VIBRATION_THRESHOLD)
+-  if (totalVibration > MIN_TOTAL_VIBRATION_THRESHOLD)
++  const bool vibrationOn = totalVibration > MIN_TOTAL_VIBRATION_THRESHOLD;  // motion_acq: see queueEffort
++  const bool flushVibrationZeros = !vibrationOn && vibrationWasOn_;
++  vibrationWasOn_ = vibrationOn;
++  if (vibrationOn || flushVibrationZeros)
+   {
+     bool vibroQueued = false;
+     bool thumperQueued = false;
+diff --git a/senseglove/senseglove_control/senseglove_hardware_interface/include/senseglove_hardware_interface/senseglove_hardware_interface.hpp b/senseglove/senseglove_control/senseglove_hardware_interface/include/senseglove_hardware_interface/senseglove_hardware_interface.hpp
+index b87ca43..b325174 100644
+--- a/senseglove/senseglove_control/senseglove_hardware_interface/include/senseglove_hardware_interface/senseglove_hardware_interface.hpp
++++ b/senseglove/senseglove_control/senseglove_hardware_interface/include/senseglove_hardware_interface/senseglove_hardware_interface.hpp
+@@ -76,6 +76,13 @@ public:
+                                         const rclcpp::Duration& period) override;
+ 
+ private:
++  // motion_acq patch: a haptic command that has not changed for this long while any level is
++  // on is dropped (the forward_command_controller holds the last command forever; the hand
++  // node re-sends with an alternating last digit, so a dead sender releases the glove).
++  static constexpr double HAPTICS_HOLD_TIMEOUT_S = 1.0;
++  std::vector<double> last_haptic_command_;
++  std::chrono::steady_clock::time_point last_haptic_change_{};
++  bool haptics_stale_logged_ = false;
+   std::unique_ptr<SGHardware::SenseGloveRobot> robot_;
+   GloveData glove_data_;
+   double publish_rate_ = 60.0;
+diff --git a/senseglove/senseglove_control/senseglove_hardware_interface/src/senseglove_hardware_interface.cpp b/senseglove/senseglove_control/senseglove_hardware_interface/src/senseglove_hardware_interface.cpp
+index e617c19..da7a252 100644
+--- a/senseglove/senseglove_control/senseglove_hardware_interface/src/senseglove_hardware_interface.cpp
++++ b/senseglove/senseglove_control/senseglove_hardware_interface/src/senseglove_hardware_interface.cpp
+@@ -266,13 +266,32 @@ return_type SenseGloveHardwareInterface::write(const rclcpp::Time&, const rclcpp
+ 
+   size_t ffb_idx = 0, vib_idx = 0;
+ 
++  // motion_acq patch: drop a held command whose sender stopped (see HAPTICS_HOLD_TIMEOUT_S)
++  const auto now = std::chrono::steady_clock::now();
++  if (glove_data_.joint_effort_command != last_haptic_command_)
++  {
++    last_haptic_command_ = glove_data_.joint_effort_command;
++    last_haptic_change_ = now;
++    haptics_stale_logged_ = false;
++  }
++  const bool any_on = std::any_of(last_haptic_command_.begin(), last_haptic_command_.end(),
++                                  [](double v) { return v != 0.0; });
++  const bool stale = any_on && std::chrono::duration<double>(now - last_haptic_change_).count() >
++                                 HAPTICS_HOLD_TIMEOUT_S;
++  if (stale && !haptics_stale_logged_)
++  {
++    RCLCPP_WARN(logger_, "haptic command unchanged for %.1f s: released (sender gone?)",
++                HAPTICS_HOLD_TIMEOUT_S);
++    haptics_stale_logged_ = true;
++  }
++
+   for (size_t j = 0; j < glove_data_.num_joints; ++j)
+   {
+     size_t cmd_idx = glove_data_.joint_to_command_index[j];
+     if (cmd_idx == SIZE_MAX)
+       continue;
+ 
+-    double val = glove_data_.joint_effort_command[cmd_idx];
++    double val = stale ? 0.0 : glove_data_.joint_effort_command[cmd_idx];
+ 
+     if (glove_data_.joint_actuator_type[j] == ActuatorType::ForceFeedback &&
+         ffb_idx < glove_data_.effort_joints)

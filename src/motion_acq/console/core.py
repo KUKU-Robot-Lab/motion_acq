@@ -649,7 +649,7 @@ class Console:
             short = str(path.relative_to(ROOT))
             stale = ok and calibration_stale(path, sensecom)
             out[side] = {"ok": ok, "stale": stale,
-                         "detail": f"{short} (SenseCom 재시작 전 보정: 손이 끝까지 안 펴지거나 안 쥐어지면 다시 보정)"
+                         "detail": f"{short} (SenseCom 재시작 전 보정: 손이 끝까지 안 펴지거나 안 쥐어지거나, 장갑 손가락이 계속 잠기면 다시 보정)"
                          if stale else short if ok else detail.replace(str(path), short)}
         return out
 

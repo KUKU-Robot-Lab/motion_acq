@@ -197,7 +197,8 @@ def calibration_current(path: Path, sensecom_start: float | None) -> tuple[bool,
     if not path.exists():
         return False, f"{path} missing (ros2 run motion_acq_hand calibrate)"
     if calibration_stale(path, sensecom_start):
-        return True, f"{path} (taken before this SenseCom start: recalibrate if the hand no longer opens or closes fully)"
+        return True, (f"{path} (taken before this SenseCom start: recalibrate if the hand no longer opens or "
+                      "closes fully or a glove finger stays braked)")
     return True, str(path)
 
 
