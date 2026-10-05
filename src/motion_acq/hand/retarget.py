@@ -48,6 +48,12 @@ class HandRetargetConfig:
     driver_force: int = 600
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
     method: str = "examples"  # "kinematic": fingertip retargeting when the calibration has an alignment
+    # reference at [켜기] (10.06 user): once the hand is home, the operator holds this example pose
+    # (the robot's home: fingers straight, thumb beside the index) still for reference_s; that take
+    # re-zeroes the map and re-aligns the hand model before following. 0 s: off.
+    reference_pose: str = "flat"
+    reference_s: float = 1.0
+    reference_timeout_s: float = 10.0
     kinematic: KinematicConfig = field(default_factory=KinematicConfig)
 
     @property
@@ -91,6 +97,9 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         raise ValueError("examples need an 'open' pose (the quick re-zero pose)")
     flt, lim, drv = raw.get("filter") or {}, raw.get("limits") or {}, raw.get("driver") or {}
     method = str(raw.get("method", "examples"))
+    ref = raw.get("reference") or {}
+    if str(ref.get("pose", "flat")) not in examples:
+        raise ValueError(f"reference pose {ref.get('pose')!r} is not an example pose")
     if method not in ("examples", "kinematic"):
         raise ValueError(f"method must be examples or kinematic, not {method!r}")
     return HandRetargetConfig(
@@ -104,6 +113,8 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         driver_speed=int(drv.get("speed", 2000)), driver_force=int(drv.get("force", 600)),
         feedback=feedback_config(raw.get("feedback")),
         method=method,
+        reference_pose=str(ref.get("pose", "flat")), reference_s=float(ref.get("seconds", 1.0)),
+        reference_timeout_s=float(ref.get("timeout_s", 10.0)),
         kinematic=KinematicConfig(**{k: float(v) for k, v in (raw.get("kinematic") or {}).items()}),
     )
 
@@ -156,15 +167,23 @@ class HandRetargeter:
         self.missing_inputs: list[str] = []
         self.method_used: str | None = None
         self.kinematic = None
-        if config.method == "kinematic" and calibration.alignment is not None:
-            self.kinematic = KinematicRetargeter(TipTables.load(table_path(side)), calibration.alignment,
-                                                 config.kinematic)
+        self.set_calibration(calibration)
         self._last_t: float | None = None
         self._filters = {j: OneEuroFilter(config.min_cutoff_hz, config.beta, config.d_cutoff_hz)
                          for j in config.joints}
         self._limiters = {j: RateLimiter(config.max_velocity_rad_s, config.max_acceleration_rad_s2)
                           for j in config.joints}
         self._last_registers: list[int] | None = None
+
+    def set_calibration(self, calibration: HandCalibration) -> None:
+        """Use this calibration from now on (the reference take at [켜기] re-zeroes and re-aligns)."""
+        if calibration.side != self.side:
+            raise ValueError(f"calibration is for the {calibration.side} hand, not {self.side}")
+        self.calibration = calibration
+        self.kinematic = None
+        if self.config.method == "kinematic" and calibration.alignment is not None:
+            self.kinematic = KinematicRetargeter(TipTables.load(table_path(self.side)), calibration.alignment,
+                                                 self.config.kinematic)
 
     def command(self) -> dict[str, float]:
         return {j: lim.position for j, lim in self._limiters.items()}

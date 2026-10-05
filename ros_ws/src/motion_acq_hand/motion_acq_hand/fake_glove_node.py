@@ -42,6 +42,8 @@ class FakeGlove(Node):
         self.period_s = float(declare(self, "period_s", 6.0))
         self.dropout_every_s = float(declare(self, "dropout_every_s", 0.0))
         self.dropout_s = float(declare(self, "dropout_s", 0.0))
+        # cycle mode holds the home pose this long first: the hand node's reference take at enable
+        self.reference_hold_s = float(declare(self, "reference_hold_s", 4.0))
         rate_hz = float(declare(self, "rate_hz", 60.0))
         if self.mode not in ("cycle", "pose") or self.pose not in POSE_ANGLES:
             raise SystemExit(f"mode cycle|pose and pose in {sorted(POSE_ANGLES)}")
@@ -59,10 +61,12 @@ class FakeGlove(Node):
             self.mode = "cycle"
 
     def _angles(self, t: float) -> dict[str, float]:
-        if self.mode == "pose":
+        if self.mode == "pose" or (self.mode == "cycle" and t < self.reference_hold_s):
+            pose = self.pose if self.mode == "pose" else "flat"  # cycle: hold the [켜기] reference first
             # a worn glove never repeats exactly; the hand node holds on frozen data
             jitter = 2e-4 * math.sin(2.0 * math.pi * 7.0 * t)
-            return {name: value + jitter for name, value in POSE_ANGLES[self.pose].items()}
+            return {name: value + jitter for name, value in POSE_ANGLES[pose].items()}
+        t -= self.reference_hold_s
         phase = 2.0 * math.pi * t / self.period_s
         curl = 0.5 - 0.5 * math.cos(phase)
         bend = 0.5 - 0.5 * math.cos(phase + 0.7)

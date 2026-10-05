@@ -219,8 +219,8 @@ class HandNode(Node):
         except OSError as exc:  # logging must never stop the control loop
             self.get_logger().warning(f"hand log/udp write failed: {exc}", throttle_duration_sec=5.0)
         self.status_pub.publish(String(data=json.dumps({
-            k: out.record[k] for k in ("mode", "state", "fault", "refusal", "glove_age_s", "glove_frozen", "glove_errors",
-                                       "registers", "measured_registers")
+            k: out.record[k] for k in ("mode", "phase", "state", "fault", "refusal", "reference", "method", "glove_age_s",
+                                       "glove_frozen", "glove_errors", "registers", "measured_registers")
         })))
 
     def return_home(self, interrupted) -> None:

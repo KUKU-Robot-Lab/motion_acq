@@ -27,8 +27,13 @@ HAND_MAP = load_rh56f1_map()
 DT = 1 / 30
 
 
-def make_controller(side: str = "right", amplitude: float = 1.0, **cfg) -> HandController:
-    rt = HandRetargeter(CONFIG, make_calibration(side), HAND_MAP, side, amplitude=amplitude)
+def make_controller(side: str = "right", amplitude: float = 1.0, reference_s: float = 0.0,
+                    **cfg) -> HandController:
+    """reference_s 0: follow right after home (the reference take has its own tests)."""
+    import dataclasses
+
+    config = dataclasses.replace(CONFIG, reference_s=reference_s)
+    rt = HandRetargeter(config, make_calibration(side), HAND_MAP, side, amplitude=amplitude)
     return HandController(rt, HAND_MAP, side, ControllerConfig(**cfg))
 
 
@@ -371,3 +376,34 @@ def test_a_still_hand_without_sensor_streams_is_not_frozen():
     for _ in range(200):
         out = rig.step(POSE_ANGLES["open"])
     assert rig.ctl.mode is Mode.ENABLED and out.record["state"] == "running"
+
+
+
+def test_enable_takes_the_reference_pose_before_following():
+    """10.06 user: at [켜기] take the current pose as the reference, then link the glove. At
+    home the operator holds the home pose (flat); its glove reading shifted since the
+    calibration (a SenseCom restart) is re-zeroed before following."""
+    rig = Rig(make_controller(reference_s=1.0))
+    shift = {k: (0.25 if k.endswith(("_mcp", "_pip")) else 0.0) for k in POSE_ANGLES["flat"]}
+    today = {p: {k: v + shift.get(k, 0.0) for k, v in a.items()} for p, a in POSE_ANGLES.items()}
+    rig.ctl.request_enable(True)
+    phases_seen = []
+    for _ in range(200):
+        out = rig.step(today["flat"])
+        phases_seen.append(out.record["phase"])
+    assert "reference" in phases_seen and phases_seen[-1] == "follow"
+    assert out.record["reference"].startswith("reference taken")
+    assert out.record["q_command_rad"]["index_1"] < 0.05  # the shifted flat hand reads flat again
+    for _ in range(120):
+        out = rig.step(today["fist"])
+    assert out.record["q_command_rad"]["index_1"] > 1.4
+
+
+def test_a_moving_hand_at_reference_times_out_to_the_saved_calibration():
+    rig = Rig(make_controller(reference_s=1.0))
+    rig.ctl.request_enable(True)
+    for k in range(int(12 / DT)):
+        out = rig.step(POSE_ANGLES["flat"] if k % 2 else POSE_ANGLES["fist"], jitter=False)
+        if out.record["phase"] == "follow":
+            break
+    assert "saved calibration" in (out.record["reference"] or "")

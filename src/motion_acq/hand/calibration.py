@@ -102,13 +102,17 @@ class HandCalibration:
                    raw.get("rezeroed"), alignment=alignment)
 
 
-def rezero(calibration: HandCalibration, open_samples: Sequence[Mapping[str, float]]) -> HandCalibration:
-    """Shift the inputs so today's open hand reads like the calibration's (2 s, no examples)."""
+def rezero(calibration: HandCalibration, open_samples: Sequence[Mapping[str, float]],
+           pose: str = OPEN_POSE) -> HandCalibration:
+    """Shift the inputs so today's hand in `pose` (an example pose) reads like the calibration's,
+    and align the glove hand model to the robot from its knuckles and straight fingertips."""
     now = {n: statistics.median(s[n] for s in open_samples) for n in calibration.inputs
            if open_samples and all(n in s for s in open_samples)}
     if not now:
         raise CalibrationError("no glove values in the open-hand recording")
-    ref = calibration.medians[OPEN_POSE]
+    if pose not in calibration.medians:
+        raise CalibrationError(f"the calibration has no {pose!r} pose")
+    ref = calibration.medians[pose]
     models = {g: m.with_offset([now[n] - ref[n] if n in now and n in ref else 0.0 for n in m.inputs])
               for g, m in calibration.models.items()}
     alignment = align_open_hand(calibration.side, open_samples) or calibration.alignment

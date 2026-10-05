@@ -6,7 +6,8 @@ requests, calls tick() at the control rate and publishes what it returns.
 States
     DISABLED  nothing is published.
     ENABLED   streaming angle_set. Start and end pose is home (hand open):
-              after enable the hand walks home (HOMING) and only then follows
+              after enable the hand walks home (HOMING), takes the operator's reference
+              pose (REFERENCE, see below) and only then follows
               the glove (RUNNING, or HOLD with nothing published while the
               glove is stale or frozen); a disable walks it home again and
               then disables. Not reaching home in home_timeout_s is a FAULT
@@ -19,6 +20,13 @@ driver topic subscribed. The hand then starts from that measured pose;
 speed/force are sent at enable and re-sent every resend_s. Losing
 angle_actual for longer than measured_stale_s while enabled is a FAULT.
 A FAULT does not move the hand (its feedback cannot be trusted).
+
+Reference (10.06 user: take the current pose as the reference before linking the glove):
+at home the operator holds the reference pose (configs reference.pose, the robot's home:
+fingers straight, thumb beside the index) still for reference_s; that take re-zeroes the
+operator's saved map and re-aligns the glove hand model (calibration.rezero), then the
+hand follows. Not still within reference_timeout_s: it follows the saved calibration and
+says so.
 
 Frozen hand: 10.05 22:24 the left RH56F1 dropped off EtherCAT during a firm cup grasp
 (master: "WKC -1 < 3 for 100 cycles") and the driver kept publishing its last state on
@@ -58,6 +66,7 @@ class Mode(str, Enum):
 
 class Phase(str, Enum):
     TO_HOME = "to_home"  # after enable: walk home before following
+    REFERENCE = "reference"  # at home: the operator holds the reference pose still (re-zero, align)
     FOLLOW = "follow"
     RETURN = "return_home"  # after disable: walk home, then disable
 
@@ -131,6 +140,8 @@ class HandController:
         self._home_registers = hand_map.to_registers(self.home_rad, side=side)
         self.feedback = HapticFeedback(retargeter.config.feedback, retargeter.config.closed_rad)
         self._last_reading: dict[str, object] = {}
+        self._reference: list[tuple[float, dict]] = []  # (t, glove signals) while in REFERENCE
+        self.reference_note: str | None = None
         self._status: dict | None = None
         self._hand_changed_t = -math.inf
         self._sensor_streams = False
@@ -254,9 +265,14 @@ class HandController:
         if self._phase_t0 is None:
             self._phase_t0 = t
         step = self.retargeter.step_to(self.home_rad, t)
+        if self.phase is Phase.REFERENCE:
+            self._take_reference(t)
+            return step
         if self._at_home(t):
             if self.phase is Phase.TO_HOME:
-                self._set_phase(Phase.FOLLOW, t)
+                cfg = self.retargeter.config
+                self._reference, self.reference_note = [], None
+                self._set_phase(Phase.REFERENCE if cfg.reference_s > 0 else Phase.FOLLOW, t)
             else:
                 self.mode = Mode.DISABLED
                 self.retargeter.state = HandState.IDLE
@@ -270,6 +286,32 @@ class HandController:
                 self.last_refusal = reason
             self.retargeter.state = HandState.IDLE
         return step
+
+    def _take_reference(self, t: float) -> None:
+        """Collect the operator's still reference pose; then re-zero and align, and follow."""
+        from motion_acq.hand.calibration import CalibrationError, rezero, unsteady_inputs
+
+        cfg = self.retargeter.config
+        glove = self.glove
+        if glove is not None and t - glove[1] <= self.config.glove_stale_s and not self.glove_frozen(t):
+            if not self._reference or self._reference[-1][1] is not glove[0]:
+                self._reference.append((t, dict(glove[0])))
+        self._reference = [(ts, g) for ts, g in self._reference if t - ts <= cfg.reference_s]
+        window = [g for _, g in self._reference]
+        cal = self.retargeter.calibration
+        covered = bool(self._reference) and t - self._reference[0][0] >= 0.9 * cfg.reference_s
+        if covered and len(window) >= 10 and not unsteady_inputs(window, cal.inputs):
+            try:
+                self.retargeter.set_calibration(rezero(cal, window, cfg.reference_pose))
+                aligned = "aligned" if self.retargeter.calibration.alignment is not None else "no hand model"
+                self.reference_note = f"reference taken ({len(window)} samples, {aligned})"
+            except CalibrationError as exc:
+                self.reference_note = f"reference failed ({exc}): following the saved calibration"
+            self._set_phase(Phase.FOLLOW, t)
+        elif t - (self._phase_t0 or t) > cfg.reference_timeout_s:
+            self.reference_note = (f"reference pose not held still in {cfg.reference_timeout_s:g} s: "
+                                   "following the saved calibration")
+            self._set_phase(Phase.FOLLOW, t)
 
     def tick(self, t: float, *, subscribers_ready: bool) -> Outputs:
         out = Outputs(hand_id=None if self.measured is None else self.measured[1])
@@ -316,6 +358,7 @@ class HandController:
             "q_target_rad": step.q_target if step else None,
             "missing_inputs": self.retargeter.missing_inputs or None,
             "method": self.retargeter.method_used if following else None,
+            "reference": self.reference_note,
             "q_command_rad": step.q_command if step else None,
             "registers": out.angle,
             "measured_registers": None if self.measured is None else self.measured[0],

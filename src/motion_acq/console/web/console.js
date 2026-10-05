@@ -203,10 +203,13 @@ function nodeHand(s, side) {
   }
   let st = ["ok", "노드 실행 (손 꺼짐)"];
   if (rec?.fault) st = ["bad", `FAULT ${rec.fault}`];
-  else if (rec?.mode === "enabled") st = ["live", rec.state === "homing" ? "home(펼침)으로 이동" : "장갑 따라가는 중"];
+  else if (rec?.mode === "enabled" && rec.phase === "reference")
+    st = ["warn", "기준 자세: 손가락 펴고 엄지는 검지 옆에 붙인 채 1초 멈추세요"];
+  else if (rec?.mode === "enabled") st = ["live", rec.state === "homing" ? "home(펼침)으로 이동"
+    : `장갑 따라가는 중${rec.method === "examples" ? " (예시 자세 방식)" : ""}`];
   st = unitState(key, st);
   const enabled = rec?.mode === "enabled";
-  return { ...n, tone: st[0], state: st[1], sub: job(key).state === "failed" ? job(key).text : rec?.refusal || "",
+  return { ...n, tone: st[0], state: st[1], sub: job(key).state === "failed" ? job(key).text : rec?.refusal || rec?.reference || "",
            actions: (enabled ? "" : on) + btn("끄기", { "data-action": `hand_off:${side}` }, "danger small") };
 }
 

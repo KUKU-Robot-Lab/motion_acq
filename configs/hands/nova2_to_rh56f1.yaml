@@ -24,6 +24,11 @@
 #     hand model data or while the calibration has no alignment yet.
 #   examples: the example-pose map below only.
 method: kinematic
+# Reference at [켜기] (10.06 user): when the robot hand reaches home (fingers straight, thumb
+# beside the index), the operator holds that same pose still for `seconds`; the take
+# re-zeroes the saved map and re-aligns the glove hand model, then the hand follows the glove.
+# Not held still within timeout_s: follows the saved calibration (shown in the console).
+reference: {pose: flat, seconds: 1.0, timeout_s: 10.0}
 kinematic:
   near_m: 0.045      # operator thumb-to-finger distance (robot scale) where the pinch term starts
   touch_m: 0.015     # ... and where the robot tips are put together
