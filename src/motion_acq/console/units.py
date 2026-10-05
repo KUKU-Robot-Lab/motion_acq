@@ -352,7 +352,7 @@ def calibrate(station: Station, mode: str, side: str, user: str, *, rezero: bool
 
 # -- short tasks ---------------------------------------------------------------------------------------
 
-QUEST_TASKS = {"status": "Quest 상태", "app": "HandUMI 앱 모드", "view": "헤드셋 영상 열기 + VR",
+QUEST_TASKS = {"unworn": "헤드셋 벗고 쓰기 (근접 센서 끔)", "worn": "근접 센서 원래대로", "status": "Quest 상태", "app": "HandUMI 앱 모드", "view": "헤드셋 영상 열기 + VR",
                "page": "헤드셋에 영상 페이지 열기", "vr": "VR 시작", "launch": "HandUMI 앱 다시 시작"}
 GLOVE_TASKS = {"up": "SenseCom 시작 + 장갑 연결", "driver": "장갑 드라이버 시작", "stop": "장갑 드라이버 정지",
                "status": "장갑 상태"}

@@ -9,6 +9,13 @@
 #   scripts/quest_usb.sh page      # the same page, without entering VR (the console's [연결]; vr = [시작])
 #   scripts/quest_usb.sh vr        # (re)enter VR on the open page from the PC; vr --status = page state
 #   scripts/quest_usb.sh app       # back to the HandUMI app (forward + launch)
+#   scripts/quest_usb.sh unworn    # keep the headset awake off the head (proximity sensor off), wake it
+#   scripts/quest_usb.sh worn      # proximity sensor back to normal (also after a Quest reboot)
+#
+# Not worn (10.05 user: arms only, controllers on the hands): the controllers are still
+# tracked by the headset cameras, so the headset stays on, awake (unworn) and placed so
+# it sees the hands, its front toward the robot's front (Space takes the robot +x from
+# the headset heading).
 #
 # With the forward active, the station rig uses quest_ip 127.0.0.1. Only TCP is
 # tunnelled; the UDP time-sync (42000) is not, so frames are stamped with the PC
@@ -100,9 +107,27 @@ cmd_vr() {
   # WebXR needs a user gesture in the page; the browser devtools give it to the PC.
   one_device
   if [[ "${1:-}" != "--status" ]] && "$ADB" shell dumpsys power | grep -q "mWakefulness=Asleep"; then
-    die "the headset is asleep (not worn): put it on, then run $0 vr"
+    die "the headset is asleep (not worn): put it on, or $0 unworn to use it off the head, then run $0 vr"
   fi
   "$ROOT/.venv/bin/python" -m motion_acq.quest_view.devtools --view-port "$VIEW_PORT" "$@"
+}
+
+cmd_unworn() {
+  one_device
+  "$ADB" shell am broadcast -a com.oculus.vrpowermanager.prox_close >/dev/null
+  "$ADB" shell input keyevent KEYCODE_WAKEUP
+  sleep 1
+  if "$ADB" shell dumpsys power | grep -q "mWakefulness=Awake"; then
+    echo "proximity sensor off: the headset stays awake off the head (undo: $0 worn, or a Quest reboot)"
+  else
+    die "the headset did not wake: press its power button once, then run $0 unworn again"
+  fi
+}
+
+cmd_worn() {
+  one_device
+  "$ADB" shell am broadcast -a com.oculus.vrpowermanager.automation_disable >/dev/null
+  echo "proximity sensor back to normal: the headset sleeps when taken off"
 }
 
 cmd_app() {
@@ -121,5 +146,7 @@ case "${1:-status}" in
   page) cmd_page ;;
   vr) shift; cmd_vr "$@" ;;
   app) cmd_app ;;
-  *) die "usage: $0 {status|install|forward|launch|view|page|vr|app}" ;;
+  unworn) cmd_unworn ;;
+  worn) cmd_worn ;;
+  *) die "usage: $0 {status|install|forward|launch|view|page|vr|app|unworn|worn}" ;;
 esac

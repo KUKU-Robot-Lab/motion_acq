@@ -315,7 +315,8 @@ function detailQuest(s) {
   if (jobLine("quest")) rows.push(["최근", jobLine("quest"), job("quest").state === "failed" ? "bad" : ""]);
   const extra = real()
     ? btn("VR 다시 시작", { "data-action": "quest:start" }) + btn("페이지 다시 열기", { "data-action": "quest:connect" }) +
-      btn("영상 끊기", { "data-stop": "quest_view" }, "ghost") + btn("HandUMI 앱 모드", { "data-action": "quest:app" }, "ghost")
+      btn("영상 끊기", { "data-stop": "quest_view" }, "ghost") + btn("HandUMI 앱 모드", { "data-action": "quest:app" }, "ghost") +
+      btn("헤드셋 벗고 쓰기", { "data-action": "quest:unworn" }, "ghost") + btn("근접 센서 원래대로", { "data-action": "quest:worn" }, "ghost")
     : btn("가짜 Quest 정지", { "data-stop": "mock_quest" }, "ghost") + btn("테스트 영상 정지", { "data-stop": "quest_view" }, "ghost");
   return `<h3>머리 · Quest 3</h3>${facts(rows)}<div class="actions">${extra}</div>
     <div class="sect">방향 확인 (헤드셋 영상으로 팔을 움직이기 전, 한 번)</div>${directionHtml(s)}

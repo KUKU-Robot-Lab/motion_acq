@@ -534,7 +534,7 @@ def test_error_line_is_the_root_cause_of_a_chained_traceback():
 def test_untracked_headset_at_space_is_shown():
     lines = ["Space pressed; starting right.",
              "[22:30:01] WARNING - Headset not tracked: right not started (robot forward comes from the headset heading)."]
-    assert phases.phase("arm", lines) == ("warn", "헤드셋 추적 안 됨: 팔 시작 안 함 (헤드셋 쓰고 로봇 쪽을 보며 Space 다시)")
+    assert phases.phase("arm", lines) == ("warn", "헤드셋 추적 안 됨: 팔 시작 안 함 (헤드셋을 쓰거나, 벗고 쓰면 깨운 채 로봇 앞을 보게 두고 Space 다시)")
 
 
 def test_error_line_ignores_an_earlier_caught_traceback():

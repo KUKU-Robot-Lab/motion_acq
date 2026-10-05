@@ -19,7 +19,7 @@ ARM_RULES: tuple[Rule, ...] = (
     ("Space pressed; starting", "live", "따라가는 중"),
     ("arm anchored", "live", "따라가는 중"),
     ("Tracking lost", "warn", "트래킹 끊김: 팔 정지"),
-    ("Headset not tracked", "warn", "헤드셋 추적 안 됨: 팔 시작 안 함 (헤드셋 쓰고 로봇 쪽을 보며 Space 다시)"),
+    ("Headset not tracked", "warn", "헤드셋 추적 안 됨: 팔 시작 안 함 (헤드셋을 쓰거나, 벗고 쓰면 깨운 채 로봇 앞을 보게 두고 Space 다시)"),
     ("Tracking recovered", "live", "트래킹 복구"),
     ("Stopping.", "live", "정지: home → 차렷 이동 중"),
     ("Arms at home", "live", "home 도착: 차렷으로 이동"),
@@ -52,7 +52,7 @@ RECORD_RULES: tuple[Rule, ...] = (
     ("Done. Recorded", "ok", "녹화 끝: home → 차렷"),
     ("Arms ready to disable", "ok", "차렷 도착: 모터 끔"),
     ("Tracking lost", "warn", "트래킹 끊김"),
-    ("Headset not tracked", "warn", "헤드셋 추적 안 됨: 팔 시작 안 함 (헤드셋 쓰고 로봇 쪽을 보며 Space 다시)"),
+    ("Headset not tracked", "warn", "헤드셋 추적 안 됨: 팔 시작 안 함 (헤드셋을 쓰거나, 벗고 쓰면 깨운 채 로봇 앞을 보게 두고 Space 다시)"),
     ("Traceback", "bad", "오류로 멈춤 (로그 확인)"),
 )
 
