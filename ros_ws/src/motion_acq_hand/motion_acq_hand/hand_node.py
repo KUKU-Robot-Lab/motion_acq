@@ -100,6 +100,7 @@ class HandNode(Node):
         self.create_subscription(Bool, f"/motion_acq/hand_{self.side}/enable", self._on_enable, 10)
         self.create_subscription(TouchData1, f"{ns}/touch_data", self._on_touch, 10)
         self.create_subscription(GetForceAct1, f"{ns}/force_actual", self._on_force, 10)
+        self.create_subscription(String, f"{ns}/ecat_status", self._on_status, 10)
         self.haptics_pub = self.create_publisher(Float64MultiArray, haptics_topic, 10) if haptics else None
         self._haptics_sent: tuple[list[float], float] | None = None
         self._haptics_beat = False
@@ -141,6 +142,13 @@ class HandNode(Node):
             self.controller.on_touch(list(msg.finger_forces), list(msg.palm_data), time.monotonic())
         except ValueError as exc:
             self.get_logger().warning(f"bad touch_data: {exc}", throttle_duration_sec=2.0)
+
+    def _on_status(self, msg: String) -> None:
+        try:
+            status = json.loads(msg.data)
+        except ValueError:
+            status = {"raw": msg.data}
+        self.controller.on_status(status if isinstance(status, dict) else {"raw": status})
 
     def _on_force(self, msg: GetForceAct1) -> None:
         self.controller.on_joint_force(list(msg.joint_names), list(msg.joint_values), time.monotonic())

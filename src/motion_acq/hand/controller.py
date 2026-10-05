@@ -131,6 +131,7 @@ class HandController:
         self._home_registers = hand_map.to_registers(self.home_rad, side=side)
         self.feedback = HapticFeedback(retargeter.config.feedback, retargeter.config.closed_rad)
         self._last_reading: dict[str, object] = {}
+        self._status: dict | None = None
         self._hand_changed_t = -math.inf
         self._sensor_streams = False
 
@@ -161,6 +162,10 @@ class HandController:
 
     def hand_frozen(self, t: float) -> bool:
         return self._sensor_streams and t - self._hand_changed_t > self.config.hand_frozen_s
+
+    def on_status(self, status: dict) -> None:
+        """The driver's 1 Hz status (state codes, errors, WKC): logged on the next tick."""
+        self._status = status
 
     def on_glove_error(self) -> None:
         self.glove_errors += 1
@@ -318,5 +323,7 @@ class HandController:
             "hand_id": out.hand_id,
             **sensors,
             "haptics": out.haptics.to_dict(),
+            "hand_status": self._status,  # driver status, only on the tick after one arrived (1 Hz)
         }
+        self._status = None
         return out
