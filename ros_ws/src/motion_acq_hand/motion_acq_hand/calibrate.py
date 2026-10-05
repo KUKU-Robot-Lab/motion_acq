@@ -36,7 +36,7 @@ from senseglove_msgs.msg import SenseGloveState
 from std_msgs.msg import String
 
 from motion_acq.hand.calibration import CalibrationError, run_session
-from motion_acq.hand.nova2 import GloveDataError, angles_from_state, features
+from motion_acq.hand.nova2 import GloveDataError, angles_from_state, features, tip_distances
 from motion_acq.hand.retarget import DEFAULT_RETARGET, load_hand_retarget_config
 
 
@@ -56,6 +56,7 @@ class Recorder(Node):
             return
         try:
             angles = angles_from_state(list(msg.joint_names), list(msg.position), self.side)
+            angles.update(tip_distances([(p.x, p.y, p.z) for p in msg.finger_tip_position]))
         except GloveDataError:
             return
         self.samples.append(features(angles, self.specs))
@@ -121,6 +122,7 @@ def main(argv: list[str] | None = None) -> None:
         calibration = run_session(
             side=side, user=args.user, poses=config.poses, feature_poses=config.feature_poses,
             min_span=config.min_span_rad, record=record, say=lambda text: print(text, flush=True),
+            relative_min_span=config.relative_min_span, max_std_relative=config.pose_std_relative,
             ask=(lambda text: None) if args.yes else ask_enter,
         )
         calibration.save(out)

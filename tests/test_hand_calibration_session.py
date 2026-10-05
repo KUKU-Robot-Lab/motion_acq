@@ -22,6 +22,7 @@ from motion_acq.hand.synthetic import POSE_ANGLES
 import pytest
 
 CONFIG = load_hand_retarget_config()
+PINCHES = ["pinch_index", "pinch_middle", "pinch_ring"]
 
 
 def still(pose: str, n: int = 20) -> list[dict[str, float]]:
@@ -38,6 +39,8 @@ class Operator:
 
     def __init__(self, takes: dict[str, list[list[dict[str, float]]]]) -> None:
         self.takes = {pose: list(t) for pose, t in takes.items()}
+        for pose in CONFIG.poses:  # poses a test does not script (the pinch poses) go well
+            self.takes.setdefault(pose, [still(pose)] * 3)
         self.prompts: list[str] = []
         self.said: list[str] = []
         self.recorded: list[str] = []
@@ -55,7 +58,8 @@ class Operator:
 
 def session(op: Operator, **kw):
     return run_session(side="right", user="t", poses=CONFIG.poses, feature_poses=CONFIG.feature_poses,
-                       min_span=CONFIG.min_span_rad, ask=op.ask, record=op.record, say=op.say, **kw)
+                       min_span=CONFIG.min_span_rad, ask=op.ask, record=op.record, say=op.say,
+                       relative_min_span=CONFIG.relative_min_span, max_std_relative=CONFIG.pose_std_relative, **kw)
 
 
 def test_good_takes_need_one_prompt_per_pose():
@@ -82,7 +86,7 @@ def test_a_pose_that_moved_is_asked_again_not_the_whole_run():
                    "fist": [shaking("fist", "index"), still("fist")],
                    "thumb_opposed": [still("thumb_opposed")]})
     session(op)
-    assert op.recorded == ["open", "fist", "fist", "thumb_opposed"]
+    assert op.recorded == ["open", "fist", "fist", "thumb_opposed"] + PINCHES
     assert any("움직였습니다" in s for s in op.said)
 
 
@@ -105,7 +109,7 @@ def test_indistinct_poses_redo_just_those_poses():
                    "fist": [thumb_out_fist, still("fist")],
                    "thumb_opposed": [still("thumb_opposed")]})
     cal = session(op)
-    assert op.recorded == ["open", "fist", "thumb_opposed", "open", "fist"]
+    assert op.recorded == ["open", "fist", "thumb_opposed"] + PINCHES + ["open", "fist"]
     assert any("엄지 굽힘" in s and "거의 같습니다" in s for s in op.said)
     assert cal.ranges["thumb_bend"].closed > cal.ranges["thumb_bend"].open
 
@@ -141,5 +145,24 @@ def test_a_glove_dropout_redoes_only_that_pose():
 
     op = Dropout({p: [still(p)] for p in CONFIG.poses})
     session(op)
-    assert op.recorded == ["open", "fist", "fist", "thumb_opposed"]
+    assert op.recorded == ["open", "fist", "fist", "thumb_opposed"] + PINCHES
     assert any("샘플 3 개뿐" in s for s in op.said)
+
+
+def test_pinch_poses_calibrate_tip_distances_relative_to_the_open_hand():
+    """10.05: tip distances are in the glove's unit; a touch must be clearly closer than the open hand."""
+    op = Operator({p: [still(p)] for p in CONFIG.poses})
+    cal = session(op)
+    r = cal.ranges["pinch_index"]
+    assert r.closed < r.open  # touching = shorter distance
+    not_touching = [{**s, "pinch_index": still("open")[0]["pinch_index"] * 0.9} for s in still("pinch_index")]
+    op = Operator({"pinch_index": [not_touching, still("pinch_index")], "open": [still("open")] * 2})
+    session(op)
+    assert any("엄지-검지 집기" in s and "거의 같습니다" in s for s in op.said)
+
+
+def test_a_glove_without_tip_data_cannot_calibrate_the_pinches():
+    no_tips = {p: [[{k: v for k, v in s.items() if not k.startswith("pinch")} for s in still(p)]] * 3
+               for p in CONFIG.poses}
+    with pytest.raises(CalibrationError, match="tip data"):
+        session(Operator(no_tips))

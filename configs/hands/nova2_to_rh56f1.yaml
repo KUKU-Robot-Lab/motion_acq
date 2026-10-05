@@ -23,6 +23,11 @@ features:
   pinky: {ring_mcp: 1.0, ring_pip: 1.0}
   thumb_bend: {thumb_pip: 1.0}
   thumb_opposition: {thumb_brake: 1.0}
+  # thumb-to-finger tip distance (SenseGloveState.finger_tip_position, glove units): drives
+  # the pinch blend below, not a joint. Missing tip data -> no pinch, the joints still follow.
+  pinch_index: {tipdist_index: 1.0}
+  pinch_middle: {tipdist_middle: 1.0}
+  pinch_ring: {tipdist_ring: 1.0}
 
 # Calibration poses, recorded with the hand still for ~2 s each. The text is the
 # operator prompt (Korean); only the features of each pose must hold still.
@@ -30,6 +35,9 @@ poses:
   open: "손 펴기: 다섯 손가락을 모두 쭉 펴고, 엄지는 검지에서 멀리 옆으로 벌린다"
   fist: "주먹: 네 손가락을 끝까지 말아 쥐고, 엄지도 굽혀 검지·중지 위를 덮는다 (엄지를 펴 두면 실패)"
   thumb_opposed: "엄지 맞대기: 네 손가락은 편 채로, 엄지 끝을 새끼손가락 뿌리(손바닥 아래 끝)에 댄다"
+  pinch_index: "엄지-검지 집기: 엄지 끝과 검지 끝을 맞댄다 (나머지 손가락은 편하게)"
+  pinch_middle: "엄지-중지 집기: 엄지 끝과 중지 끝을 맞댄다"
+  pinch_ring: "엄지-약지 집기: 엄지 끝과 약지 끝을 맞댄다"
 
 # feature: [pose giving n = 0, pose giving n = 1]
 feature_poses:
@@ -39,9 +47,31 @@ feature_poses:
   pinky: [open, fist]
   thumb_bend: [open, fist]
   thumb_opposition: [open, thumb_opposed]
+  pinch_index: [open, pinch_index]
+  pinch_middle: [open, pinch_middle]
+  pinch_ring: [open, pinch_ring]
 
 # Minimum |closed - open| per feature for a calibration to be accepted (rad).
 min_span_rad: 0.2
+# Tip distances are in the glove's unit: the touch must be this fraction closer than the open hand,
+relative_min_span: {pinch_index: 0.3, pinch_middle: 0.3, pinch_ring: 0.3}
+# and while holding a pose they may move by this fraction of their value.
+pose_std_relative: {pinch_index: 0.08, pinch_middle: 0.08, pinch_ring: 0.08}
+
+# Pinch (10.05 user: the thumb must be able to meet the other fingers). The RH56F1 thumb tip
+# meets a finger tip only for one combination of thumb rotation, thumb bend and finger curl
+# (python -m motion_acq.hand.fk <vendor URDF RH56F1_R/L>, thumb_1 / thumb_2 / finger: index
+# 1.54 / 0.18-0.20 / 0.68-0.73 at 1-2 mm, middle 1.93 / 0.13-0.18 / 0.73 at 2 mm, ring 2.09 /
+# 0.10-0.13 / 0.73-0.77 at 10 mm; little 30 mm at best, so no pinky pinch). As the operator's
+# thumb nears a finger (pinch feature n from start to 1 = the calibrated touch) those joints
+# blend smoothly into that pose; the finger targets are ~0.03 rad past the touch so the tips
+# press (the hand's force limit stops them). tests/test_hand_retarget.py checks them by FK.
+pinch:
+  start: 0.5
+  targets:
+    pinch_index: {thumb_1: 1.54, thumb_2: 0.19, index_1: 0.73}
+    pinch_middle: {thumb_1: 1.93, thumb_2: 0.15, middle_1: 0.76}
+    pinch_ring: {thumb_1: 2.09, thumb_2: 0.11, ring_1: 0.78, pinky_1: 0.78}
 
 # Calibrated n is stretched so its ends are reached before the calibration
 # poses: n' = clip((n - open) / (1 - open - closed), 0, 1). 10.05 user test:
@@ -59,8 +89,10 @@ joints:
   # Verified 10.05 on the right hand: 852 (1.57) -> 738 / 620 swings the thumb
   # toward the palm with room left, 852 -> 1138 swings it away from the palm.
   # (The 0.3 used before was away from the palm: the robot thumb opened when
-  # the operator closed his.) 1.95 = register ~636 right / ~698 left.
-  thumb_1: {feature: thumb_opposition, open_rad: 1.57, closed_rad: 1.95}
+  # the operator closed his.) 10.05 user: 1.57 -> 1.95 used too little of it, so the
+  # spread thumb of the open pose goes out to 0.8 and the opposed thumb to 2.0
+  # (register ~607 right / ~669 left; 620 checked on the right hand).
+  thumb_1: {feature: thumb_opposition, open_rad: 0.8, closed_rad: 2.0}
 
 # sim2real contract hand_home: RH56F1 open (thumb_1 1.57, the rest 0).
 home_rad: {thumb_1: 1.57, thumb_2: 0.0, index_1: 0.0, middle_1: 0.0, ring_1: 0.0, pinky_1: 0.0}

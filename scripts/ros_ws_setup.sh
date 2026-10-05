@@ -64,6 +64,11 @@ if [[ "$FULL" -eq 1 ]]; then
     if git -C "$EXT" apply --reverse --check "$patch" 2>/dev/null; then
       echo "patch in: $(basename "$patch")"
     else
+      if ! git -C "$EXT" apply --check "$patch" 2>/dev/null; then
+        # an earlier version of this patch is in: put its files back to the pin first
+        mapfile -t touched < <(git -C "$EXT" apply --numstat "$patch" 2>/dev/null | cut -f3)
+        [[ ${#touched[@]} -gt 0 ]] && git -C "$EXT" checkout --quiet "$PIN" -- "${touched[@]}"
+      fi
       git -C "$EXT" apply "$patch" || { echo "error: $(basename "$patch") does not apply to $(git -C "$EXT" rev-parse --short HEAD)" >&2; exit 1; }
       echo "patched: $(basename "$patch")"
       rm -rf "$WS"/build/senseglove_hardware "$WS"/install/senseglove_hardware

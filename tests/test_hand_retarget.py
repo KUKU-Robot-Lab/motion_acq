@@ -107,16 +107,18 @@ def test_open_fist_and_opposition_map_to_rh56f1_ends():
     rt = make_retargeter()
     rt.start(None, 0.0)
     t, step = run(rt, POSE_ANGLES["open"], 60)
-    assert step.q_command == pytest.approx(CONFIG.home_rad, abs=1e-3)
+    # open hand: fingers and thumb bend at home, the spread thumb out to 0.8 (10.05: full rotation range)
+    assert step.q_command == pytest.approx({**CONFIG.home_rad, "thumb_1": 0.8}, abs=1e-3)
     t, step = run(rt, POSE_ANGLES["fist"], 90, t)
     assert step.q_command["index_1"] == pytest.approx(1.5285594, abs=1e-3)
     assert step.q_command["thumb_2"] == pytest.approx(0.474555, abs=1e-3)
-    assert step.q_command["thumb_1"] == pytest.approx(1.57, abs=1e-3)
+    assert step.q_command["thumb_1"] == pytest.approx(0.8, abs=1e-3)
+    assert rt.pinch_weight == 0.0  # the thumb near the fingers in a fist is not a pinch
     # Right-hand calibration (sim2real 09.30 sweep) puts full curl at 926/920/900/905.
     assert step.registers == HAND_MAP.to_registers(step.q_command, side="right")
     assert step.registers[:4] == [926, 920, 900, 905]
     _, step = run(rt, POSE_ANGLES["thumb_opposed"], 90, t)
-    assert step.q_command["thumb_1"] == pytest.approx(1.95, abs=1e-3)
+    assert step.q_command["thumb_1"] == pytest.approx(2.0, abs=1e-3)
     assert step.q_command["index_1"] == pytest.approx(0.0, abs=1e-3)
 
 
@@ -221,6 +223,8 @@ def test_features_follow_the_glove_joints_that_move():
         "index": {"index_mcp": 1.0, "index_pip": 1.0}, "middle": {"middle_mcp": 1.0, "middle_pip": 1.0},
         "ring": {"ring_mcp": 1.0, "ring_pip": 1.0}, "pinky": {"ring_mcp": 1.0, "ring_pip": 1.0},
         "thumb_bend": {"thumb_pip": 1.0},
+        "pinch_index": {"tipdist_index": 1.0}, "pinch_middle": {"tipdist_middle": 1.0},
+        "pinch_ring": {"tipdist_ring": 1.0},
         "thumb_opposition": {"thumb_brake": 1.0},
     }
     cal = make_calibration()
@@ -256,7 +260,7 @@ def test_closing_the_thumb_sends_it_across_the_palm(side):
     rt.start(None, 0.0)
     t, home = run(rt, POSE_ANGLES["open"], 30)
     _, opposed = run(rt, POSE_ANGLES["thumb_opposed"], 90, t)
-    assert opposed.registers[5] < home.registers[5] - 150
+    assert opposed.registers[5] < home.registers[5] - 400
     assert opposed.registers[5] >= 600
 
 
@@ -269,3 +273,55 @@ def test_end_margins_are_checked(tmp_path):
     bad.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     with pytest.raises(ValueError, match="end_margins"):
         load_hand_retarget_config(bad)
+
+
+@pytest.mark.parametrize("pose,finger", [("pinch_index", "index_1"), ("pinch_middle", "middle_1"),
+                                         ("pinch_ring", "ring_1")])
+def test_a_pinch_puts_the_robot_tips_together(pose, finger):
+    """10.05 user: the thumb must be able to meet the other fingers. The calibrated touch
+    sends the joints to the FK pose where the RH56F1 tips meet."""
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    t, _ = run(rt, POSE_ANGLES["open"], 30)
+    _, step = run(rt, POSE_ANGLES[pose], 120, t)
+    target = CONFIG.pinch_targets[pose]
+    assert rt.pinch == pose and rt.pinch_weight == pytest.approx(1.0)
+    for joint in ("thumb_1", "thumb_2", finger):
+        assert step.q_command[joint] == pytest.approx(target[joint], abs=1e-3)
+
+
+def test_pinch_blends_in_smoothly_as_the_thumb_nears():
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    t, _ = run(rt, POSE_ANGLES["open"], 30)
+    weights = []
+    for amount in (0.0, 0.3, 0.55, 0.7, 0.85, 1.0):
+        t, _ = run(rt, synthetic_angles(0.45, 0.4, 0.3, ("index", amount)), 20, t)
+        weights.append(rt.pinch_weight if rt.pinch == "pinch_index" else 0.0)
+    assert weights[0] == 0.0 and weights[-1] == pytest.approx(1.0)
+    assert weights == sorted(weights) and 0.0 < weights[3] < 1.0
+
+
+def test_without_tip_data_the_joints_still_follow():
+    rt = make_retargeter()
+    rt.start(None, 0.0)
+    no_tips = {k: v for k, v in POSE_ANGLES["fist"].items() if not k.startswith("tipdist")}
+    _, step = run(rt, no_tips, 90)
+    assert step.q_command["index_1"] == pytest.approx(1.5285594, abs=1e-3)
+    assert rt.pinch is None
+
+
+def test_pinch_targets_are_where_the_rh56f1_tips_meet():
+    """Guard against editing the pinch poses by hand: vendor URDF FK, tips within 12 mm."""
+    from pathlib import Path
+
+    from motion_acq.hand.fk import TipFk
+
+    for side in "RL":
+        urdf = Path.home() / f"rl_ws/urdf/vendor/RH56F1/RH56F1_{side}/urdf/RH56F1_{side}.urdf"
+        if not urdf.exists():
+            pytest.skip("vendor URDF not on this host")
+        fk = TipFk(urdf)
+        assert fk.tip_distance(CONFIG.home_rad, "index") > 0.08  # open hand: tips far apart
+        for pose, target in CONFIG.pinch_targets.items():
+            assert fk.tip_distance(target, pose.removeprefix("pinch_")) < 0.012, (side, pose)

@@ -120,5 +120,26 @@ def angles_from_state(
     return angles
 
 
+# Thumb-to-finger tip distances from SenseGloveState.finger_tip_position (thumb first;
+# senseglove_ros fills it with the SGCore hand model's distal joint positions, mm). They
+# join the angle dict under these keys so a feature can use them (pinch_* features).
+TIP_FINGERS = ("thumb", "index", "middle", "ring", "pinky")
+TIP_DIST_KEYS = tuple(f"tipdist_{f}" for f in TIP_FINGERS[1:])
+
+
+def tip_distances(tips: Sequence[Sequence[float]]) -> dict[str, float]:
+    """{tipdist_<finger>: |thumb tip - finger tip|}; {} when the glove sends no usable tips."""
+    if len(tips) != len(TIP_FINGERS):
+        return {}
+    points = [tuple(float(v) for v in tip) for tip in tips]
+    if any(len(p) != 3 or not all(math.isfinite(v) for v in p) for p in points):
+        return {}
+    if all(v == 0.0 for p in points for v in p):  # not filled (fake glove, old driver)
+        return {}
+    thumb = points[0]
+    return {key: math.dist(thumb, p) for key, p in zip(TIP_DIST_KEYS, points[1:])}
+
+
 def features(angles: Mapping[str, float], specs: Sequence[FeatureSpec]) -> dict[str, float]:
-    return {spec.name: spec.value(angles) for spec in specs}
+    """Feature values; a feature whose inputs are absent (tip distances without tip data) is left out."""
+    return {spec.name: spec.value(angles) for spec in specs if all(j in angles for j in spec.weights)}

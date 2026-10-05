@@ -2,8 +2,9 @@
 
     ros2 run motion_acq_hand fake_glove --ros-args -p side:=right -p mode:=cycle
 
-mode cycle: curl, thumb bend and thumb opposition follow slow sines.
-mode pose:  hold a calibration pose (open | fist | thumb_opposed); switch it by
+mode cycle: curl, thumb bend and thumb opposition follow slow sines; every third
+            cycle the thumb pinches the index finger.
+mode pose:  hold a calibration pose (open | fist | thumb_opposed | pinch_*); switch it by
             publishing a pose name on /motion_acq/fake_glove/<side>/pose.
 dropout_every_s / dropout_s: stop publishing periodically (glove loss).
 """
@@ -28,7 +29,7 @@ from rclpy.node import Node
 from senseglove_msgs.msg import KinematicsVect3D, SenseGloveState
 from std_msgs.msg import String
 
-from motion_acq.hand.synthetic import POSE_ANGLES, synthetic_angles, synthetic_state
+from motion_acq.hand.synthetic import POSE_ANGLES, synthetic_angles, synthetic_state, synthetic_tips
 
 
 class FakeGlove(Node):
@@ -66,13 +67,15 @@ class FakeGlove(Node):
         curl = 0.5 - 0.5 * math.cos(phase)
         bend = 0.5 - 0.5 * math.cos(phase + 0.7)
         opposition = 0.5 - 0.5 * math.cos(0.5 * phase)
-        return synthetic_angles(curl, bend, opposition)
+        pinch = 0.5 - 0.5 * math.cos(phase / 3.0)
+        return synthetic_angles(curl, bend, opposition, ("index", pinch))
 
     def _tick(self) -> None:
         t = time.monotonic() - self.t0
         if self.dropout_every_s > 0 and (t % self.dropout_every_s) >= self.dropout_every_s - self.dropout_s:
             return
-        names, positions = synthetic_state(self.side, self._angles(t))
+        angles = self._angles(t)
+        names, positions = synthetic_state(self.side, angles)
         msg = SenseGloveState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "world"
@@ -80,7 +83,8 @@ class FakeGlove(Node):
         msg.position = [float(p) for p in positions]
         msg.absolute_velocity = [0.0] * len(names)
         msg.hand_position = [KinematicsVect3D() for _ in range(20)]
-        msg.finger_tip_position = [KinematicsVect3D() for _ in range(5)]
+        msg.finger_tip_position = [KinematicsVect3D(x=float(x), y=float(y), z=float(z))
+                                   for x, y, z in synthetic_tips(angles)]
         msg.imu_orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
         self.pub.publish(msg)
 

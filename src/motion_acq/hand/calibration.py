@@ -7,7 +7,7 @@ import statistics
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Collection, Mapping, Sequence
 
 import yaml
 
@@ -37,11 +37,12 @@ class HandCalibration:
     created: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S"))
     glove: str = "nova2"
 
-    def normalize(self, feats: Mapping[str, float]) -> dict[str, float]:
-        missing = [name for name in self.ranges if name not in feats]
+    def normalize(self, feats: Mapping[str, float], optional: Collection[str] = ()) -> dict[str, float]:
+        """n per calibrated feature; one listed in optional may be absent (left out of the result)."""
+        missing = [name for name in self.ranges if name not in feats and name not in optional]
         if missing:
             raise CalibrationError(f"features missing from the sample: {missing}")
-        return {name: r.normalize(feats[name]) for name, r in self.ranges.items()}
+        return {name: r.normalize(feats[name]) for name, r in self.ranges.items() if name in feats}
 
     def to_dict(self) -> dict:
         return {
@@ -79,22 +80,31 @@ def calibrate(
     pose_samples: Mapping[str, Sequence[Mapping[str, float]]],
     feature_poses: Mapping[str, tuple[str, str]],
     min_span: float,
+    relative_min_span: Mapping[str, float] | None = None,
 ) -> HandCalibration:
-    """Median feature value per pose -> open/closed range per feature."""
+    """Median feature value per pose -> open/closed range per feature.
+
+    min_span is absolute (rad); a feature in relative_min_span (tip distances, whose unit is
+    the glove's) must instead change by that fraction of its larger end."""
     medians: dict[str, dict[str, float]] = {}
     for pose, samples in pose_samples.items():
         if not samples:
             raise CalibrationError(f"pose {pose!r} has no samples")
-        names = samples[0].keys()
+        names = [n for n in samples[0] if all(n in s for s in samples)]
         medians[pose] = {n: statistics.median(s[n] for s in samples) for n in names}
     ranges = {}
     for feature, (open_pose, closed_pose) in feature_poses.items():
         for pose in (open_pose, closed_pose):
             if pose not in medians:
                 raise CalibrationError(f"pose {pose!r} (for {feature}) was not recorded")
+        for pose in (open_pose, closed_pose):
+            if feature not in medians[pose]:
+                raise CalibrationError(f"{feature} has no value at pose {pose!r} (glove tip data missing?)")
         lo, hi = medians[open_pose][feature], medians[closed_pose][feature]
-        if abs(hi - lo) < min_span:
-            raise PoseSpanError(feature, (open_pose, closed_pose), lo, hi, min_span)
+        ratio = (relative_min_span or {}).get(feature)
+        need = min_span if ratio is None else ratio * max(abs(lo), abs(hi))
+        if abs(hi - lo) < need:
+            raise PoseSpanError(feature, (open_pose, closed_pose), lo, hi, need)
         ranges[feature] = FeatureRange(lo, hi)
     return HandCalibration(side, user, ranges)
 
@@ -103,9 +113,9 @@ class PoseSpanError(CalibrationError):
     """Two poses that should differ gave (almost) the same feature value."""
 
     def __init__(self, feature: str, poses: tuple[str, str], lo: float, hi: float, min_span: float) -> None:
-        self.feature, self.poses, self.lo, self.hi = feature, poses, lo, hi
-        super().__init__(f"{feature}: {poses[0]} {lo:.3f} vs {poses[1]} {hi:.3f} rad differ by "
-                         f"less than {min_span} rad; redo those poses")
+        self.feature, self.poses, self.lo, self.hi, self.min_span = feature, poses, lo, hi, min_span
+        super().__init__(f"{feature}: {poses[0]} {lo:.3f} vs {poses[1]} {hi:.3f} differ by "
+                         f"less than {min_span:.3g}; redo those poses")
 
 
 # -- operator session (the ROS calibrate node supplies ask / record / say) -----------------------------
@@ -113,7 +123,8 @@ class PoseSpanError(CalibrationError):
 MAX_POSE_STD_RAD = 0.05  # a calibrated feature moving more than this while "still" -> ask again
 SIDE_KO = {"right": "오른손", "left": "왼손"}
 FEATURE_KO = {"index": "검지", "middle": "중지", "ring": "약지", "pinky": "새끼",
-              "thumb_bend": "엄지 굽힘", "thumb_opposition": "엄지 맞대기"}
+              "thumb_bend": "엄지 굽힘", "thumb_opposition": "엄지 맞대기",
+              "pinch_index": "엄지-검지 집기", "pinch_middle": "엄지-중지 집기", "pinch_ring": "엄지-약지 집기"}
 
 
 def pose_features(feature_poses: Mapping[str, tuple[str, str]], pose: str) -> tuple[str, ...]:
@@ -123,10 +134,21 @@ def pose_features(feature_poses: Mapping[str, tuple[str, str]], pose: str) -> tu
 
 def unsteady_features(
     samples: Sequence[Mapping[str, float]], names: Sequence[str], max_std: float,
+    max_std_relative: Mapping[str, float] | None = None,
 ) -> dict[str, float]:
-    """{feature: std} for the given features that moved more than max_std."""
-    spreads = {n: statistics.pstdev(s[n] for s in samples) for n in names}
-    return {n: v for n, v in spreads.items() if v > max_std}
+    """{feature: std} for the given features that moved more than max_std (rad), or more than
+    their max_std_relative fraction of the mean (tip distances)."""
+    out = {}
+    for n in names:
+        values = [s[n] for s in samples if n in s]
+        if len(values) < 2:
+            continue
+        spread = statistics.pstdev(values)
+        ratio = (max_std_relative or {}).get(n)
+        limit = max_std if ratio is None else ratio * abs(statistics.fmean(values))
+        if spread > limit:
+            out[n] = spread
+    return out
 
 
 def run_session(
@@ -141,6 +163,8 @@ def run_session(
     say: Callable[[str], None],
     max_tries: int = 3,
     max_std: float = MAX_POSE_STD_RAD,
+    relative_min_span: Mapping[str, float] | None = None,
+    max_std_relative: Mapping[str, float] | None = None,
 ) -> HandCalibration:
     """Walk the operator through every pose; a bad take repeats that pose only.
 
@@ -163,11 +187,11 @@ def run_session(
             except CalibrationError as exc:
                 say(f"  기록 실패 ({exc}): 같은 자세를 다시 합니다 ({attempt}/{max_tries})")
                 continue
-            moved = unsteady_features(samples, pose_features(feature_poses, pose), max_std)
+            moved = unsteady_features(samples, pose_features(feature_poses, pose), max_std, max_std_relative)
             if not moved:
                 say(f"  기록됨 ({len(samples)} 샘플)")
                 return samples
-            names = ", ".join(f"{FEATURE_KO.get(n, n)} {v:.2f} rad" for n, v in moved.items())
+            names = ", ".join(f"{FEATURE_KO.get(n, n)} {v:.2f}" for n, v in moved.items())
             say(f"  움직였습니다 ({names}): 같은 자세를 다시 합니다 ({attempt}/{max_tries})")
         raise CalibrationError(f"{step} 자세를 {max_tries}번 해도 기록하지 못했습니다")
 
@@ -176,7 +200,7 @@ def run_session(
     while True:
         try:
             return calibrate(side=side, user=user, pose_samples=samples,
-                             feature_poses=feature_poses, min_span=min_span)
+                             feature_poses=feature_poses, min_span=min_span, relative_min_span=relative_min_span)
         except PoseSpanError as exc:
             span_fails[exc.feature] = span_fails.get(exc.feature, 0) + 1
             name = FEATURE_KO.get(exc.feature, exc.feature)
@@ -184,7 +208,7 @@ def run_session(
                 raise CalibrationError(f"{name}: {max_tries}번 해도 {exc}") from exc
             redo = [p for p in order if p in exc.poses]
             say(f"  {name} 값이 두 자세에서 거의 같습니다 "
-                f"({exc.lo:.2f} vs {exc.hi:.2f} rad, {min_span} 이상 달라야 함): "
+                f"({exc.lo:.2f} vs {exc.hi:.2f}, {exc.min_span:.3g} 이상 달라야 함): "
                 f"{', '.join(f'{order.index(p) + 1}번' for p in redo)} 자세를 다시 합니다")
             for pose in redo:
                 samples[pose] = take(pose)

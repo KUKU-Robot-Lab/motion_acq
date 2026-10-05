@@ -278,6 +278,8 @@ class HandController:
             "features": step.features if step else None,
             "normalized": step.normalized if step else None,
             "q_target_rad": step.q_target if step else None,
+            "pinch": self.retargeter.pinch if following else None,
+            "pinch_weight": round(self.retargeter.pinch_weight, 3) if following else 0.0,
             "q_command_rad": step.q_command if step else None,
             "registers": out.angle,
             "measured_registers": None if self.measured is None else self.measured[0],
