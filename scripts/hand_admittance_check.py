@@ -4,10 +4,14 @@
 --via driver (default): sends the target on /hand_<s>/angle_target, the driver's canonical admittance at
 500 Hz (robot_control components/rh56f1.yaml) does the rest; offsets read from /hand_<s>/admittance_offset.
 --via local: runs motion_acq.hand.admittance (+ the grip guard) here at 120 Hz on angle_set (10.06 first try).
-One joint against an object held still in its way. The "operator" target ramps from 0.2 rad
-before the contact to `penetration` past it at `speed`, holds, then opens again. Reports per trial
-the held force (expected ~ stiffness x penetration below 800 g), the peak at impact, oscillation
-(force range over the last second of the hold) and the command -> force delay.
+One joint against an object held still in its way. The contact is where the object stops giving way
+(10.06: a cup first touched at 120 g then gave 30-60 registers at 5-7 g/register): a slow close past the first
+touch up to --stiff-stop-g, the stiff contact from motion_acq.hand.admittance.stiff_contact. The "operator"
+target ramps from 0.2 rad before it to `penetration` past it at `speed`, holds, then opens again. Reports per
+trial the held force against the expected stiffness x penetration (below 800 g; the contract's k, 10.06 user
+(A): the actuator reading, wherever it touches), the peak at impact, oscillation (force range over the last
+second of the hold) and the command -> force delay. Pass per trial: held within 25 % (or the hold band) of
+expected, range < 100 g, peak < 1200 g, current < 800 mA.
 
     source /opt/ros/humble/setup.bash; source ~/rl_ws/robot_control/ros_ws/install/setup.bash
     ROS_DOMAIN_ID=126 python3 scripts/hand_admittance_check.py --side right --joint index_1
@@ -31,13 +35,21 @@ from std_msgs.msg import Int32MultiArray  # noqa: E402
 from rh56f1_interfaces.msg import (GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1,  # noqa: E402
                                    SetSpeed1, TouchData1)
 
-from motion_acq.hand.admittance import Admittance  # noqa: E402
+import yaml  # noqa: E402
+
+from motion_acq.hand.admittance import Admittance, stiff_contact  # noqa: E402
 from motion_acq.hand.feedback import tip_forces_n  # noqa: E402
 from motion_acq.hand.grip_guard import GripGuard  # noqa: E402
 from motion_acq.hand.retarget import load_hand_retarget_config  # noqa: E402
 from motion_acq.hand.rh56f1 import load_rh56f1_map  # noqa: E402
 
 RATE = 120.0
+REG_PER_RAD = 550.0  # fingers 1740 open .. 900 closed
+CONTRACT = ROOT.parent / "robot_control" / "components" / "rh56f1.yaml"
+
+
+def contract_admittance() -> dict:
+    return yaml.safe_load(CONTRACT.read_text())["control"]["admittance"]
 
 
 class Hand(Node):
@@ -132,8 +144,9 @@ def ramp_trial(h: Hand, joint: str, q_contact: float, pen: float, speed: float, 
             if joint in caps:
                 q = min(q, caps[joint])
             reg, off = h.command(joint, q), offsets.get(joint, 0.0)
+        cur = h.guard.current[0].get(joint) if h.guard.current else None
         rows.append((round(t, 4), round(q_op, 4), round(q, 4), reg, round(measured[joint], 4),
-                     round(force.get(joint, 0.0), 1), off))
+                     round(force.get(joint, 0.0), 1), off, cur))
         next_t += 1.0 / RATE
         while time.monotonic() < next_t:
             rclpy.spin_once(h, timeout_sec=max(0.0, next_t - time.monotonic()))
@@ -145,11 +158,20 @@ def ramp_trial(h: Hand, joint: str, q_contact: float, pen: float, speed: float, 
     # delay: first tick the command moves past the contact -> first tick the force rises 60 g
     t_cmd = next((r[0] for r in rows if r[1] > q_contact + 0.01), None)
     t_f = next((r[0] for r in rows if r[5] > 60.0), None)
+    currents = [r[7] for r in rows if r[7] is not None]
     return {"penetration": pen, "speed": speed, "peak_g": max(forces, default=None),
+            "peak_ma": max(currents, default=None),
             "held_g": statistics.median(held) if held else None,
             "held_range_g": (max(held) - min(held)) if held else None,
             "offset_rad": hold[-1][6] if hold else None, "cmd_to_force_s": None if None in (t_cmd, t_f) else t_f - t_cmd,
             "rows": rows}
+
+
+def trial_pass(r: dict, hold_band_g: float) -> bool:
+    held, exp = r["held_g"], r["expected_g"]
+    return (held is not None and abs(held - exp) <= max(0.25 * exp, hold_band_g)
+            and r["held_range_g"] < 100.0 and r["peak_g"] < 1200.0
+            and (r["peak_ma"] is None or r["peak_ma"] < 800.0))
 
 
 def main(argv=None) -> int:
@@ -159,6 +181,8 @@ def main(argv=None) -> int:
     ap.add_argument("--penetrations", default="0.1,0.2,0.4")
     ap.add_argument("--speeds", default="0.5,4.0", help="operator target speeds, rad/s")
     ap.add_argument("--hold-s", type=float, default=3.0)
+    ap.add_argument("--stiff-stop-g", type=float, default=350.0,
+                    help="contact search: close past the first touch until this force over rest")
     ap.add_argument("--via", choices=("driver", "local"), default="driver",
                     help="driver: angle_target (the driver's 500 Hz admittance); local: this script at 120 Hz")
     args = ap.parse_args(argv)
@@ -181,23 +205,44 @@ def main(argv=None) -> int:
         h.spin(1.0 / RATE)
         h.guard.learn_rest(time.monotonic())
     print(f"{args.side} {j}: rest bias {h.guard.bias.get(j)} g")
-    # find the contact: slow position close (0.4 rad/s), stop at 120 g over rest
+    # first touch: slow position close (0.4 rad/s), 120 g over rest
     q = open_q
     t_end = time.monotonic() + 8.0
-    contact = None
+    touch = None
     while time.monotonic() < t_end and q < h.limits[j][1]:
         q += 0.4 / RATE
         h.command(j, q)
         h.spin(1.0 / RATE)
         if h.guard.relative_force(time.monotonic()).get(j, 0.0) >= 120.0:
-            contact = h.rad()[j]
+            touch = h.rad()[j]
+            break
+    if touch is None:
+        h.command(j, open_q)
+        h.spin(1.0)
+        print("✗ no contact found: the object is not in the way")
+        return 1
+    # past it at 0.1 rad/s until --stiff-stop-g (or 4 s): where the object stops giving way
+    trace = []
+    t_end = time.monotonic() + 4.0
+    while time.monotonic() < t_end and q < h.limits[j][1]:
+        q += 0.1 / RATE
+        h.command(j, q)
+        h.spin(1.0 / RATE)
+        f = h.guard.relative_force(time.monotonic()).get(j, 0.0)
+        trace.append((h.rad()[j], f))
+        if f >= args.stiff_stop_g:
             break
     h.command(j, open_q)
     h.spin(1.0)
-    if contact is None:
-        print("✗ no contact found: the object is not in the way")
-        return 1
-    print(f"contact at {contact:.3f} rad")
+    stiff = stiff_contact(trace)
+    if stiff is None:
+        stiff = trace[-1][0]
+        print(f"! the object kept giving way up to {trace[-1][1]:.0f} g: contact = that point (soft object)")
+    contact = stiff
+    print(f"first touch {touch:.3f} rad, stiff contact {contact:.3f} rad "
+          f"(+{(contact - touch) * REG_PER_RAD:.0f} registers)")
+    adm = contract_admittance()
+    k_rad = adm["k_g_per_reg"] * REG_PER_RAD if args.via == "driver" else h.adm.config.stiffness_g_per_rad
     out = ROOT / "logs" / "hand" / f"admittance_check_{args.side}_{j}_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -205,10 +250,13 @@ def main(argv=None) -> int:
             for sp in [float(v) for v in args.speeds.split(",")]:
                 for pen in [float(v) for v in args.penetrations.split(",")]:
                     r = ramp_trial(h, j, contact, pen, sp, args.hold_s)
-                    fh.write(json.dumps({"joint": j, "contact": contact, **r}) + "\n")
+                    r["expected_g"] = round(min(k_rad * pen, adm["f_max_g"]), 1)
+                    r["pass"] = trial_pass(r, adm["hold_band_g"])
+                    fh.write(json.dumps({"joint": j, "touch": touch, "contact": contact, **r}) + "\n")
                     fh.flush()
-                    print(f"pen {pen:.2f} rad @ {sp:.1f} rad/s: held {r['held_g']} g (range {r['held_range_g']}), "
-                          f"peak {r['peak_g']} g, offset {r['offset_rad'] and round(r['offset_rad'], 3)} rad, "
+                    print(f"{'✓' if r['pass'] else '✗'} pen {pen:.2f} rad @ {sp:.1f} rad/s: held {r['held_g']} g "
+                          f"/ expected {r['expected_g']} g (range {r['held_range_g']}), "
+                          f"peak {r['peak_g']} g / {r['peak_ma']} mA, offset {r['offset_rad'] and round(r['offset_rad'], 3)} rad, "
                           f"cmd->force {r['cmd_to_force_s'] and round(r['cmd_to_force_s'] * 1000)} ms", flush=True)
     finally:
         h.command(j, open_q)

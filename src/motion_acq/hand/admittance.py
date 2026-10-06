@@ -43,7 +43,7 @@ class AdmittanceConfig:
     max_force_g: float = 800.0  # above this the force term backs off far faster (operator closing a lot)
     over_stiffness_g_per_rad: float = 200.0  # ... at this stiffness: f = 800 + 200 g per rad more closing
     max_offset_rad: float = 1.6  # never more than the whole finger range
-    proximal_scale: float = 0.7  # tip sensor quiet: link 1 contact, count the force 1 / 0.7 times
+    proximal_scale: float = 1.0  # tip sensor quiet (link 1 contact): force / this; 10.06 user (A): 1.0, no boost
     tip_contact_n: float = 0.2
 
     def __post_init__(self) -> None:
@@ -118,3 +118,24 @@ class Admittance:
         active = {j: {"offset_rad": round(y, 4), "force_g": round(self.force.get(j, 0.0))}
                   for j, y in self.offset.items() if y > 1e-4}
         return active or None
+
+
+def stiff_contact(trace: list[tuple[float, float]], slope_g_per_rad: float = 8000.0, span_rad: float = 0.01,
+                  min_span_rad: float = 0.004) -> float | None:
+    """First measured angle from which the force climbs at least `slope_g_per_rad` (the object stops giving way).
+
+    trace: (measured angle rad, force g over rest) while closing slowly, the angle increasing. The slope is taken
+    over `span_rad` ahead, or up to the last sample when the trace ends sooner (a stall: the force rises, the angle
+    does not), but never over less than `min_span_rad` (1 register ~0.0018 rad). 10.06 right index + cup: a first
+    touch at 120 g, then 30-60 registers more at 5-7 g/register before the cup stopped giving (rigid: 55-100).
+    May land up to `span_rad` early (the window straddles the knee): <= ~20 g of penetration at 2000 g/rad.
+    None: never that stiff.
+    """
+    for i, (q0, f0) in enumerate(trace):
+        ahead = [(q, f) for q, f in trace[i + 1:] if q - q0 >= span_rad]
+        q1, f1 = ahead[0] if ahead else trace[-1]
+        if q1 - q0 >= min_span_rad and (f1 - f0) / (q1 - q0) >= slope_g_per_rad:
+            return q0
+        if not ahead:
+            return None
+    return None

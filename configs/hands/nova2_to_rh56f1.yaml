@@ -160,7 +160,7 @@ admittance:
   max_force_g: 800.0              # above: backs off at over_stiffness (soft ceiling ~800 g + 200 g/rad)
   over_stiffness_g_per_rad: 200.0
   max_offset_rad: 1.6
-  proximal_scale: 0.7
+  proximal_scale: 1.0     # 10.06 user (A): no link 1 boost, the actuator reading is the grip force
   tip_contact_n: 0.2
 
 # Grip guard (motion_acq.hand.grip_guard; 10.06 user: the hand must protect itself, the haptics

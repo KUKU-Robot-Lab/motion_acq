@@ -30,10 +30,19 @@ def test_offset_settles_at_force_over_stiffness():
 
 
 def test_link_1_contact_counts_more_force():
-    a, b = Admittance(), Admittance()
+    cfg = AdmittanceConfig(proximal_scale=0.7)
+    a, b = Admittance(cfg), Admittance(cfg)
     tip, _ = run(a, 440.0, 2.0, tip=1.0)
     link1, _ = run(b, 440.0, 2.0, tip=0.0)
     assert link1["index_1"] == pytest.approx(tip["index_1"] / 0.7, rel=0.01)
+
+
+def test_default_reading_is_the_grip_force_wherever_it_touches():
+    """10.06 user (A): no link 1 boost by default."""
+    a, b = Admittance(), Admittance()
+    tip, _ = run(a, 440.0, 2.0, tip=1.0)
+    link1, _ = run(b, 440.0, 2.0, tip=0.0)
+    assert link1["index_1"] == pytest.approx(tip["index_1"], rel=1e-6)
 
 
 def test_filter_and_cap():
@@ -113,3 +122,16 @@ def test_driver_admittance_is_the_default_and_excludes_ours():
     from hand_fixtures import CONFIG
 
     assert CONFIG.driver_command == "angle_target" and not CONFIG.admittance.enabled
+
+
+def test_stiff_contact_skips_the_soft_first_touch():
+    from motion_acq.hand.admittance import stiff_contact
+
+    reg = 1 / 550
+    soft = [(0.6 + i * reg, 120.0 + 6.0 * i) for i in range(40)]           # cup giving way, 6 g/register
+    q_stiff = soft[-1][0]
+    rigid = [(q_stiff + i * reg, soft[-1][1] + 55.0 * i) for i in range(1, 5)]  # 55 g/register
+    assert q_stiff - 0.01 <= stiff_contact(soft + rigid) <= q_stiff  # early by <= the span (~20 g at 2000 g/rad)
+    assert stiff_contact(soft) is None
+    stall = [(0.6, 120.0), (0.6 + reg, 130.0), (0.6 + 3 * reg, 150.0), (0.6 + 3 * reg, 300.0)]
+    assert stiff_contact(stall) == pytest.approx(0.6, abs=1e-9)  # the trace ends in a stall: slope to the last sample
