@@ -7,7 +7,8 @@
 #   scripts/quest_usb.sh launch    # (re)start the app in the headset over adb
 #   scripts/quest_usb.sh view      # head camera page instead of the app (macq quest-view runs), enters VR
 #   scripts/quest_usb.sh page      # the same page, without entering VR (the console's [연결]; vr = [시작])
-#   scripts/quest_usb.sh vr        # (re)enter VR on the open page from the PC; vr --status = page state
+#   scripts/quest_usb.sh vr        # (re)enter VR on the open page from the PC (an asleep headset is woken
+#                                  # with the proximity sensor off first); vr --status = page state
 #   scripts/quest_usb.sh app       # back to the HandUMI app (forward + launch)
 #   scripts/quest_usb.sh unworn    # keep the headset awake off the head (proximity sensor off), wake it
 #   scripts/quest_usb.sh worn      # proximity sensor back to normal (also after a Quest reboot)
@@ -107,7 +108,9 @@ cmd_vr() {
   # WebXR needs a user gesture in the page; the browser devtools give it to the PC.
   one_device
   if [[ "${1:-}" != "--status" ]] && "$ADB" shell dumpsys power | grep -q "mWakefulness=Asleep"; then
-    die "the headset is asleep (not worn): put it on, or $0 unworn to use it off the head, then run $0 vr"
+    # 10.06 user: the headset is used off the head as well: wake it with the proximity sensor off
+    echo "the headset is asleep (not worn): proximity sensor off and wake it ..."
+    cmd_unworn
   fi
   "$ROOT/.venv/bin/python" -m motion_acq.quest_view.devtools --view-port "$VIEW_PORT" "$@"
 }

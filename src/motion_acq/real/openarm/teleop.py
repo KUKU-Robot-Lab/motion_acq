@@ -88,6 +88,10 @@ class OpenArmBackend:
         # a commanded opening as physical feedback.
         return {}
 
+    def hand_phase(self, phase: str, sides: tuple[str, ...]) -> None:
+        """RH56F1 hands (motion_acq.hand_link): teleop = the arm follows the operator, home = parked."""
+        self.environment.hand_phase(phase, tuple(sides))
+
     def home(self, q: np.ndarray) -> None:
         self._last_q = np.asarray(q, dtype=np.float32).copy()
         self.environment.home(q, list(self.joint_names))

@@ -16,8 +16,9 @@ States
 Arm link (10.06 user: fist -> arm home -> hand open): while the arm moves along its stored rest <-> home
 path or rests (set_arm_phase "path" / "rest"), the hand is held at rest (phase REST), a disabled hand
 included (the arm start was approved with it); when the arm arrives home from its path the hand is
-enabled ([팔 시작] = rest -> home, then the fingers): it opens, takes the reference and follows the glove.
-at_rest() is what the arm waits for.
+enabled and opens (home) and waits there (WAIT_ARM); it takes the reference and follows the glove only
+once the arm follows the operator ("teleop", 10.06 user: not when the hand opens at home), and goes back
+to the open hand when the arm parks ("home"). at_rest() is what the arm waits for.
 
 Enable needs: a fresh angle_actual whose six registers are plausible (no 0,
 -1 or 65535 sentinels, within each axis' command range ± margin), and every
@@ -78,6 +79,7 @@ class Phase(str, Enum):
     FOLLOW = "follow"
     RETURN = "return_home"  # after disable: walk to rest (fist), then disable
     REST = "rest"  # the arm moves along its path or rests: hold the fist
+    WAIT_ARM = "wait_arm"  # at home (open), the arm is home but not following the operator yet
 
 
 @dataclass(frozen=True)
@@ -233,7 +235,7 @@ class HandController:
         arrives home from its path enables the hand."""
         if phase not in ARM_PHASES:
             raise ValueError(f"arm phase must be one of {ARM_PHASES}, not {phase!r}")
-        if phase == "home" and self.arm_phase == "path" and self.mode is not Mode.FAULT:
+        if phase in ("home", "teleop") and self.arm_phase == "path" and self.mode is not Mode.FAULT:
             self.want_enable = True
         self.arm_phase = phase
 
@@ -330,10 +332,14 @@ class HandController:
             self._take_reference(t)
             return step
         if self._at_home(t):
+            if self.arm_phase == "home":   # the arm is home but does not follow the operator: wait open
+                if self.phase is not Phase.WAIT_ARM:
+                    self._set_phase(Phase.WAIT_ARM, t)
+                return step
             cfg = self.retargeter.config
             self._reference, self.reference_note = [], None
             self._set_phase(Phase.REFERENCE if cfg.reference_s > 0 else Phase.FOLLOW, t)
-        elif t - self._phase_t0 > self.config.home_timeout_s:
+        elif self.phase is not Phase.WAIT_ARM and t - self._phase_t0 > self.config.home_timeout_s:
             self.mode = Mode.FAULT
             self.fault_reason = f"home not reached in {self.config.home_timeout_s:g} s"
             self.retargeter.state = HandState.IDLE
@@ -413,8 +419,10 @@ class HandController:
             self.last_refusal = self._try_enable(t, subscribers_ready,
                                                  Phase.REST if self.arm_hold else Phase.TO_HOME)
         if self.mode is Mode.ENABLED and self.arm_hold and self.phase in (Phase.TO_HOME, Phase.REFERENCE,
-                                                                          Phase.FOLLOW):
+                                                                          Phase.FOLLOW, Phase.WAIT_ARM):
             self._set_phase(Phase.REST, t)
+        if self.mode is Mode.ENABLED and self.arm_phase == "home" and self.phase in (Phase.REFERENCE, Phase.FOLLOW):
+            self._set_phase(Phase.TO_HOME, t)   # the arm parked: back to the open hand, wait
         if self.mode is Mode.ENABLED and not self._measured_fresh(t):
             self.mode = Mode.FAULT
             self.fault_reason = f"angle_actual lost for > {self.config.measured_stale_s} s"

@@ -426,9 +426,15 @@ def test_arm_path_holds_the_fist_then_home_opens_and_follows():
         out = rig.step(POSE_ANGLES["open"])
     assert rig.ctl.mode is Mode.ENABLED and out.record["phase"] == "rest" and rig.ctl.at_rest(rig.t)
     rig.ctl.set_arm_phase("home")
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["phase"] == "wait_arm")
+    for _ in range(int(6.0 / DT)):    # open at home, the glove ignored, no timeout while the arm idles
+        out = rig.step(POSE_ANGLES["fist"])
+    assert out.record["phase"] == "wait_arm" and rig.ctl.mode is Mode.ENABLED
+    assert max(abs(a - b) for a, b in zip(rig.hand, HOME_R, strict=True)) <= 2
+    rig.ctl.set_arm_phase("teleop")   # the arm follows the operator: now the glove
     out = run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["state"] == "running")
-    assert max(abs(a - b) for a, b in zip([o for o in rig.sent if o.record["phase"] == "to_home"][-1].angle,
-                                          HOME_R, strict=True)) <= 2   # opened at home before following
+    rig.ctl.set_arm_phase("home")     # the arm parked: back to the open hand
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["phase"] == "wait_arm")
 
 
 def test_arm_start_parks_a_disabled_hand_then_home_hands_it_the_glove():
@@ -440,8 +446,9 @@ def test_arm_start_parks_a_disabled_hand_then_home_hands_it_the_glove():
     run_until(rig, POSE_ANGLES["open"], lambda o: rig.ctl.at_rest(rig.t))
     assert not rig.ctl.want_enable
     rig.ctl.set_arm_phase("home")
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["phase"] == "wait_arm")   # opened, waiting
+    rig.ctl.set_arm_phase("teleop")
     run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["state"] == "running")
-    assert any(o.record["phase"] == "to_home" for o in rig.sent)   # opened at home first
     rig.ctl.set_arm_phase("path")                                  # the stop: fist again
     run_until(rig, POSE_ANGLES["fist"], lambda o: rig.ctl.at_rest(rig.t))
     rig.ctl.set_arm_phase("rest")

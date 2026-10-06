@@ -642,6 +642,12 @@ class OpenArmCanEnvironment:
             link.announce("home", self.active_sides)  # the hands open and follow the gloves again
             log.info("hand link: arms home, the %s hand(s) may open", "/".join(self.active_sides))
 
+    def hand_phase(self, phase: str, sides: tuple[str, ...]) -> None:
+        """Tell the RH56F1 hands of these arms what the arm does (teleop: follow the gloves; home: wait open)."""
+        link = self._link()
+        if link is not None and sides:
+            link.announce(phase, sides)
+
     def _link(self) -> HandLink | None:
         if self._hand_link is None and self.settings.hand_link:
             self._hand_link = HandLink(dict(self.settings.hand_link), wait_s=self.settings.hand_link_wait_s,

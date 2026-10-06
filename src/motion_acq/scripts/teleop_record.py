@@ -742,6 +742,12 @@ class AsyncEpisodeCapture:
                 )
 
 
+def _hand_phase(real_env, phase: str, sides) -> None:
+    hand_phase = getattr(real_env, "hand_phase", None)
+    if callable(hand_phase):
+        hand_phase(phase, tuple(sides))
+
+
 def _log_episode_interface(
     episode: int,
     total: str,
@@ -970,6 +976,7 @@ def _home_between_episodes(
     # command streamer while the original one can still be publishing the
     # previous episode, making the two streams fight over the robot.  Reuse
     # the initialized streamer for every episode transition instead.
+    _hand_phase(real_env, "home", enabled_sides)  # the hands open and wait while the arms go home
     real_env.move_home(home_q)
     reset_q = controller.reset()
     joint_filter.reset(reset_q)
@@ -1585,6 +1592,7 @@ def record_episode(
                     "/".join(parked),
                     park_hold_s,
                 )
+                _hand_phase(real_env, "home", parked)
                 for side in parked:
                     log_say(f"{side} arm standby", play_sounds=play_sounds)
         if wake_sides:
@@ -1654,6 +1662,7 @@ def record_episode(
             continue
         anchored = teleop_frame.anchored_sides
         if anchored:
+            _hand_phase(real_env, "teleop", anchored)  # the RH56F1 hands follow the gloves (hand_link)
             record_log.info(
                 "Teleop arm anchored from home: %s.", "/".join(anchored)
             )

@@ -1,12 +1,13 @@
 """Arm process <-> RH56F1 hand nodes over localhost UDP: the hand is a fist while the arm moves.
 
 10.06 user: on the arm start the hands go fist -> the arm plays its stored path rest -> home -> the hands
-open and follow the gloves; on the stop the hands close again before the path home -> rest. The stored
+open and wait; they follow the gloves only once that arm follows the operator (anchored), and go back to
+the open hand when it parks; on the stop the hands close again before the path home -> rest. The stored
 paths were planned with the RH56F1 closed (sim2real hand_path_pose; an open hand at rest touches the base
 plate). The arm process has no ROS, so it talks to each hand node (motion_acq_hand hand_node,
 parameter arm_link_port) over UDP:
 
-    arm  -> hand port   {"arm": "path" | "home" | "rest"}     (repeated every beat_s by a heartbeat)
+    arm  -> hand port   {"arm": "path" | "home" | "teleop" | "rest"}   (repeated every beat_s by a heartbeat)
     hand -> arm sender  {"side": .., "at_rest": bool, "mode": .., "phase": .., "fault": ..}
 
 require_rest() blocks the arm until every hand of the moving arms reports at_rest, and raises
@@ -25,7 +26,9 @@ from collections.abc import Callable, Iterable, Mapping
 
 log = logging.getLogger(__name__)
 
-ARM_PHASES = ("path", "home", "rest")
+# path: the arm plays its stored rest <-> home path (hand: fist); rest: at rest (fist); home: at home, not
+# following the operator (hand: open, still); teleop: the arm follows the operator (hand: the glove).
+ARM_PHASES = ("path", "home", "teleop", "rest")
 
 
 class HandLinkError(RuntimeError):

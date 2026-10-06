@@ -568,6 +568,7 @@ def _run_real() -> None:
                         "/".join(parked),
                         args.gripper_park_hold_s,
                     )
+                    _hand_phase(real_env, "home", parked)
                     for side in parked:
                         log_say(f"{side} arm standby", play_sounds=play_sounds)
             if wake_sides:
@@ -647,6 +648,8 @@ def _run_real() -> None:
                 continue
             anchored_sides = teleop_frame.anchored_sides
             anchored_this_frame = bool(anchored_sides)
+            if anchored_sides:  # the RH56F1 hands of these arms follow the gloves from now (hand_link)
+                _hand_phase(real_env, "teleop", anchored_sides)
             for side in anchored_sides:
                 real_log.info("%s arm anchored; real robot follows from home.", side)
                 log_say(f"{side} anchored", play_sounds=play_sounds)
@@ -777,6 +780,12 @@ def _run_real() -> None:
                         camera_worker.close()
                     if camera_views is not None:
                         camera_views.close()
+
+
+def _hand_phase(real_env, phase: str, sides) -> None:
+    hand_phase = getattr(real_env, "hand_phase", None)
+    if callable(hand_phase):
+        hand_phase(phase, tuple(sides))
 
 
 def main() -> None:

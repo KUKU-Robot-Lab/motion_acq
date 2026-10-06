@@ -124,6 +124,8 @@ def test_fake_right_arm_goes_rest_home_rest(monkeypatch):
         backend.home(home)
         assert seen[0] == ("fist", ("right",)) and seen[1][0] == "rest -> home" and seen[-1] == ("home", ("right",))
         assert np.allclose(env.streamer.feedback()["right"], home_of("right"), atol=0.1)
+        backend.hand_phase("teleop", ("right",))
+        assert seen[-1] == ("teleop", ("right",))
         backend.move_home(home)
         backend.rest(home)
         assert [s[0] for s in seen[-3:]] == ["fist", "home -> rest", "rest"]
