@@ -121,6 +121,10 @@ examples:
 
 # sim2real contract hand_home: RH56F1 open (thumb_1 1.57, the rest 0).
 home_rad: {thumb_1: 1.57, thumb_2: 0.0, index_1: 0.0, middle_1: 0.0, ring_1: 0.0, pinky_1: 0.0}
+# Rest = fist (10.06 user: the hand's default pose; the arm start goes fist -> arm home -> hand open -> glove).
+# sim2real pd_rh56f1 hand_path_pose (10.01 user: "차렷부터 주먹같이 굽혀야 바닥에 안 닿는다"; the stored
+# rest <-> home arm paths were planned with this hand). A disable and the node's exit end here too.
+rest_rad: {thumb_1: 0.8, thumb_2: 0.3, index_1: 1.45, middle_1: 1.45, ring_1: 1.45, pinky_1: 1.45}
 
 # 10.05 user test: the hand lagged the glove by 220-350 ms, 160-270 ms of it
 # here (a 1.5 Hz One Euro filter and a 2.0 rad/s limit). The glove is quiet

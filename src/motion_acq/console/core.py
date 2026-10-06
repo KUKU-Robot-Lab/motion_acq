@@ -328,7 +328,10 @@ class Console:
         if kind == "hand_on":
             return self._hand_on(units.check_side(arg), confirm=confirm, token=token)
         if kind == "hand_off":
-            return self.stop(f"hand_{units.check_side(arg)}")  # SIGINT: the node walks the hand open, exits
+            side = units.check_side(arg)
+            if side in self.station.hand_link and any(self.sup.is_running(k) for k in ARM_UNITS):
+                return {"ok": False, "error": "팔을 먼저 정지할 것: 팔이 차렷으로 돌아갈 때 손을 주먹으로 쥐어야 한다"}
+            return self.stop(f"hand_{side}")  # SIGINT: the node closes the hand to the fist, exits
         if kind == "driver_off":
             side = units.check_side(arg)
             if self.sup.is_running(f"hand_{side}"):

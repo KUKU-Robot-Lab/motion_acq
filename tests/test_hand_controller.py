@@ -41,6 +41,7 @@ def make_controller(side: str = "right", amplitude: float = 1.0, reference_s: fl
 
 
 HOME_R = HAND_MAP.to_registers(CONFIG.home_rad, side="right")
+REST_R = HAND_MAP.to_registers(CONFIG.park_rad, side="right")  # fist
 
 
 class Rig:
@@ -184,8 +185,8 @@ def test_enable_walks_home_before_following_the_glove():
     assert rig.ctl.mode is Mode.ENABLED
 
 
-def test_disable_walks_home_then_disables():
-    """End pose = home: a disable opens the hand under the rate limit, then stops."""
+def test_disable_walks_to_the_fist_then_disables():
+    """End pose = rest (fist, 10.06 user): a disable closes the hand under the rate limit, then stops."""
     rig = Rig(make_controller())
     rig.ctl.request_enable(True)
     run_until(rig, POSE_ANGLES["fist"], lambda o: o.angle is not None and o.angle[3] < 1000)
@@ -193,12 +194,12 @@ def test_disable_walks_home_then_disables():
     out = rig.step(POSE_ANGLES["fist"])
     assert out.record["state"] == "homing" and rig.ctl.busy
     run_until(rig, POSE_ANGLES["fist"], lambda o: rig.ctl.mode is Mode.DISABLED)
-    assert max(abs(a - b) for a, b in zip(rig.hand, HOME_R, strict=True)) <= 2
+    assert max(abs(a - b) for a, b in zip(rig.hand, REST_R, strict=True)) <= 2
     assert not rig.ctl.busy
     assert all(rig.step(POSE_ANGLES["fist"]).angle is None for _ in range(10))
 
 
-def test_home_not_reached_is_a_fault_at_start_and_a_disable_at_the_end():
+def test_home_not_reached_is_a_fault_at_start_and_rest_not_reached_a_disable_at_the_end():
     ctl = make_controller(home_timeout_s=1.0)
     rig = Rig(ctl)
     rig.hand = [1300, 1250, 1200, 1150, 1250, 1200]
@@ -217,7 +218,7 @@ def test_home_not_reached_is_a_fault_at_start_and_a_disable_at_the_end():
     for _ in range(int(1.5 / DT)):
         rig.step(POSE_ANGLES["fist"])
         rig.hand = list(stuck)
-    assert ctl.mode is Mode.DISABLED and "home not reached" in rig.sent[-1].record["refusal"]
+    assert ctl.mode is Mode.DISABLED and "rest (fist) not reached" in rig.sent[-1].record["refusal"]
 
 
 def test_reenable_reseeds_from_the_new_measured_pose():
@@ -410,3 +411,48 @@ def test_a_moving_hand_at_reference_times_out_to_the_saved_calibration():
         if out.record["phase"] == "follow":
             break
     assert "saved calibration" in (out.record["reference"] or "")
+
+
+def test_arm_path_holds_the_fist_then_home_opens_and_follows():
+    """10.06 user: fist -> arm home -> hand open -> glove."""
+    rig = Rig(make_controller())
+    rig.ctl.request_enable(True)
+    run_until(rig, POSE_ANGLES["open"], lambda o: o.record["state"] == "running")
+    rig.ctl.set_arm_phase("path")
+    out = rig.step(POSE_ANGLES["open"])
+    assert out.record["phase"] == "rest" and out.record["arm"] == "path"
+    run_until(rig, POSE_ANGLES["open"], lambda o: rig.ctl.at_rest(rig.t))
+    for _ in range(int(6.0 / DT)):  # held as long as the arm moves, past home_timeout_s
+        out = rig.step(POSE_ANGLES["open"])
+    assert rig.ctl.mode is Mode.ENABLED and out.record["phase"] == "rest" and rig.ctl.at_rest(rig.t)
+    rig.ctl.set_arm_phase("home")
+    out = run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["state"] == "running")
+    assert max(abs(a - b) for a, b in zip([o for o in rig.sent if o.record["phase"] == "to_home"][-1].angle,
+                                          HOME_R, strict=True)) <= 2   # opened at home before following
+
+
+def test_arm_parks_a_hand_nobody_enabled_and_leaves_it_at_the_fist():
+    rig = Rig(make_controller())
+    assert rig.step(POSE_ANGLES["open"]).angle is None
+    rig.ctl.set_arm_phase("path")
+    run_until(rig, POSE_ANGLES["open"], lambda o: rig.ctl.at_rest(rig.t))
+    rig.ctl.set_arm_phase("home")
+    rig.step(POSE_ANGLES["open"])                   # last command: the fist
+    out = rig.step(POSE_ANGLES["open"])
+    assert rig.ctl.mode is Mode.DISABLED and out.angle is None
+    assert max(abs(a - b) for a, b in zip(rig.hand, REST_R, strict=True)) <= 2
+    rig.ctl.request_enable(True)                     # [켜기] at home: open, then the glove
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["state"] == "running")
+
+
+def test_a_blocked_fist_is_a_fault_the_arm_sees():
+    ctl = make_controller(home_timeout_s=1.0)
+    rig = Rig(ctl)
+    ctl.set_arm_phase("path")
+    stuck = list(rig.hand)
+    for _ in range(int(1.5 / DT)):
+        rig.step(POSE_ANGLES["open"])
+        rig.hand = list(stuck)  # something in the hand
+    assert ctl.mode is Mode.FAULT and "rest (fist) not reached" in ctl.fault_reason and not ctl.at_rest(rig.t)
+    with pytest.raises(ValueError):
+        ctl.set_arm_phase("dance")

@@ -118,6 +118,11 @@ axes (forward / left / up) while the robot stays still; [방향 맞음] allows i
   first. Children are listed in `logs/console/running.json`, so a console
   started after a crash shows what is still running. Logs per unit:
   `logs/console/<time>/`, every operator action: `logs/console/intents.jsonl`.
+- Arm and hands (arm4090, 10.06): the arm start closes the RH56F1 hands to the fist (rest), plays the
+  stored path rest -> home, then the hands open and follow the gloves; the stop closes them again before
+  the path home -> rest (`motion_acq.hand_link`, UDP `robots.openarm_rh56f1.hand_link` of the station).
+  So the hand nodes must run before [팔 시작], and [끄기] on a hand is refused while the arm runs. A hand
+  [끄기] alone ends at the fist too.
 - The RH56F1 EtherCAT driver is never started here: bring it up from the s2r
   console. arm5080 has no head, gloves or hands in its rig, so those cards are hidden.
 

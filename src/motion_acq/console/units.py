@@ -71,6 +71,12 @@ class Station:
         return tuple(side for side in SIDES if f"hand_{side}" in self.sidecars)
 
     @property
+    def hand_link(self) -> dict[str, int]:
+        """side -> UDP port the arm process uses to close that hand before its path (motion_acq.hand_link)."""
+        raw = ((self.rig.get("robots") or {}).get(self.robot) or {}).get("hand_link") or {}
+        return {side: int(port) for side, port in raw.items() if side in SIDES}
+
+    @property
     def ros_domain(self) -> str | None:
         value = (self.rig.get("hands") or {}).get("ros_domain_id")
         return None if value is None else str(int(value))
@@ -287,9 +293,13 @@ def hand(station: Station, mode: str, side: str, user: str, log_dir: Path) -> La
         command = (f"ros2 run motion_acq_hand hand_node --ros-args -r __node:=motion_acq_hand_{side} "
                    f"-p side:={side} -p glove_topic:={topic} -p calibration:={cal} "
                    f"-p udp_target:={udp} -p log_dir:={log_dir}")
+        if side in station.hand_link:
+            command += f" -p arm_link_port:={station.hand_link[side]}"
     else:
         command = (f"ros2 launch motion_acq_hand fake_hand.launch.py side:={side} calibration:={cal} "
                    f"udp_target:={udp} enable_on_start:=false")
+        if side in station.hand_link:
+            command += f" arm_link_port:={station.hand_link[side]}"
     side_ko = "오른손" if side == "right" else "왼손"
     return Launch(f"hand_{side}", f"{side_ko} 노드", ros_argv(command), _ros_env(station, mode),
                   summary=f"{side_ko}: 꺼진 채로 뜬다(손은 안 움직인다). 켜기는 따로 승인.", stop_grace_s=15.0)
@@ -326,8 +336,8 @@ def hand_enable(station: Station, mode: str, side: str, on: bool) -> Launch:
     side_ko = "오른손" if side == "right" else "왼손"
     return Launch(f"task_hand_{'on' if on else 'off'}_{side}", f"{side_ko} {'켜기' if on else '끄기'}",
                   ros_argv(command), _ros_env(station, mode), moves_robot=_real(mode) and on,
-                  summary=(f"{side_ko}: home(펼침)으로 간 뒤 장갑을 따라간다." if on
-                           else f"{side_ko}: home(펼침)으로 돌아간 뒤 멈춘다."),
+                  summary=(f"{side_ko}: home(펼침)으로 간 뒤 장갑을 따라간다(팔이 경로를 도는 동안은 주먹)." if on
+                           else f"{side_ko}: 주먹(rest)으로 쥔 뒤 멈춘다."),
                   stop_grace_s=5.0)
 
 

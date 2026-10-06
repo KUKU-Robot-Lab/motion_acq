@@ -292,6 +292,8 @@ def test_real_arm_blockers(console, monkeypatch):
                                  "left": {"port": "can1", "up": False, "fd": False}}})
     monkeypatch.setattr(console, "probe_raw", lambda name: probes_now.get(name))
     console.update_settings({"arm_side": "right"})
+    assert any("오른손 노드" in b for b in console.blockers("arm"))  # 10.06: the arm closes the hand first
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key in ("hand_right", "hand_left"))
     assert console.blockers("arm") == []
     console.update_settings({"arm_side": "both"})
     assert any("can1" in b for b in console.blockers("arm"))
@@ -424,7 +426,7 @@ def test_webxr_arm_needs_the_direction_check(console, monkeypatch):
     console.set_mode("real")
     data = _fresh({"can": {"right": {"port": "can0", "up": True, "fd": True}}})
     monkeypatch.setattr(console, "probe_raw", lambda name: data.get(name))
-    monkeypatch.setattr(console.sup, "is_running", lambda key: key == "quest_view")
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key in ("quest_view", "hand_right", "hand_left"))
     assert any("방향 확인" in b for b in console.blockers("arm"))
     monkeypatch.setattr(console.direction, "stop", lambda: None)
     assert console.action("direction:ok")["ok"] and console.settings["webxr_arm_ok"]
@@ -557,3 +559,51 @@ def test_error_line_ignores_an_earlier_caught_traceback():
 def test_error_line_finds_the_cause_when_the_tail_starts_inside_it():
     cut = STREAMER_FAILURE_10_04[STREAMER_FAILURE_10_04.index("    raise RuntimeError("):]
     assert phases.error_line(cut) == "OpenArm right joint7 following error 0.351 rad exceeds 0.350 rad."
+
+
+def test_hand_link_closes_the_hands_before_the_arm_path(monkeypatch):
+    """10.06 user: fist -> arm home -> hand open. A real UDP round trip with a scripted hand node."""
+    import json
+    import socket
+    import threading
+
+    from motion_acq.hand_link import HandLink, HandLinkError, hand_link_reply, parse_arm_message
+
+    hand = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    hand.bind(("127.0.0.1", 0))
+    hand.settimeout(0.05)
+    port = hand.getsockname()[1]
+    seen, closed_after = [], 3   # the hand reports the fist on its 3rd message
+    stop = threading.Event()
+
+    def node():
+        while not stop.is_set():
+            try:
+                data, sender = hand.recvfrom(4096)
+            except OSError:
+                continue
+            seen.append(parse_arm_message(data))
+            hand.sendto(hand_link_reply("right", at_rest=len(seen) >= closed_after, mode="enabled",
+                                        phase="rest", fault=None), sender)
+
+    thread = threading.Thread(target=node, daemon=True)
+    thread.start()
+    link = HandLink({"right": port}, wait_s=2.0, answer_s=1.0, beat_s=0.05)
+    try:
+        link.require_rest(["right", "left"])        # left has no link: ignored
+        assert seen and set(seen) == {"path"}
+        link.announce("home", ["right"])
+        time.sleep(0.2)
+        assert seen[-1] == "home"
+    finally:
+        link.close()
+        stop.set()
+        thread.join(1.0)
+        hand.close()
+    silent = HandLink({"right": port}, wait_s=1.0, answer_s=0.2, beat_s=0.05)
+    try:
+        with pytest.raises(HandLinkError, match="응답하지"):
+            silent.require_rest(["right"])
+    finally:
+        silent.close()
+    assert parse_arm_message(json.dumps({"arm": "dance"}).encode()) is None

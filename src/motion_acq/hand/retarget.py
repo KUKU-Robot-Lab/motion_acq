@@ -38,6 +38,9 @@ class HandRetargetConfig:
     examples: Mapping[str, Example]
     limits_rad: Mapping[str, tuple[float, float]]  # every RH56F1 joint: (min, max) the map may command
     home_rad: Mapping[str, float]
+    # rest (fist): the hand's park pose (10.06 user) and the pose the arm needs while it moves between rest and
+    # home (sim2real hand_path_pose, the stored paths assume it). None: home.
+    rest_rad: Mapping[str, float] | None = None
     min_cutoff_hz: float = 20.0
     beta: float = 0.0
     d_cutoff_hz: float = 1.0
@@ -72,6 +75,10 @@ class HandRetargetConfig:
         return tuple(dict.fromkeys(n for ins, _ in self.groups.values() for n in ins))
 
     @property
+    def park_rad(self) -> dict[str, float]:
+        return dict(self.rest_rad if self.rest_rad is not None else self.home_rad)
+
+    @property
     def closed_rad(self) -> dict[str, float]:
         """Flexion joints (home at their lower end): where they cannot curl further."""
         return {j: hi for j, (lo, hi) in self.limits_rad.items() if abs(self.home_rad[j] - lo) < 1e-9}
@@ -88,6 +95,14 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
     home = {str(k): float(v) for k, v in raw["home_rad"].items()}
     if set(home) != set(limits):
         raise ValueError("home_rad and limits_rad must list the same joints")
+    rest = None
+    if raw.get("rest_rad") is not None:
+        rest = {str(k): float(v) for k, v in raw["rest_rad"].items()}
+        if set(rest) != set(limits):
+            raise ValueError("rest_rad and limits_rad must list the same joints")
+        bad = [j for j, v in rest.items() if not limits[j][0] - 1e-9 <= v <= limits[j][1] + 1e-9]
+        if bad:
+            raise ValueError(f"rest_rad {bad} outside limits_rad")
     command = str((raw.get("driver") or {}).get("command", "angle_target"))
     if command not in ("angle_target", "angle_set"):
         raise ValueError(f"driver.command must be angle_target or angle_set, not {command!r}")
@@ -116,7 +131,7 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
     if method not in ("examples", "kinematic"):
         raise ValueError(f"method must be examples or kinematic, not {method!r}")
     return HandRetargetConfig(
-        groups=groups, examples=examples, limits_rad=limits, home_rad=home,
+        groups=groups, examples=examples, limits_rad=limits, home_rad=home, rest_rad=rest,
         min_cutoff_hz=float(flt.get("min_cutoff_hz", 20.0)), beta=float(flt.get("beta", 0.0)),
         d_cutoff_hz=float(flt.get("d_cutoff_hz", 1.0)),
         max_velocity_rad_s=float(lim.get("max_velocity_rad_s", 8.0)),

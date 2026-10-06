@@ -22,6 +22,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("hand_id", default_value="1"),
         DeclareLaunchArgument("amplitude", default_value="1.0"),
         DeclareLaunchArgument("object_index_reg", default_value="-1"),
+        DeclareLaunchArgument("arm_link_port", default_value="0"),
     ]
     # Fake nodes publish the real driver topic names: keep them localhost-only on
     # the dedicated fake domain (the fake nodes refuse anything else).
@@ -41,5 +42,6 @@ def generate_launch_description() -> LaunchDescription:
              parameters=[{"side": side, "calibration": LaunchConfiguration("calibration"),
                           "enable_on_start": LaunchConfiguration("enable_on_start"),
                           "udp_target": LaunchConfiguration("udp_target"),
-                          "amplitude": LaunchConfiguration("amplitude")}]),
+                          "amplitude": LaunchConfiguration("amplitude"),
+                          "arm_link_port": LaunchConfiguration("arm_link_port")}]),
     ])

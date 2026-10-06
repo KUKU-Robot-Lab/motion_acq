@@ -5,14 +5,18 @@ requests, calls tick() at the control rate and publishes what it returns.
 
 States
     DISABLED  nothing is published.
-    ENABLED   streaming angle_set. Start and end pose is home (hand open):
-              after enable the hand walks home (HOMING), takes the operator's reference
-              pose (REFERENCE, see below) and only then follows
+    ENABLED   streaming the driver command. After enable the hand walks home (open, HOMING), takes the
+              operator's reference pose (REFERENCE, see below) and only then follows
               the glove (RUNNING, or HOLD with nothing published while the
-              glove is stale or frozen); a disable walks it home again and
-              then disables. Not reaching home in home_timeout_s is a FAULT
-              at the start and a plain disable at the end.
+              glove is stale or frozen); a disable walks it to rest (fist, the park pose, 10.06 user)
+              and then disables. Not reaching home in home_timeout_s is a FAULT
+              at the start, not reaching rest a plain disable at the end.
     FAULT     latched; nothing is published until a disable and a new enable.
+
+Arm link (10.06 user: fist -> arm home -> hand open): while the arm moves along its stored rest <-> home
+path or rests (set_arm_phase "path" / "rest"), the hand is held at rest (phase REST), a disabled hand
+included (the arm start was approved with it); at "home" an enabled hand walks home and follows the glove
+again, a hand that was never enabled stops at rest. at_rest() is what the arm waits for.
 
 Enable needs: a fresh angle_actual whose six registers are plausible (no 0,
 -1 or 65535 sentinels, within each axis' command range ± margin), and every
@@ -52,6 +56,7 @@ from typing import Mapping, Sequence
 from motion_acq.hand.grip_guard import GripGuard
 from motion_acq.hand.admittance import Admittance
 from motion_acq.hand.feedback import OFF, HapticFeedback, Haptics, tip_forces_n
+from motion_acq.hand_link import ARM_PHASES
 from motion_acq.hand.nova2 import SIDE_PREFIX, glove_joint_names
 from motion_acq.hand.retarget import HandRetargeter, HandState
 from motion_acq.hand.rh56f1 import N_SLOTS, Rh56f1Map
@@ -70,7 +75,8 @@ class Phase(str, Enum):
     TO_HOME = "to_home"  # after enable: walk home before following
     REFERENCE = "reference"  # at home: the operator holds the reference pose still (re-zero, align)
     FOLLOW = "follow"
-    RETURN = "return_home"  # after disable: walk home, then disable
+    RETURN = "return_home"  # after disable: walk to rest (fist), then disable
+    REST = "rest"  # the arm moves along its path or rests: hold the fist
 
 
 @dataclass(frozen=True)
@@ -140,6 +146,9 @@ class HandController:
         self.last_refusal: str | None = None
         self.home_rad = dict(retargeter.config.home_rad)
         self._home_registers = hand_map.to_registers(self.home_rad, side=side)
+        self.rest_rad = retargeter.config.park_rad
+        self._rest_registers = hand_map.to_registers(self.rest_rad, side=side)
+        self.arm_phase: str | None = None  # from the arm (path / home / rest); None: no arm link heard
         self.feedback = HapticFeedback(retargeter.config.feedback, retargeter.config.closed_rad)
         self.grip_guard = GripGuard(retargeter.config.grip_guard)
         self._speeds_sent: list[int] | None = None
@@ -214,6 +223,19 @@ class HandController:
             self.fault_reason = None
             self.retargeter.state = HandState.IDLE
 
+    @property
+    def arm_hold(self) -> bool:
+        return self.arm_phase in ("path", "rest")
+
+    def set_arm_phase(self, phase: str) -> None:
+        if phase not in ARM_PHASES:
+            raise ValueError(f"arm phase must be one of {ARM_PHASES}, not {phase!r}")
+        self.arm_phase = phase
+
+    def at_rest(self, t: float) -> bool:
+        """The measured hand is at rest (fist), whatever the mode: what the arm waits for before its path."""
+        return self._measured_near(self._rest_registers, t)
+
     def _set_phase(self, phase: Phase, t: float | None) -> None:
         """t None: the phase clock starts at the next tick (request_enable has no time)."""
         self.phase = phase
@@ -224,15 +246,21 @@ class HandController:
         """Still moving to its end pose (the node keeps spinning until False)."""
         return self.mode is Mode.ENABLED and self.phase is Phase.RETURN
 
-    def _at_home(self, t: float) -> bool:
+    def _at(self, pose: Mapping[str, float], registers: Sequence[int], t: float) -> bool:
         command = self.retargeter.command()
-        if any(abs(command[j] - q) > 1e-3 for j, q in self.home_rad.items()):
+        if any(abs(command[j] - q) > 1e-3 for j, q in pose.items()):
             return False
+        return self._measured_near(registers, t)
+
+    def _measured_near(self, registers: Sequence[int], t: float) -> bool:
         if not self._measured_fresh(t):
             return False
         assert self.measured is not None
         tol = self.config.home_tolerance_registers
-        return all(abs(m - h) <= tol for m, h in zip(self.measured[0], self._home_registers, strict=True))
+        return all(abs(m - h) <= tol for m, h in zip(self.measured[0], registers, strict=True))
+
+    def _at_home(self, t: float) -> bool:
+        return self._at(self.home_rad, self._home_registers, t)
 
     def _measured_rad(self) -> dict[str, float] | None:
         if self.measured is None or implausible_registers(self.measured[0], self.hand_map, self.side):
@@ -254,7 +282,7 @@ class HandController:
     def _measured_fresh(self, t: float) -> bool:
         return self.measured is not None and t - self.measured[2] <= self.config.measured_stale_s
 
-    def _try_enable(self, t: float, subscribers_ready: bool) -> str | None:
+    def _try_enable(self, t: float, subscribers_ready: bool, phase: Phase = Phase.TO_HOME) -> str | None:
         if not subscribers_ready:
             return "driver topics have no subscriber"
         if not self._measured_fresh(t):
@@ -267,7 +295,7 @@ class HandController:
             return "implausible angle_actual: " + "; ".join(reasons)
         self.retargeter.start(self.hand_map.to_rad(self.measured[0], side=self.side), t)
         self.mode = Mode.ENABLED
-        self._set_phase(Phase.TO_HOME, t)
+        self._set_phase(phase, t)
         self._last_resend = -math.inf
         self._speeds_sent = None
         self.admittance.reset()
@@ -289,22 +317,42 @@ class HandController:
             return self.retargeter.step(glove[0] if fresh and glove else None, t, ceilings, offsets)
         if self._phase_t0 is None:
             self._phase_t0 = t
+        if self.phase in (Phase.REST, Phase.RETURN):
+            return self._step_to_rest(t)
         step = self.retargeter.step_to(self.home_rad, t)
         if self.phase is Phase.REFERENCE:
             self.grip_guard.learn_rest(t)  # home, open and still: the force bias of free joints
             self._take_reference(t)
             return step
         if self._at_home(t):
-            if self.phase is Phase.TO_HOME:
-                cfg = self.retargeter.config
-                self._reference, self.reference_note = [], None
-                self._set_phase(Phase.REFERENCE if cfg.reference_s > 0 else Phase.FOLLOW, t)
-            else:
+            cfg = self.retargeter.config
+            self._reference, self.reference_note = [], None
+            self._set_phase(Phase.REFERENCE if cfg.reference_s > 0 else Phase.FOLLOW, t)
+        elif t - self._phase_t0 > self.config.home_timeout_s:
+            self.mode = Mode.FAULT
+            self.fault_reason = f"home not reached in {self.config.home_timeout_s:g} s"
+            self.retargeter.state = HandState.IDLE
+        return step
+
+    def _step_to_rest(self, t: float):
+        """REST (held while the arm moves or rests) and RETURN (after a disable): walk to the fist."""
+        step = self.retargeter.step_to(self.rest_rad, t)
+        there = self._at(self.rest_rad, self._rest_registers, t)
+        if self.phase is Phase.REST and not self.arm_hold:  # the arm is home
+            if self.want_enable:
+                self._set_phase(Phase.TO_HOME, t)
+            else:  # parked for the arm only: stop at the fist
+                self.mode = Mode.DISABLED
+                self.retargeter.state = HandState.IDLE
+            return step
+        if there:
+            self._phase_t0 = t  # held: the timeout counts from the last time it was not there
+            if self.phase is Phase.RETURN:
                 self.mode = Mode.DISABLED
                 self.retargeter.state = HandState.IDLE
         elif t - self._phase_t0 > self.config.home_timeout_s:
-            reason = f"home not reached in {self.config.home_timeout_s:g} s"
-            if self.phase is Phase.TO_HOME:
+            reason = f"rest (fist) not reached in {self.config.home_timeout_s:g} s"
+            if self.phase is Phase.REST:  # the arm waits for the fist: it will refuse its path
                 self.mode = Mode.FAULT
                 self.fault_reason = reason
             else:
@@ -355,8 +403,13 @@ class HandController:
 
     def tick(self, t: float, *, subscribers_ready: bool) -> Outputs:
         out = Outputs(hand_id=None if self.measured is None else self.measured[1])
-        if self.want_enable and self.mode is Mode.DISABLED:
-            self.last_refusal = self._try_enable(t, subscribers_ready)
+        if self.mode is Mode.DISABLED and (self.want_enable or self.arm_hold):
+            # the arm holds the hand at rest: also a hand nobody enabled (the arm start was approved with it)
+            self.last_refusal = self._try_enable(t, subscribers_ready,
+                                                 Phase.REST if self.arm_hold else Phase.TO_HOME)
+        if self.mode is Mode.ENABLED and self.arm_hold and self.phase in (Phase.TO_HOME, Phase.REFERENCE,
+                                                                          Phase.FOLLOW):
+            self._set_phase(Phase.REST, t)
         if self.mode is Mode.ENABLED and not self._measured_fresh(t):
             self.mode = Mode.FAULT
             self.fault_reason = f"angle_actual lost for > {self.config.measured_stale_s} s"
@@ -392,6 +445,7 @@ class HandController:
             "side": self.side,
             "mode": self.mode.value,
             "phase": self.phase.value if self.mode is Mode.ENABLED else None,
+            "arm": self.arm_phase,
             "state": step.state.value if step else HandState.IDLE.value,
             "fault": self.fault_reason,
             "refusal": self.last_refusal if self.mode is Mode.DISABLED else None,

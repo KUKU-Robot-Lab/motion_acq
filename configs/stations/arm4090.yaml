@@ -36,6 +36,11 @@ robots:
     home_pose: rh56f1_aglt  # sim2real home (hands open); start anchor for teleop
     gripper:
       enabled: false
+    # 10.06 user: on the arm start the RH56F1 hands close (fist), the arm plays its stored path to home, then
+    # the hands open and follow the gloves; on the stop the hands close again before the path to rest.
+    # UDP port of each hand node (motion_acq.hand_link); the arm refuses its path if a hand does not answer
+    # or is not closed within wait_s.
+    hand_link: {right: 47161, left: 47162, wait_s: 15.0}
     can:
       # arm4090: can0 = right arm, can1 = left arm (PCAN-USB Pro FD, sim2real docs/HOST_arm4090.md).
       # The s2r stack owns these links: never reconfigure them from motion_acq.

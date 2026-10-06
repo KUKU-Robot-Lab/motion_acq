@@ -8,9 +8,10 @@ Disabled at start; enable/disable with std_msgs/Bool on
 /motion_acq/hand_<side>/enable. The enable/fault rules live in
 motion_acq.hand.controller (fresh, plausible angle_actual; all driver topics
 subscribed; hand_id taken from angle_actual; speed/force re-sent every second;
-angle_actual loss -> latched FAULT, the hand stays put). Start and end pose is
-home (hand open): enable walks home before following the glove; disable, Ctrl+C
-and SIGTERM walk home before stopping (a second signal skips the return).
+angle_actual loss -> latched FAULT, the hand stays put). Enable walks home (hand
+open) before following the glove; disable, Ctrl+C and SIGTERM walk to rest (fist,
+10.06 user) before stopping (a second signal skips the return). arm_link_port: the
+arm process holds the hand at the fist while its arm moves (motion_acq.hand_link).
 enable_on_start is only accepted on the isolated fake domain. Every cycle is
 logged to <log_dir>/hand_<side>_<time>.jsonl and, if udp_target is set, sent
 as one JSON datagram to each HOST:PORT of that comma-separated list (recorder
@@ -20,8 +21,8 @@ Feedback (10.05): the RH56F1 tip / palm forces (touch_data) and joint forces
 (force_actual) drive the Nova 2 brakes, strap and vibration through the glove
 driver's haptics_controller (forward_command_controller, percent per joint,
 motion_acq_hand config/nova2_<side>_controllers.yaml); motion_acq.hand.feedback
-has the rules. haptics:=false turns it off. All off when not following the
-glove and when the node exits.
+has the rules; off since 10.06 (feedback.enabled false, the brakes got in the way).
+haptics:=false turns it off too. All off when not following the glove and when the node exits.
 """
 
 # ruff: noqa: I001  -- motion_acq_hand.common must be imported first (it puts motion_acq on sys.path)
@@ -56,6 +57,7 @@ from motion_acq.hand.kinematic import glove_points
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state, tip_signals
 from motion_acq.hand.retarget import DEFAULT_RETARGET, HandRetargeter, load_hand_retarget_config
 from motion_acq.hand.rh56f1 import DEFAULT_MAP, load_rh56f1_map
+from motion_acq.hand_link import hand_link_reply, parse_arm_message
 from motion_acq.sidecar import parse_udp_targets
 
 
@@ -72,6 +74,8 @@ class HandNode(Node):
         log_dir = Path(str(declare(self, "log_dir", str(REPO_ROOT / "logs" / "hand"))))
         udp_target = str(declare(self, "udp_target", ""))
         haptics = bool(declare(self, "haptics", True))
+        # arm link (motion_acq.hand_link): the arm process holds this hand at the fist while it moves; 0 = off
+        arm_link_port = int(declare(self, "arm_link_port", 0))
         haptics_topic = str(declare(self, "haptics_topic", haptics_topic_for(topic)))
         if not calibration:
             raise SystemExit("calibration:=<file> is required (run motion_acq_hand calibrate first)")
@@ -116,11 +120,17 @@ class HandNode(Node):
         self.udp_targets = parse_udp_targets(udp_target)
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) if self.udp_targets else None
         self._last_mode = self.controller.mode
+        self.arm_link = None
+        if arm_link_port > 0:
+            self.arm_link = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.arm_link.bind(("127.0.0.1", arm_link_port))
+            self.arm_link.setblocking(False)
         self.create_timer(1.0 / config.rate_hz, self._tick)
         self.get_logger().info(
             f"hand {self.side}: glove {topic} -> {ns}/{config.driver_command} at {config.rate_hz:g} Hz, "
             f"amplitude {amplitude:g}, speed {speed}, force {force}, "
-            f"haptics {haptics_topic if haptics else 'off'} "
+            f"haptics {haptics_topic if haptics and config.feedback.enabled else 'off'}, "
+            f"arm link {f'UDP {arm_link_port}' if arm_link_port > 0 else 'off'} "
             f"({'enable on start (fake)' if enable_on_start else 'disabled until enabled'})"
         )
 
@@ -196,7 +206,32 @@ class HandNode(Node):
         msg.joint_values = values
         publisher.publish(msg)
 
+    def _arm_link_poll(self, t: float) -> None:
+        """Arm phase messages (path / home / rest) from the arm process; answer each with where the hand is."""
+        while self.arm_link is not None:
+            try:
+                data, sender = self.arm_link.recvfrom(4096)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError as exc:
+                self.get_logger().warning(f"arm link: {exc}", throttle_duration_sec=5.0)
+                return
+            phase = parse_arm_message(data)
+            if phase is None:
+                continue
+            if phase != self.controller.arm_phase:
+                self.get_logger().info(f"arm link: arm {phase} -> hand {'fist' if phase != 'home' else 'free'}")
+            self.controller.set_arm_phase(phase)
+            ctl = self.controller
+            try:
+                self.arm_link.sendto(hand_link_reply(
+                    self.side, at_rest=ctl.at_rest(t), mode=ctl.mode.value,
+                    phase=ctl.phase.value if ctl.mode.value == "enabled" else None, fault=ctl.fault_reason), sender)
+            except OSError as exc:
+                self.get_logger().warning(f"arm link reply: {exc}", throttle_duration_sec=5.0)
+
     def _tick(self) -> None:
+        self._arm_link_poll(time.monotonic())
         out = self.controller.tick(time.monotonic(), subscribers_ready=self._subscribers_ready())
         if out.hand_id is not None:
             if out.speed is not None:
@@ -227,15 +262,15 @@ class HandNode(Node):
         except OSError as exc:  # logging must never stop the control loop
             self.get_logger().warning(f"hand log/udp write failed: {exc}", throttle_duration_sec=5.0)
         self.status_pub.publish(String(data=json.dumps({
-            k: out.record[k] for k in ("mode", "phase", "state", "fault", "refusal", "reference", "method", "glove_age_s",
+            k: out.record[k] for k in ("mode", "phase", "arm", "state", "fault", "refusal", "reference", "method", "glove_age_s",
                                        "glove_frozen", "glove_errors", "registers", "measured_registers")
         })))
 
     def return_home(self, interrupted) -> None:
-        """End pose = home: disable walks the hand home; spin until it is there."""
+        """End pose = rest (fist): disable walks the hand there; spin until it is."""
         if not self.controller.want_enable and not self.controller.busy:
             return
-        self.get_logger().info(f"hand {self.side}: returning home before exit")
+        self.get_logger().info(f"hand {self.side}: closing to rest (fist) before exit")
         self.controller.request_enable(False)
         deadline = time.monotonic() + self.controller.config.home_timeout_s + 1.0
         while self.controller.busy and time.monotonic() < deadline:
@@ -243,7 +278,7 @@ class HandNode(Node):
                 self.get_logger().warning(f"hand {self.side}: second stop, leaving the hand where it is")
                 return
             rclpy.spin_once(self, timeout_sec=0.02)
-        state = "at home" if not self.controller.busy else "home not reached"
+        state = "at rest" if not self.controller.busy else "rest not reached"
         self.get_logger().info(f"hand {self.side}: {state}")
 
     def destroy_node(self) -> None:
@@ -256,7 +291,7 @@ class HandNode(Node):
 
 
 def main() -> None:
-    """Spin until SIGINT/SIGTERM, then walk the hand home before exiting.
+    """Spin until SIGINT/SIGTERM, then walk the hand to rest (fist) before exiting.
 
     rclpy's own signal handler would shut the context down at the first
     Ctrl+C, leaving no way to publish the return; signals are handled here

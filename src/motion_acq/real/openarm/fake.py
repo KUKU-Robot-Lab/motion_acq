@@ -10,6 +10,7 @@ instead of zeros (shorter fake runs).
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import logging
 import os
@@ -61,6 +62,8 @@ def build_backend(
         rig_config, runtime.config.real_options, user_openarm_gripper_calibration_path(),
         robot_name=runtime.name,
     )
+    # fake hand nodes answer the hand link when they run (console fake); without them the fake arm still moves
+    settings = dataclasses.replace(settings, hand_link_required=False)
     # The fake arm sags under the same gravity model the real one has (when the
     # robot YAML gives one), so the feedforward is exercised, not assumed.
     gravity = load_gravity_models(settings, ("left", "right"))

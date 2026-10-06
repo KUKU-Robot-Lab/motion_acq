@@ -58,6 +58,7 @@ def blockers(console, key: str) -> list[str]:
             out += _fast_probe_problems(console)
         if key in ("arm", "record"):
             out += _arm_blockers(console, source)
+            out += _hand_link_blockers(console)
         if key == "head":
             out += _head_blockers(console)
         if key.startswith("hand_"):
@@ -103,6 +104,15 @@ def _arm_blockers(console, source: str | None) -> list[str]:
     elif holders:
         out.append(f"s2r 가 CAN 을 잡고 있다: {holders[0][:80]}")
     return out
+
+
+def _hand_link_blockers(console) -> list[str]:
+    """The arm closes the RH56F1 hands before its stored path (motion_acq.hand_link): their nodes must run."""
+    side = str(console.settings["arm_side"])
+    sides = ("right", "left") if side == "both" else (side,)
+    missing = [s for s in sides if s in console.station.hand_link and not console.sup.is_running(f"hand_{s}")]
+    return [f"로봇 {'오른손' if s == 'right' else '왼손'} 노드가 없다: 손 [켜기] 먼저(팔이 경로 전에 손을 주먹으로 쥔다)"
+            for s in missing]
 
 
 def _head_blockers(console) -> list[str]:

@@ -16,6 +16,7 @@ import numpy as np
 import yaml
 
 from motion_acq.real.openarm.gravity import ArmGravity, GravityModelError, load_arm_gravity
+from motion_acq.hand_link import HandLink
 from motion_acq.real.openarm.home_path import (
     MAX_PATH_SPEED_RAD_S,
     PATH_START_TOLERANCE_RAD,
@@ -89,6 +90,11 @@ class OpenArmCanSettings:
     gravity_tip_links: tuple[tuple[str, str], ...] = ()
     gravity_scale: tuple[float, ...] = (1.0,) * 7
     gravity_cap_nm: float = 20.0
+    # side -> UDP port of that RH56F1 hand node (motion_acq.hand_link): the hand is a fist while the arm plays
+    # its stored path and opens once the arm is home (10.06 user). Empty: no hands to coordinate.
+    hand_link: tuple[tuple[str, int], ...] = ()
+    hand_link_wait_s: float = 15.0
+    hand_link_required: bool = True  # False: the fake robot moves without hand nodes
 
 
 def load_openarm_settings(
@@ -165,6 +171,9 @@ def load_openarm_settings(
         gravity_tip_links=tuple(sorted((str(k), str(v)) for k, v in (gravity.get("tip_link") or {}).items())),
         gravity_scale=tuple(float(v) for v in gravity.get("scale", (1.0,) * 7)),
         gravity_cap_nm=float(gravity.get("cap_nm", 20.0)),
+        hand_link=tuple(sorted((str(side), int(port)) for side, port in (rig_robot.get("hand_link") or {}).items()
+                               if side in SIDES)),
+        hand_link_wait_s=float((rig_robot.get("hand_link") or {}).get("wait_s", 15.0)),
     )
 
 
@@ -506,6 +515,7 @@ class OpenArmCanEnvironment:
         self.streamer: OpenArmJointStreamer | None = None
         self._path_progress: dict[str, tuple[np.ndarray, int]] = {}
         self._last_limit_warning_at = {side: 0.0 for side in SIDES}
+        self._hand_link: HandLink | None = None
 
     def connect(self) -> None:
         if self.arms:
@@ -610,9 +620,11 @@ class OpenArmCanEnvironment:
                 )
             log.info("OpenArm start: %s (stored sim2real path from rest; the RH56F1 must be closed)",
                      ", ".join(f"{side} at {mode}" for side, mode in modes.items()))
+        from_rest = {side: paths[side].q for side, mode in modes.items() if mode in ("rest", "near_rest")}
+        if from_rest:  # before anything moves: the paths were planned with the hands closed
+            self._hands_to_fist(tuple(from_rest))
         self.streamer = OpenArmJointStreamer(self.arms, self.settings, initial)
         self.streamer.start()
-        from_rest = {side: paths[side].q for side, mode in modes.items() if mode in ("rest", "near_rest")}
         self._path_progress = {}
         try:
             near = [side for side, mode in modes.items() if mode == "near_rest"]
@@ -625,6 +637,23 @@ class OpenArmCanEnvironment:
             if paths:
                 self._retreat_to_rest(paths, exc)
             raise
+        link = self._link()
+        if link is not None:
+            link.announce("home", self.active_sides)  # the hands open and follow the gloves again
+            log.info("hand link: arms home, the %s hand(s) may open", "/".join(self.active_sides))
+
+    def _link(self) -> HandLink | None:
+        if self._hand_link is None and self.settings.hand_link:
+            self._hand_link = HandLink(dict(self.settings.hand_link), wait_s=self.settings.hand_link_wait_s,
+                                       required=self.settings.hand_link_required,
+                                       answer_s=2.0 if self.settings.hand_link_required else 0.3)
+        return self._hand_link
+
+    def _hands_to_fist(self, sides: tuple[str, ...]) -> None:
+        """The RH56F1 hands of these arms closed (hand_link) before their stored path; raises if one is not."""
+        link = self._link()
+        if link is not None:
+            link.require_rest(sides)
 
     def _align_to_rest(self, sides: list[str], initial: dict[str, np.ndarray]) -> None:
         """Slowly to exact rest (a few degrees of wrist drift) before the stored path starts."""
@@ -726,8 +755,12 @@ class OpenArmCanEnvironment:
             off = float(np.abs(feedback[side] - targets[side]).max())
             if off > self.settings.home_tolerance_rad:
                 raise HomePathError(f"OpenArm {side} is {off:.3f} rad from home; not starting the path to rest")
+        self._hands_to_fist(tuple(paths))
         self._play_paths({side: path.q[::-1] for side, path in paths.items()},
                          next(iter(paths.values())).dt, "home -> rest")
+        link = self._link()
+        if link is not None:
+            link.announce("rest", tuple(paths))  # the hands stay closed at rest
 
     def move_home(self, q: np.ndarray, joint_names: list[str]) -> None:
         if self.streamer is None:
@@ -846,6 +879,9 @@ class OpenArmCanEnvironment:
                 log.warning("Failed to disable OpenArm %s: %s", side, exc)
         self.arms.clear()
         self.streamer = None
+        if self._hand_link is not None:
+            self._hand_link.close()
+            self._hand_link = None
         if error is not None:
             raise error
 

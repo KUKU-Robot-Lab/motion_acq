@@ -104,14 +104,29 @@ def test_fake_right_arm_goes_rest_home_rest(monkeypatch):
         return original(paths, dt, label)
 
     monkeypatch.setattr(env, "_play_paths", spy)
+
+    class Link:  # the RH56F1 hand link (motion_acq.hand_link): fist before each path, open at home
+        def __init__(self, ports, **kw):
+            assert set(ports) == {"right", "left"}
+
+        def require_rest(self, sides):
+            seen.append(("fist", tuple(sides)))
+
+        def announce(self, phase, sides):
+            seen.append((phase, tuple(sides)))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(driver, "HandLink", Link)
     backend.connect()
     try:
         backend.home(home)
-        assert seen[0][0] == "rest -> home"
+        assert seen[0] == ("fist", ("right",)) and seen[1][0] == "rest -> home" and seen[-1] == ("home", ("right",))
         assert np.allclose(env.streamer.feedback()["right"], home_of("right"), atol=0.1)
         backend.move_home(home)
         backend.rest(home)
-        assert seen[-1][0] == "home -> rest"
+        assert [s[0] for s in seen[-3:]] == ["fist", "home -> rest", "rest"]
         assert np.abs(env.streamer.feedback()["right"]).max() < 0.1
     finally:
         backend.disconnect()
