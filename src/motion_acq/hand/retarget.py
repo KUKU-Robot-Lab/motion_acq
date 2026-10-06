@@ -18,6 +18,7 @@ import yaml
 from motion_acq.filters import OneEuroFilter, RateLimiter
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.feedback import FeedbackConfig, feedback_config
+from motion_acq.hand.grip_guard import GripGuardConfig, grip_guard_config
 from motion_acq.hand.kinematic import KinematicConfig, KinematicRetargeter, TipTables, points_from_signals, table_path
 from motion_acq.hand.rh56f1 import Rh56f1Map
 
@@ -55,6 +56,7 @@ class HandRetargetConfig:
     reference_s: float = 1.0
     reference_timeout_s: float = 10.0
     kinematic: KinematicConfig = field(default_factory=KinematicConfig)
+    grip_guard: GripGuardConfig = field(default_factory=GripGuardConfig)
 
     @property
     def joints(self) -> tuple[str, ...]:
@@ -116,6 +118,7 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         reference_pose=str(ref.get("pose", "flat")), reference_s=float(ref.get("seconds", 1.0)),
         reference_timeout_s=float(ref.get("timeout_s", 10.0)),
         kinematic=KinematicConfig(**{k: float(v) for k, v in (raw.get("kinematic") or {}).items()}),
+        grip_guard=grip_guard_config(raw.get("grip_guard")),
     )
 
 
@@ -233,7 +236,18 @@ class HandRetargeter:
             out[j] = home[j] + self.amplitude * (q - home[j])
         return raw, out
 
-    def step(self, signals: Mapping[str, float] | None, t_s: float) -> HandStep:
+    def _cap(self, q_cmd: Mapping[str, float], ceilings: Mapping[str, float] | None) -> dict[str, float]:
+        """Grip guard: a pressing joint closes no further than its ceiling (grip_guard.py). The
+        limiter restarts from the capped command, so opening follows the glove at once."""
+        out = dict(q_cmd)
+        for j, top in (ceilings or {}).items():
+            if j in out and out[j] > top:
+                out[j] = max(float(top), self.config.limits_rad[j][0])
+                self._limiters[j].reset(out[j])
+        return out
+
+    def step(self, signals: Mapping[str, float] | None, t_s: float,
+             ceilings: Mapping[str, float] | None = None) -> HandStep:
         if self.state is HandState.IDLE:
             return HandStep(HandState.IDLE, None, None, None, None, None)
         dt = 0.0 if self._last_t is None else min(max(t_s - self._last_t, 0.0), self.config.max_step_dt_s)
@@ -242,13 +256,16 @@ class HandRetargeter:
             self.state = HandState.HOLD
             for lim in self._limiters.values():
                 lim.stop()
-            return HandStep(HandState.HOLD, None, None, None, self.command(), self._last_registers)
+            q_hold = self._cap(self.command(), ceilings)
+            self._last_registers = self.hand_map.to_registers(q_hold, side=self.side)
+            return HandStep(HandState.HOLD, None, None, None, q_hold, self._last_registers)
         self.state = HandState.RUNNING
         raw, q_target = self.target(signals)
         q_cmd = {}
         for j in self.config.joints:
             smoothed = self._filters[j](q_target[j], t_s)
             q_cmd[j] = self._limiters[j](smoothed, dt)
+        q_cmd = self._cap(q_cmd, ceilings)
         self._last_registers = self.hand_map.to_registers(q_cmd, side=self.side)
         names = self.calibration.inputs if self.method_used == "examples" else [
             n for n in signals if n.startswith(("knuckle_", "tip_"))]

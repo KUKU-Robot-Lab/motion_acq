@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping, Sequence
 
+from motion_acq.hand.grip_guard import GripGuard
 from motion_acq.hand.feedback import OFF, HapticFeedback, Haptics
 from motion_acq.hand.nova2 import SIDE_PREFIX, glove_joint_names
 from motion_acq.hand.retarget import HandRetargeter, HandState
@@ -139,6 +140,7 @@ class HandController:
         self.home_rad = dict(retargeter.config.home_rad)
         self._home_registers = hand_map.to_registers(self.home_rad, side=side)
         self.feedback = HapticFeedback(retargeter.config.feedback, retargeter.config.closed_rad)
+        self.grip_guard = GripGuard(retargeter.config.grip_guard)
         self._last_reading: dict[str, object] = {}
         self._reference: list[tuple[float, dict]] = []  # (t, glove signals) while in REFERENCE
         self.reference_note: str | None = None
@@ -162,6 +164,11 @@ class HandController:
     def on_joint_force(self, names, values, t: float) -> None:
         self._hand_changed("force", tuple(values), t)
         self.feedback.on_joint_force(names, values, t)
+        self.grip_guard.on_force(names, values, t)
+
+    def on_current(self, names, values, t: float) -> None:
+        """GetCurrentAct1 (mA per actuator): the grip guard's second reading."""
+        self.grip_guard.on_current(names, values, t)
 
     def _hand_changed(self, stream: str, value, t: float) -> None:
         """Remember when any RH56F1 reading last changed (frozen-hand check)."""
@@ -261,7 +268,8 @@ class HandController:
             glove = self.glove
             fresh = (glove is not None and t - glove[1] <= self.config.glove_stale_s
                      and not self.glove_frozen(t))
-            return self.retargeter.step(glove[0] if fresh and glove else None, t)
+            ceilings = self.grip_guard.ceilings(self._measured_rad() if self._measured_fresh(t) else None, t)
+            return self.retargeter.step(glove[0] if fresh and glove else None, t, ceilings)
         if self._phase_t0 is None:
             self._phase_t0 = t
         step = self.retargeter.step_to(self.home_rad, t)
@@ -367,6 +375,8 @@ class HandController:
             "hand_id": out.hand_id,
             **sensors,
             "haptics": out.haptics.to_dict(),
+            "grip_guard": dict(self.grip_guard.engaged) if following and self.grip_guard.engaged else None,
+            "current_ma": self.grip_guard.current_now(t),
             "hand_status": self._status,  # driver status, only on the tick after one arrived (1 Hz)
         }
         self._status = None

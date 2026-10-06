@@ -45,7 +45,7 @@ from motion_acq_hand.common import (
 
 import rclpy
 from rclpy.node import Node
-from rh56f1_interfaces.msg import GetAngleAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1, TouchData1
+from rh56f1_interfaces.msg import GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1, TouchData1
 from senseglove_msgs.msg import SenseGloveState
 from std_msgs.msg import Bool, Float64MultiArray, String
 
@@ -101,6 +101,7 @@ class HandNode(Node):
         self.create_subscription(Bool, f"/motion_acq/hand_{self.side}/enable", self._on_enable, 10)
         self.create_subscription(TouchData1, f"{ns}/touch_data", self._on_touch, 10)
         self.create_subscription(GetForceAct1, f"{ns}/force_actual", self._on_force, 10)
+        self.create_subscription(GetCurrentAct1, f"{ns}/current_actual", self._on_current, 10)
         self.create_subscription(String, f"{ns}/ecat_status", self._on_status, 10)
         self.haptics_pub = self.create_publisher(Float64MultiArray, haptics_topic, 10) if haptics else None
         self._haptics_sent: tuple[list[float], float] | None = None
@@ -155,6 +156,9 @@ class HandNode(Node):
 
     def _on_force(self, msg: GetForceAct1) -> None:
         self.controller.on_joint_force(list(msg.joint_names), list(msg.joint_values), time.monotonic())
+
+    def _on_current(self, msg: GetCurrentAct1) -> None:
+        self.controller.on_current(list(msg.joint_names), list(msg.joint_values), time.monotonic())
 
     def send_haptics(self, efforts: list[float], t: float, *, force: bool = False) -> None:
         """Glove haptics at most at the glove rate (60 Hz). While any level is on it is re-sent every

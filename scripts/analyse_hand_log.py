@@ -56,10 +56,11 @@ def main(path: str) -> int:
     if any(r["glove_age_s"] is not None and r["glove_age_s"] <= 0.2 for r in holds):
         failures.append("HOLD with a fresh glove sample")
     # Rate: q_command change per cycle within max velocity * dt (2 rad/s, small slack).
+    # (the grip guard may cut a pressing joint's command back to the measured hand in one cycle)
     worst = 0.0
     for a, b in zip(running, running[1:], strict=False):
         dt = b["t_mono_s"] - a["t_mono_s"]
-        if 0 < dt < 0.2:
+        if 0 < dt < 0.2 and not (a.get("grip_guard") or b.get("grip_guard")):
             worst = max(worst, max(abs(b["q_command_rad"][j] - a["q_command_rad"][j]) / dt for j in a["q_command_rad"]))
     if worst > MAX_VELOCITY_RAD_S * 1.1:
         failures.append(f"joint speed {worst:.2f} rad/s above the {MAX_VELOCITY_RAD_S} limit")
@@ -72,6 +73,16 @@ def main(path: str) -> int:
         v > 0.0 for v in ((r.get("haptics") or {}).get("brake") or {}).values())]
     if idle_haptics:
         failures.append(f"{len(idle_haptics)} cycles braked the glove while not following it")
+    # Grip guard (10.06): a finger pressing on the object must not be driven past it (fake index object)
+    guarded = [r for r in running if (r.get("grip_guard") or {}).get("index_1")]
+    pressed = [r for r in running if (r.get("joint_force") or {}).get("index_1", 0.0) >= 400]
+    too_hard = [r for r in running if (r.get("joint_force") or {}).get("index_1", 0.0) >= 1000]
+    if pressed and not guarded:
+        failures.append(f"{len(pressed)} cycles of index pressing but the grip guard never engaged")
+    if too_hard:
+        failures.append(f"{len(too_hard)} cycles with index force >= 1000 g (guard did not hold the finger)")
+    print(f"index pressing cycles {len(pressed)}, grip guard on index in {len(guarded)}, "
+          f"max index force {max(((r.get('joint_force') or {}).get('index_1', 0.0) for r in running), default=0):.0f} g")
     lag = []
     for r in running[30:]:
         if r["measured_registers"] is not None:

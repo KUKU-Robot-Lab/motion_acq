@@ -17,7 +17,7 @@ from __future__ import annotations
 from motion_acq_hand.common import check_side, declare, hand_ns, require_fake_isolation, spin_node
 
 from rclpy.node import Node
-from rh56f1_interfaces.msg import GetAngleAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1, TouchData1
+from rh56f1_interfaces.msg import GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1, TouchData1
 
 from motion_acq.hand.retarget import load_hand_retarget_config
 from motion_acq.hand.rh56f1 import N_SLOTS, load_rh56f1_map
@@ -26,7 +26,9 @@ SLOT_NAMES = ["pinky", "ring", "middle", "index", "thumb_bend", "thumb_rotation"
 SLOT_JOINTS = ["pinky_1", "ring_1", "middle_1", "index_1", "thumb_2", "thumb_1"]  # EtherCAT node joint_names
 INDEX_SLOT = 3
 CONTACT_TIP_COUNTS = 250  # 2.5 N
-CONTACT_JOINT_FORCE = 400
+CONTACT_JOINT_FORCE = 400  # g at first touch; grows with how far the target is past the object
+PRESS_G_PER_REG = 8.0  # like the real hand pushing towards a target inside the cup (10.06: up to 1715 g)
+MA_PER_G = 0.75  # 10.06 cup grasp: ~1300 mA at ~1700 g
 
 
 class FakeRh56f1(Node):
@@ -50,6 +52,7 @@ class FakeRh56f1(Node):
         self.pub = self.create_publisher(GetAngleAct1, f"{ns}/angle_actual", 10)
         self.force_pub = self.create_publisher(GetForceAct1, f"{ns}/force_actual", 10)
         self.touch_pub = self.create_publisher(TouchData1, f"{ns}/touch_data", 10)
+        self.current_pub = self.create_publisher(GetCurrentAct1, f"{ns}/current_actual", 10)
         prefix = "r" if self.side == "right" else "l"
         self.joint_names = [f"{prefix}_hj_{j}" for j in SLOT_JOINTS]
         self.create_subscription(SetAngle1, f"{ns}/angle_set", self._on_angle, 10)
@@ -98,10 +101,17 @@ class FakeRh56f1(Node):
         force.hand_id = self.hand_id
         self.ticks += 1
         noise = self.ticks % 3  # live readings are never exactly still (hand_node faults a frozen hand)
-        force.joint_values = [CONTACT_JOINT_FORCE + noise if pressing and i == INDEX_SLOT else 10 + noise
-                              for i in range(N_SLOTS)]
+        press = CONTACT_JOINT_FORCE + PRESS_G_PER_REG * (self.object_index_reg - self.target[INDEX_SLOT])
+        values = [int(min(press, 1800)) + noise if pressing and i == INDEX_SLOT else 10 + noise for i in range(N_SLOTS)]
+        force.joint_values = values
         force.joint_names = self.joint_names
         self.force_pub.publish(force)
+        current = GetCurrentAct1()
+        current.header.stamp = stamp
+        current.hand_id = self.hand_id
+        current.joint_values = [int(v * MA_PER_G) if v > 100 else 60 + noise for v in values]
+        current.joint_names = self.joint_names
+        self.current_pub.publish(current)
         touch = TouchData1()
         touch.header.stamp = stamp
         touch.finger_forces = [CONTACT_TIP_COUNTS if pressing and f == "index" else 0
