@@ -86,8 +86,11 @@ class HandNode(Node):
         speed = int(declare(self, "driver_speed", config.driver_speed))
         force = int(declare(self, "driver_force", config.driver_force))
         hand_map = load_rh56f1_map(map_path)
+        self.calibration_path = Path(calibration)
+        self._calibration_mtime = self.calibration_path.stat().st_mtime
+        self._calibration_check_t = 0.0
         retargeter = HandRetargeter(
-            config, HandCalibration.load(Path(calibration), side=self.side), hand_map, self.side,
+            config, HandCalibration.load(self.calibration_path, side=self.side), hand_map, self.side,
             amplitude=amplitude,
         )
         self.controller = HandController(retargeter, hand_map, self.side, ControllerConfig(
@@ -230,8 +233,31 @@ class HandNode(Node):
             except OSError as exc:
                 self.get_logger().warning(f"arm link reply: {exc}", throttle_duration_sec=5.0)
 
+    def _reload_calibration(self, t: float) -> None:
+        """10.06: a [편 손 맞춤] / [보정] while this node runs rewrites the file; use it once the hand is not
+        following the glove (at the fist, disabled, on the way home), so the next reference starts from it."""
+        if t - self._calibration_check_t < 1.0:
+            return
+        self._calibration_check_t = t
+        try:
+            mtime = self.calibration_path.stat().st_mtime
+        except OSError:
+            return
+        ctl = self.controller
+        if mtime == self._calibration_mtime or (ctl.mode.value == "enabled" and ctl.phase.value in ("follow", "reference")):
+            return
+        try:
+            ctl.retargeter.set_calibration(HandCalibration.load(self.calibration_path, side=self.side))
+        except Exception as exc:  # noqa: BLE001 - a half-written or bad file: keep the one in use
+            self.get_logger().warning(f"calibration {self.calibration_path} not reloaded: {exc}",
+                                      throttle_duration_sec=5.0)
+            return
+        self._calibration_mtime = mtime
+        self.get_logger().info(f"calibration reloaded: {self.calibration_path}")
+
     def _tick(self) -> None:
         self._arm_link_poll(time.monotonic())
+        self._reload_calibration(time.monotonic())
         out = self.controller.tick(time.monotonic(), subscribers_ready=self._subscribers_ready())
         if out.hand_id is not None:
             if out.speed is not None:

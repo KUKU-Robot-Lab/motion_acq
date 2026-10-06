@@ -58,6 +58,10 @@ def blockers(console, key: str) -> list[str]:
             out += _fast_probe_problems(console)
         if key in ("arm", "record"):
             out += _arm_blockers(console, source)
+            calibrating = [k for k in ("calib_right", "calib_left", "rezero_right", "rezero_left")
+                           if console.sup.is_running(k)]
+            if calibrating:
+                out.append(f"장갑 보정 중({', '.join(calibrating)}): 끝난 뒤 팔 시작")
         if key == "head":
             out += _head_blockers(console)
         if key.startswith("hand_"):
