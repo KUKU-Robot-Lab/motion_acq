@@ -110,13 +110,13 @@ def one_trial(p: Probe, slot: int, speed: int, force: int, hybrid: int | None, c
         if p.angle is None or p.force is None or p.current is None:
             return False
         t = time.monotonic() - t0
-        f, i = p.force[slot] - rest, abs(p.current[slot])
+        f, i = abs(p.force[slot] - rest), abs(p.current[slot])  # thumb_1 reads negative when loaded (10.06)
         if hybrid and switched[0] is None and (f >= contact_g or i >= contact_ma):
             p.send(SetSpeed1, p.speed_pub, six(hybrid))
             switched[0] = t
         if not rows or rows[-1][0] < t - 0.002:
             rows.append((t, p.angle[slot], p.force[slot], p.current[slot]))
-        if touched[0] is None and f >= contact_g:
+        if touched[0] is None and (f >= contact_g or i >= contact_ma):
             touched[0] = t
         return hold_after_contact_s is not None and touched[0] is not None and t - touched[0] >= hold_after_contact_s
 
@@ -126,7 +126,7 @@ def one_trial(p: Probe, slot: int, speed: int, force: int, hybrid: int | None, c
     p.send(SetSpeed1, p.speed_pub, six(2000))
     p.send(SetAngle1, p.angle_pub, one(open_reg))
     p.spin_for(1.5)
-    contact = next((a for _, a, f, _ in rows if f - rest >= contact_g), None)
+    contact = next((a for _, a, f, i in rows if abs(f - rest) >= contact_g or abs(i) >= contact_ma), None)
     peak_f = max((r[2] for r in rows), default=None)
     peak_i = max((abs(r[3]) for r in rows), default=None)
     final = rows[-1] if rows else None
