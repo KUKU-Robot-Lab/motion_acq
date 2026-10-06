@@ -78,6 +78,15 @@ that plant (55 and 10 g/register, 24-50 ms delay): no cycle, 0.4 rad -> 750-840 
 < 900 g. A fast approach (4 rad/s) into a rigid object is not limited before the force is read: real peak to
 be measured (the guard's 800 mA current limit stays).
 
+## 10.06 evening: right hand, five fingers (tau_contact 0.3 s, hold band 200 g, cup held at the default place)
+Holds settled (range <= 100 g on the four fingers; thumb_2 one 440 g cycle at 0.2 rad, 0.5 rad/s), held forces
+within the hold band of k x penetration (index 376/209, 351/439; middle 115/216; ring 228/256, 548/447; pinky
+127/202, 331/363 g; thumb_2 6 trials 168-541 g). The deeper trials stopped on the 950 mA abort: with the force at
+~800 g (closing rate 0 at f_max) and the command held a few registers past the blocked finger, the current wound
+up 500 -> 1084 mA while the force stayed 700-890 g. The 800 mA SDO current limit did not cap the reading.
+Since the lead screw holds the force with no current, the driver now pins the command at the measured angle
+when the current passes 650 mA in contact (current_hold_ma), until the operator opens past it.
+
 ## For the controller and the simulator
 - Position following: mode 0. Grip force: not from a position margin (object dependent); either a force
   loop in software around mode 0, or firmware mode 1 while holding (accurate, low current, but it ignores

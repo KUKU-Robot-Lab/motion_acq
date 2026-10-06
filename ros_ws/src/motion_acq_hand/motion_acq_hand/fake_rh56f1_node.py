@@ -82,6 +82,7 @@ class FakeRh56f1(Node):
         self.adm_state = self.hand.AdmState()
         self.adm_state.bias = [10.0] * N_SLOTS
         self.last_tips = [0] * 5
+        self.last_current = [0.0] * N_SLOTS
         self.last_force = [0.0] * N_SLOTS
         self.adm_pub = self.create_publisher(Int32MultiArray, f"{ns}/admittance_offset", 10)
         self.create_subscription(SetSpeed1, f"{ns}/speed_set", self._on_speed, 10)
@@ -131,7 +132,7 @@ class FakeRh56f1(Node):
             return self.target[i]
         tip = float(self.last_tips[i]) if i < 5 else -1.0
         return self.hand.adm_step(self.adm_params, self.adm_state, i, self.dt, self.target[i], self.present[i],
-                                  self.last_force[i], tip)
+                                  self.last_force[i], tip, self.last_current[i])
 
     def _tick(self) -> None:
         step = self.reg_per_s * self.dt
@@ -160,6 +161,7 @@ class FakeRh56f1(Node):
         current.hand_id = self.hand_id
         current.joint_values = [int(v * MA_PER_G) if v > 100 else 60 + noise for v in values]
         current.joint_names = self.joint_names
+        self.last_current = [float(v) for v in current.joint_values]
         self.current_pub.publish(current)
         touch = TouchData1()
         touch.header.stamp = stamp
