@@ -108,7 +108,7 @@ class GripGuard:
             if len(samples) >= self.config.bias_samples:
                 self.bias[joint] = sorted(samples)[len(samples) // 2]
 
-    def _relative_force(self, t: float) -> dict[str, float]:
+    def relative_force(self, t: float) -> dict[str, float]:
         return {j: v - self.bias.get(j, 0.0) for j, v in self._fresh(self.force, t).items()}
 
     def on_current(self, names: Sequence[str], values: Sequence[float], t: float) -> None:
@@ -117,6 +117,9 @@ class GripGuard:
     def reset(self) -> None:
         self.engaged = {}
         self.in_contact = set()
+
+    def tips_now(self, t: float) -> dict[str, float]:
+        return self._fresh(self.tips, t)
 
     def current_now(self, t: float) -> dict[str, float] | None:
         """Actuator currents (mA) if fresh (record / analysis)."""
@@ -136,17 +139,19 @@ class GripGuard:
             return "hold"  # still pressing: hysteresis keeps the hold until both readings drop
         return None
 
-    def ceilings(self, measured_rad: Mapping[str, float] | None, t: float) -> dict[str, float]:
-        """{joint: largest command allowed now}; empty when nothing presses (or no fresh readings)."""
+    def ceilings(self, measured_rad: Mapping[str, float] | None, t: float,
+                 skip: Sequence[str] = ()) -> dict[str, float]:
+        """{joint: largest command allowed now}; empty when nothing presses (or no fresh readings).
+        skip: joints held by the firmware force loop (grip_mode), not position-commanded."""
         c = self.config
-        force, current = self._relative_force(t), self._fresh(self.current, t)
+        force, current = self.relative_force(t), self._fresh(self.current, t)
         if not c.enabled or not measured_rad or not (force or current):
             self.engaged = {}
             return {}
         overload = sum(abs(v) for v in current.values()) >= c.total_current_ma
         out, engaged = {}, {}
         for joint in JOINTS:
-            if joint not in measured_rad:
+            if joint not in measured_rad or joint in skip:
                 continue
             level = self._level(joint, force, current, overload)
             if level is None:
@@ -164,7 +169,7 @@ class GripGuard:
         if not c.enabled:
             self.in_contact = set()
             return {j: free_speed for j in JOINTS}
-        force, current = self._relative_force(t), self._fresh(self.current, t)
+        force, current = self.relative_force(t), self._fresh(self.current, t)
         tips = self._fresh(self.tips, t)
         tip_of = {j: tips.get(f, 0.0) for f, joints in TIP_JOINTS.items() for j in joints}
         contact = set()

@@ -19,6 +19,7 @@ from motion_acq.filters import OneEuroFilter, RateLimiter
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.feedback import FeedbackConfig, feedback_config
 from motion_acq.hand.grip_guard import GripGuardConfig, grip_guard_config
+from motion_acq.hand.grip_mode import GripModeConfig, grip_mode_config
 from motion_acq.hand.kinematic import KinematicConfig, KinematicRetargeter, TipTables, points_from_signals, table_path
 from motion_acq.hand.rh56f1 import Rh56f1Map
 
@@ -57,6 +58,7 @@ class HandRetargetConfig:
     reference_timeout_s: float = 10.0
     kinematic: KinematicConfig = field(default_factory=KinematicConfig)
     grip_guard: GripGuardConfig = field(default_factory=GripGuardConfig)
+    grip_mode: GripModeConfig = field(default_factory=GripModeConfig)
 
     @property
     def joints(self) -> tuple[str, ...]:
@@ -119,6 +121,7 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         reference_timeout_s=float(ref.get("timeout_s", 10.0)),
         kinematic=KinematicConfig(**{k: float(v) for k, v in (raw.get("kinematic") or {}).items()}),
         grip_guard=grip_guard_config(raw.get("grip_guard")),
+        grip_mode=grip_mode_config(raw.get("grip_mode")),
     )
 
 
@@ -202,6 +205,12 @@ class HandRetargeter:
         self._last_t = t_s
         self._last_registers = self.hand_map.to_registers(self.command(), side=self.side)
         self.state = HandState.RUNNING
+
+    def reseed(self, q: Mapping[str, float]) -> None:
+        """Restart these joints' command at q (a finger released from the force hold: no jump)."""
+        for joint, value in q.items():
+            if joint in self._limiters:
+                self._limiters[joint].reset(float(value))
 
     def step_to(self, q_target: Mapping[str, float], t_s: float) -> HandStep:
         """Walk the command to a fixed pose (home) under the same rate limits.

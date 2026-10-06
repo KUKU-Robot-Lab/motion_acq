@@ -45,9 +45,10 @@ from motion_acq_hand.common import (
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from rh56f1_interfaces.msg import GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1, TouchData1
 from senseglove_msgs.msg import SenseGloveState
-from std_msgs.msg import Bool, Float64MultiArray, String
+from std_msgs.msg import Bool, Float64MultiArray, Int32MultiArray, String
 
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.controller import ControllerConfig, HandController
@@ -96,6 +97,10 @@ class HandNode(Node):
         self.speed_pub = self.create_publisher(SetSpeed1, f"{ns}/speed_set", 10)
         self.force_pub = self.create_publisher(SetForce1, f"{ns}/force_set", 10)
         self.status_pub = self.create_publisher(String, f"/motion_acq/hand_{self.side}/status", 10)
+        # firmware finger mode (grip_mode.py: position while free, force closed loop while holding)
+        self.mode_pub = self.create_publisher(Int32MultiArray, f"{ns}/finger_mode_set", 10)
+        self.create_subscription(Int32MultiArray, f"{ns}/finger_mode", self._on_finger_mode,
+                                 QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(SenseGloveState, topic, self._on_glove, glove_qos())
         self.create_subscription(GetAngleAct1, f"{ns}/angle_actual", self._on_actual, 10)
         self.create_subscription(Bool, f"/motion_acq/hand_{self.side}/enable", self._on_enable, 10)
@@ -157,6 +162,9 @@ class HandNode(Node):
     def _on_force(self, msg: GetForceAct1) -> None:
         self.controller.on_joint_force(list(msg.joint_names), list(msg.joint_values), time.monotonic())
 
+    def _on_finger_mode(self, msg: Int32MultiArray) -> None:
+        self.controller.on_finger_mode(list(msg.data))
+
     def _on_current(self, msg: GetCurrentAct1) -> None:
         self.controller.on_current(list(msg.joint_names), list(msg.joint_values), time.monotonic())
 
@@ -201,6 +209,8 @@ class HandNode(Node):
                 self._publish(self.force_pub, SetForce1, out.hand_id, out.force)
             if out.angle is not None:
                 self._publish(self.angle_pub, SetAngle1, out.hand_id, out.angle)
+        if out.mode is not None:  # after force / angle: the held finger's force_set and pinned angle go first
+            self.mode_pub.publish(Int32MultiArray(data=[int(v) for v in out.mode]))
         self.send_haptics(out.haptics.efforts(), time.monotonic())
         mode = self.controller.mode
         if mode is not self._last_mode:
@@ -246,6 +256,8 @@ class HandNode(Node):
         try:
             for _ in range(3):  # the glove controller holds the last command: leave it off
                 self.send_haptics(OFF.efforts(), time.monotonic(), force=True)
+            if self.controller.grip_mode.active():  # a finger still held by force: back to position mode
+                self.mode_pub.publish(Int32MultiArray(data=[0] * 6))
             self.log_file.close()
         finally:
             super().destroy_node()

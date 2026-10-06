@@ -17,6 +17,8 @@ from __future__ import annotations
 from motion_acq_hand.common import check_side, declare, hand_ns, require_fake_isolation, spin_node
 
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
+from std_msgs.msg import Int32MultiArray
 from rh56f1_interfaces.msg import GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1, TouchData1
 
 from motion_acq.hand.retarget import load_hand_retarget_config
@@ -58,6 +60,12 @@ class FakeRh56f1(Node):
         self.create_subscription(SetAngle1, f"{ns}/angle_set", self._on_angle, 10)
         self.create_subscription(SetSpeed1, f"{ns}/speed_set", self._on_speed, 10)
         self.create_subscription(SetForce1, f"{ns}/force_set", self._on_force, 10)
+        # firmware finger modes (0 position, 1 force closed loop) like the driver's SDO switch (10.06)
+        self.modes = [0] * N_SLOTS
+        self.mode_pub = self.create_publisher(Int32MultiArray, f"{ns}/finger_mode",
+                                              QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.create_subscription(Int32MultiArray, f"{ns}/finger_mode_set", self._on_mode, 10)
+        self.mode_pub.publish(Int32MultiArray(data=self.modes))
         self.dt = 1.0 / rate_hz
         self.create_timer(self.dt, self._tick)
         self.get_logger().info(f"fake RH56F1 {self.side} on {ns}")
@@ -86,15 +94,23 @@ class FakeRh56f1(Node):
         if self._accept(msg):
             self.force = list(msg.joint_values)
 
+    def _on_mode(self, msg: Int32MultiArray) -> None:
+        values = list(msg.data)[:N_SLOTS]
+        self.modes = [int(v) if v >= 0 else m for v, m in zip(values, self.modes)]
+        self.mode_pub.publish(Int32MultiArray(data=self.modes))
+
     def _tick(self) -> None:
         step = self.reg_per_s * self.dt
         for i in range(N_SLOTS):
-            err = self.target[i] - self.present[i]
+            # mode 1 ignores the angle and closes until it holds force_set (on the object or at the end)
+            goal = 900.0 if self.modes[i] == 1 and i < 4 else self.target[i]
+            err = goal - self.present[i]
             self.present[i] += max(-step, min(step, err))
         pressing = False
+        held = self.modes[INDEX_SLOT] == 1
         if self.object_index_reg >= 0 and self.present[INDEX_SLOT] < self.object_index_reg:
             self.present[INDEX_SLOT] = float(self.object_index_reg)
-            pressing = self.target[INDEX_SLOT] < self.object_index_reg
+            pressing = held or self.target[INDEX_SLOT] < self.object_index_reg
         stamp = self.get_clock().now().to_msg()
         force = GetForceAct1()
         force.header.stamp = stamp
@@ -102,6 +118,8 @@ class FakeRh56f1(Node):
         self.ticks += 1
         noise = self.ticks % 3  # live readings are never exactly still (hand_node faults a frozen hand)
         press = CONTACT_JOINT_FORCE + PRESS_G_PER_REG * (self.object_index_reg - self.target[INDEX_SLOT])
+        if held:  # force closed loop: the force_set (fingers, 10.06 within a few %)
+            press = float((self.force or [600] * N_SLOTS)[INDEX_SLOT])
         values = [int(min(press, 1800)) + noise if pressing and i == INDEX_SLOT else 10 + noise for i in range(N_SLOTS)]
         force.joint_values = values
         force.joint_names = self.joint_names

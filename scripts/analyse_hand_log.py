@@ -77,12 +77,17 @@ def main(path: str) -> int:
     guarded = [r for r in running if (r.get("grip_guard") or {}).get("index_1")]
     pressed = [r for r in running if (r.get("joint_force") or {}).get("index_1", 0.0) >= 400]
     too_hard = [r for r in running if (r.get("joint_force") or {}).get("index_1", 0.0) >= 1000]
-    if pressed and not guarded:
-        failures.append(f"{len(pressed)} cycles of index pressing but the grip guard never engaged")
+    held = [r for r in running if ((r.get("grip_mode") or {}).get("state") or {}).get("index_1") == "hold"]
+    switches = sum(1 for r in rows if r.get("finger_mode"))
+    if pressed and not guarded and not held:
+        failures.append(f"{len(pressed)} cycles of index pressing but neither the grip guard nor the force hold engaged")
+    if switches > 20:
+        failures.append(f"{switches} finger mode requests: the position / force switch flaps")
+    print(f"index held by the force loop in {len(held)} cycles, finger mode requests {switches}")
     if too_hard:
         failures.append(f"{len(too_hard)} cycles with index force >= 1000 g (guard did not hold the finger)")
     slowed = [r for r in running if "index_1" in (r.get("contact_slow") or [])]
-    if pressed and not slowed:
+    if pressed and not slowed and not any(((r.get("grip_mode") or {}).get("state") or {}).get("index_1") for r in running):
         failures.append("index pressed but never ran at contact speed")
     print(f"index pressing cycles {len(pressed)}, grip guard on index in {len(guarded)}, "
           f"max index force {max(((r.get('joint_force') or {}).get('index_1', 0.0) for r in running), default=0):.0f} g, "

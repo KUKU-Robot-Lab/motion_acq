@@ -33,7 +33,8 @@ from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
-from rh56f1_interfaces.msg import GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1
+from rh56f1_interfaces.msg import (GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1,
+                                   TouchData1)
 from std_msgs.msg import String
 
 SLOTS = ("pinky", "ring", "middle", "index", "thumb_2", "thumb_1")  # driver slot order
@@ -60,9 +61,15 @@ class Probe(Node):
         self.create_subscription(GetForceAct1, f"{ns}/force_actual", lambda m: setattr(self, "force", [int(v) for v in m.joint_values]), 10)
         self.create_subscription(GetCurrentAct1, f"{ns}/current_actual", lambda m: setattr(self, "current", [int(v) for v in m.joint_values]), 10)
         self.create_subscription(String, f"{ns}/ecat_status", self._on_status, 10)
+        # fingertip tactile normal force (N, pinky first; 65535 = not read): link 1 touches before the tip (10.06)
+        self.tips: list[float] | None = None
+        self.create_subscription(TouchData1, f"{ns}/touch_data", self._on_touch, 10)
 
     def _on_angle(self, m: GetAngleAct1) -> None:
         self.angle, self.hand_id = [int(v) for v in m.joint_values], int(m.hand_id)
+
+    def _on_touch(self, m: TouchData1) -> None:
+        self.tips = [0.0 if int(v) in (65535, -1) else int(v) * 0.01 for v in list(m.finger_forces)[:5]]
 
     def _on_status(self, m: String) -> None:
         try:
@@ -101,6 +108,7 @@ def one_trial(p: Probe, slot: int, speed: int, force: int, hybrid: int | None, c
     p.send(SetSpeed1, p.speed_pub, six(2000 if hybrid else speed))
     p.spin_for(0.05)
     rows: list[tuple] = []
+    tip_rows: list[float | None] = []
     switched: list[float | None] = [None]
     t0 = time.monotonic()
 
@@ -116,6 +124,7 @@ def one_trial(p: Probe, slot: int, speed: int, force: int, hybrid: int | None, c
             switched[0] = t
         if not rows or rows[-1][0] < t - 0.002:
             rows.append((t, p.angle[slot], p.force[slot], p.current[slot]))
+            tip_rows.append(None if p.tips is None or slot > 4 else p.tips[slot])  # tips: pinky..thumb = slots 0..4
         if touched[0] is None and (f >= contact_g or i >= contact_ma):
             touched[0] = t
         return hold_after_contact_s is not None and touched[0] is not None and t - touched[0] >= hold_after_contact_s
@@ -135,7 +144,8 @@ def one_trial(p: Probe, slot: int, speed: int, force: int, hybrid: int | None, c
             "peak_force": peak_f, "overshoot_g": None if peak_f is None else peak_f - rest - force,
             "final_force": None if final is None else final[2], "peak_current_ma": peak_i,
             "final_angle": None if final is None else final[1], "switched_at_s": switched[0],
-            "status": status.get("status"), "error": status.get("error"), "samples": rows}
+            "status": status.get("status"), "error": status.get("error"), "samples": rows,
+            "tip_n": tip_rows, "final_tip_n": tip_rows[-1] if tip_rows else None}
 
 
 def main(argv=None) -> int:
@@ -181,7 +191,8 @@ def main(argv=None) -> int:
         fh.write(json.dumps({"trial": tag, **r}) + "\n")
         fh.flush()
         print(f"{tag:<16} peak {r['peak_force']} g, final {r['final_force']} g (rest {rest:.0f}), peak {r['peak_current_ma']} mA, "
-              f"contact {r['contact_reg']}, final angle {r['final_angle']}, status {r['status']} error {r['error']}", flush=True)
+              f"contact {r['contact_reg']}, final angle {r['final_angle']}, tip {r['final_tip_n']} N, "
+              f"status {r['status']} error {r['error']}", flush=True)
         return r
 
     try:

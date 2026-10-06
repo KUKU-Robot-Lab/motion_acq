@@ -136,6 +136,32 @@ driver:
   speed: 2000      # SetSpeed1, same as sim2real pd hw_speed
   force: 600       # SetForce1 [g], same as sim2real pd hw_force
 
+# Position + force closed loop per finger (motion_acq.hand.grip_mode; 10.06 both hands, docs/RH56F1_HAND_TUNING.md):
+# free = firmware mode 0 (position); a finger that touches (actuator force over rest >= enter_force_g or
+# current >= enter_current_ma) while the operator closes enter_push_rad past it switches alone to mode 1
+# (force closed loop: fingers hold force_set within a few %, thumb_2 at 0.64 x) with
+#   force = clamp(base_g + gain_g_per_rad * (push - enter_push_rad), min_g, max_g)
+# (x proximal_scale while the tip sensor reads < tip_contact_n: link 1 contact, shorter lever;
+#  x thumb_2_scale on thumb_2), and back to mode 0 when the operator opens exit_open_rad short of it.
+# thumb_1 stays in position (its contact force was not measured). Needs the hand driver with
+# /hand_<s>/finger_mode (sim2real dc76947); with an older driver nothing switches.
+grip_mode:
+  enabled: true
+  joints: [index_1, middle_1, ring_1, pinky_1, thumb_2]
+  enter_force_g: 150.0
+  enter_current_ma: 450.0
+  enter_push_rad: 0.05
+  exit_open_rad: 0.08
+  min_hold_s: 0.2
+  base_g: 300.0
+  gain_g_per_rad: 1500.0
+  min_g: 150.0
+  max_g: 800.0
+  thumb_2_scale: 1.55
+  proximal_scale: 0.7
+  tip_contact_n: 0.2
+  ack_timeout_s: 0.5
+
 # Grip guard (motion_acq.hand.grip_guard; 10.06 user: the hand must protect itself, the haptics
 # alone are too slow). 10.06 cup grasp: fingers blocked by the cup kept pushing to the glove's
 # fist target, force_actual 1346-1715 g against force_set 600, 6.5 A in total (manual max grip
