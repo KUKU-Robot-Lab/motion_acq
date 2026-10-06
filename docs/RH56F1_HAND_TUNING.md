@@ -32,6 +32,19 @@ the contact cannot set a grip force. Speed (150-2000) changes neither the peak n
 mode 0, unlike the RH56DFX paper (arXiv 2603.08988). After a mode 0 squeeze the current drops to 0
 within ~0.6 s and the force stays (the lead screw holds it) until the finger is told to open.
 
+## Right hand (10.06 14:12, after force zero calibration)
+
+Force sensor zero calibration (`rh56f1_driver.py --force-calibrate`, SDO 0x2000:06, empty hand): rest
+readings -17, 13, 23, 17, 27, -70 g -> 0, 0, 0, 0, -5, -1 g (pinky .. thumb_1). Mode 1, cup deep in the palm:
+
+| force_set | index | middle | ring | pinky | thumb_2 |
+|---|---|---|---|---|---|
+| 600 | 581-616 | 601-603 | 593-617 | 587-613 | 375-390 |
+| 300 | 297-302 | 294-298 | 289-299 | 307-312 | 197-203 |
+| 100 | 105 (free) | 102 (free) | 101 (free) | 105 (free) | 74 (free) |
+
+Same as the left hand: fingers hold force_set within a few %, thumb_2 reads ~0.64 x force_set.
+
 ## thumb_1 (rotation)
 Force reads negative when the thumb is loaded towards the outside (-475..-750 g at the outer end
 against a held cup); a contact towards the palm at ~733 raised it only ~90 g and the current to 94 mA
