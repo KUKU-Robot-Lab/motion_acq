@@ -136,31 +136,28 @@ driver:
   speed: 2000      # SetSpeed1, same as sim2real pd hw_speed
   force: 600       # SetForce1 [g], same as sim2real pd hw_force
 
-# Position + force closed loop per finger (motion_acq.hand.grip_mode; 10.06 both hands, docs/RH56F1_HAND_TUNING.md):
-# free = firmware mode 0 (position); a finger that touches (actuator force over rest >= enter_force_g or
-# current >= enter_current_ma) while the operator closes enter_push_rad past it switches alone to mode 1
-# (force closed loop: fingers hold force_set within a few %, thumb_2 at 0.64 x) with
-#   force = clamp(base_g + gain_g_per_rad * (push - enter_push_rad), min_g, max_g)
-# (x proximal_scale while the tip sensor reads < tip_contact_n: link 1 contact, shorter lever;
-#  x thumb_2_scale on thumb_2), and back to mode 0 when the operator opens exit_open_rad short of it.
-# thumb_1 stays in position (its contact force was not measured). Needs the hand driver with
-# /hand_<s>/finger_mode (sim2real dc76947); with an older driver nothing switches.
-grip_mode:
+# Admittance per finger (motion_acq.hand.admittance; 10.06 user: position + force loop together, not
+# switched; linkage, non-backdrivable lead screw -> admittance, not impedance). Every tick:
+#   q_cmd = q_operator - y,  y <- y + a (f / stiffness - y),  a = dt / (filter_tau + dt)
+# f = actuator force over rest - deadband (x 1/proximal_scale while the tip sensor is quiet: link 1 contact).
+# Free space: f ~ 0, the finger follows the glove. Contact: grip force ~ stiffness x how far the operator
+# closes past the contact, whatever the object (a position offset alone gave 3-55 g/register, 10.06).
+# Loop gain per tick ~ a * k_contact / stiffness (k_contact up to ~29 kg/rad on thumb_2): tau 0.15 s at
+# 120 Hz -> a 0.016. thumb_1 stays with the grip guard only (its force reads negative under an outward load).
+# The firmware stays in mode 0 (mode switches over SDO are refused in OP, 10.06 right index).
+admittance:
   enabled: true
   joints: [index_1, middle_1, ring_1, pinky_1, thumb_2]
-  enter_force_g: 150.0
-  enter_current_ma: 450.0
-  enter_push_rad: 0.05
-  exit_open_rad: 0.08
-  min_hold_s: 0.2
-  base_g: 300.0
-  gain_g_per_rad: 1500.0
-  min_g: 150.0
-  max_g: 800.0
-  thumb_2_scale: 1.55
+  stiffness_g_per_rad: 2000.0
+  deadband_g: 40.0
+  filter_tau_s: 0.5       # simulated (25-50 ms delay, 1.6 rad/s finger, contact 1.6-29 kg/rad): settles, no oscillation
+  release_tau_s: 0.15     # once the force is gone the offset fades in ~0.5 s (simulated)
+  lead_rad: 0.02          # in contact the command leads the finger by <= 0.02 x (1 - f / max_force) rad
+  max_force_g: 800.0              # above: backs off at over_stiffness (soft ceiling ~800 g + 200 g/rad)
+  over_stiffness_g_per_rad: 200.0
+  max_offset_rad: 1.6
   proximal_scale: 0.7
   tip_contact_n: 0.2
-  ack_timeout_s: 0.5
 
 # Grip guard (motion_acq.hand.grip_guard; 10.06 user: the hand must protect itself, the haptics
 # alone are too slow). 10.06 cup grasp: fingers blocked by the cup kept pushing to the glove's
@@ -172,9 +169,9 @@ grip_mode:
 # limited. Released when force < force_off_g and current < current_off_ma.
 grip_guard:
   enabled: true
-  force_on_g: 400.0
-  force_off_g: 250.0
-  force_hard_g: 800.0
+  force_on_g: 950.0     # safety above the admittance ceiling (~800 g): hold
+  force_off_g: 700.0
+  force_hard_g: 1100.0
   current_on_ma: 800.0
   current_off_ma: 500.0
   current_hard_ma: 1100.0

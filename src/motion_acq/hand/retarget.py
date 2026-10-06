@@ -17,9 +17,9 @@ import yaml
 
 from motion_acq.filters import OneEuroFilter, RateLimiter
 from motion_acq.hand.calibration import HandCalibration
+from motion_acq.hand.admittance import AdmittanceConfig, admittance_config
 from motion_acq.hand.feedback import FeedbackConfig, feedback_config
 from motion_acq.hand.grip_guard import GripGuardConfig, grip_guard_config
-from motion_acq.hand.grip_mode import GripModeConfig, grip_mode_config
 from motion_acq.hand.kinematic import KinematicConfig, KinematicRetargeter, TipTables, points_from_signals, table_path
 from motion_acq.hand.rh56f1 import Rh56f1Map
 
@@ -58,7 +58,7 @@ class HandRetargetConfig:
     reference_timeout_s: float = 10.0
     kinematic: KinematicConfig = field(default_factory=KinematicConfig)
     grip_guard: GripGuardConfig = field(default_factory=GripGuardConfig)
-    grip_mode: GripModeConfig = field(default_factory=GripModeConfig)
+    admittance: AdmittanceConfig = field(default_factory=AdmittanceConfig)
 
     @property
     def joints(self) -> tuple[str, ...]:
@@ -121,7 +121,7 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         reference_timeout_s=float(ref.get("timeout_s", 10.0)),
         kinematic=KinematicConfig(**{k: float(v) for k, v in (raw.get("kinematic") or {}).items()}),
         grip_guard=grip_guard_config(raw.get("grip_guard")),
-        grip_mode=grip_mode_config(raw.get("grip_mode")),
+        admittance=admittance_config(raw.get("admittance")),
     )
 
 
@@ -206,12 +206,6 @@ class HandRetargeter:
         self._last_registers = self.hand_map.to_registers(self.command(), side=self.side)
         self.state = HandState.RUNNING
 
-    def reseed(self, q: Mapping[str, float]) -> None:
-        """Restart these joints' command at q (a finger released from the force hold: no jump)."""
-        for joint, value in q.items():
-            if joint in self._limiters:
-                self._limiters[joint].reset(float(value))
-
     def step_to(self, q_target: Mapping[str, float], t_s: float) -> HandStep:
         """Walk the command to a fixed pose (home) under the same rate limits.
 
@@ -258,7 +252,8 @@ class HandRetargeter:
         return out
 
     def step(self, signals: Mapping[str, float] | None, t_s: float,
-             ceilings: Mapping[str, float] | None = None) -> HandStep:
+             ceilings: Mapping[str, float] | None = None, offsets: Mapping[str, float] | None = None) -> HandStep:
+        """offsets: rad taken off the operator target per joint (admittance force term)."""
         if self.state is HandState.IDLE:
             return HandStep(HandState.IDLE, None, None, None, None, None)
         dt = 0.0 if self._last_t is None else min(max(t_s - self._last_t, 0.0), self.config.max_step_dt_s)
@@ -272,6 +267,9 @@ class HandRetargeter:
             return HandStep(HandState.HOLD, None, None, None, q_hold, self._last_registers)
         self.state = HandState.RUNNING
         raw, q_target = self.target(signals)
+        for j, y in (offsets or {}).items():
+            if j in q_target:
+                q_target[j] = max(q_target[j] - y, self.config.limits_rad[j][0])
         q_cmd = {}
         for j in self.config.joints:
             smoothed = self._filters[j](q_target[j], t_s)

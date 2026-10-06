@@ -98,8 +98,9 @@ def follow_fist_on_a_cup(rig, grams_at_contact: int, steps: int = 40):
 
 
 def test_controller_stops_closing_a_blocked_finger_but_others_follow():
+    """Above force_on_g (950 g in the config: the admittance ceiling is ~800 g) the guard holds the finger."""
     rig = Rig(make_controller())
-    cup, outs = follow_fist_on_a_cup(rig, 500)
+    cup, outs = follow_fist_on_a_cup(rig, 1000)
     last = outs[-1]
     assert last.record["grip_guard"] == {"index_1": "hold"}
     margin_reg = abs(HAND_MAP.to_registers({**last.record["measured_rad"], "index_1": last.record["measured_rad"]["index_1"] + 0.03},

@@ -50,7 +50,7 @@ from enum import Enum
 from typing import Mapping, Sequence
 
 from motion_acq.hand.grip_guard import GripGuard
-from motion_acq.hand.grip_mode import GripMode, GripState, slot_list
+from motion_acq.hand.admittance import Admittance
 from motion_acq.hand.feedback import OFF, HapticFeedback, Haptics, tip_forces_n
 from motion_acq.hand.nova2 import SIDE_PREFIX, glove_joint_names
 from motion_acq.hand.retarget import HandRetargeter, HandState
@@ -98,7 +98,6 @@ class Outputs:
     angle: list[int] | None = None
     speed: list[int] | None = None
     force: list[int] | None = None
-    mode: list[int] | None = None  # firmware finger mode to request (0 position, 1 force; -1 keep)
     haptics: Haptics = OFF  # Nova 2 feedback for this tick (all off unless following the glove)
     record: dict = field(default_factory=dict)
 
@@ -144,9 +143,7 @@ class HandController:
         self.feedback = HapticFeedback(retargeter.config.feedback, retargeter.config.closed_rad)
         self.grip_guard = GripGuard(retargeter.config.grip_guard)
         self._speeds_sent: list[int] | None = None
-        self.grip_mode = GripMode(retargeter.config.grip_mode)
-        self._forces_sent: list[int] | None = None
-        self._slots = [a.name for a in sorted(hand_map.axes_of(side), key=lambda a: a.slot)]
+        self.admittance = Admittance(retargeter.config.admittance)
         self._last_reading: dict[str, object] = {}
         self._reference: list[tuple[float, dict]] = []  # (t, glove signals) while in REFERENCE
         self.reference_note: str | None = None
@@ -172,11 +169,6 @@ class HandController:
         self._hand_changed("force", tuple(values), t)
         self.feedback.on_joint_force(names, values, t)
         self.grip_guard.on_force(names, values, t)
-
-    def on_finger_mode(self, modes: Sequence[int]) -> None:
-        """/hand_<s>/finger_mode: firmware modes read back by the driver, slot order."""
-        if len(modes) == N_SLOTS:
-            self.grip_mode.on_modes(dict(zip(self._slots, modes)))
 
     def on_current(self, names, values, t: float) -> None:
         """GetCurrentAct1 (mA per actuator): the grip guard's second reading."""
@@ -272,7 +264,8 @@ class HandController:
         self.mode = Mode.ENABLED
         self._set_phase(Phase.TO_HOME, t)
         self._last_resend = -math.inf
-        self._speeds_sent = self._forces_sent = None
+        self._speeds_sent = None
+        self.admittance.reset()
         self.grip_guard.reset()
         return None
 
@@ -282,9 +275,13 @@ class HandController:
             glove = self.glove
             fresh = (glove is not None and t - glove[1] <= self.config.glove_stale_s
                      and not self.glove_frozen(t))
-            held = [j for j, st in self.grip_mode.state.items() if st is not GripState.FREE]
-            ceilings = self.grip_guard.ceilings(self._measured_rad() if self._measured_fresh(t) else None, t, held)
-            return self.retargeter.step(glove[0] if fresh and glove else None, t, ceilings)
+            measured = self._measured_rad() if self._measured_fresh(t) else None
+            ceilings = self.grip_guard.ceilings(measured, t)
+            # admittance: the operator's target minus the force term (admittance.py), every tick
+            offsets = self.admittance.update(t, self.grip_guard.relative_force(t), self.grip_guard.tips_now(t))
+            for j, top in self.admittance.ceilings(measured).items():
+                ceilings[j] = min(top, ceilings.get(j, top))
+            return self.retargeter.step(glove[0] if fresh and glove else None, t, ceilings, offsets)
         if self._phase_t0 is None:
             self._phase_t0 = t
         step = self.retargeter.step_to(self.home_rad, t)
@@ -339,22 +336,6 @@ class HandController:
                                    "following the saved calibration")
             self._set_phase(Phase.FOLLOW, t)
 
-    def _grip_step(self, t: float, following: bool, step):
-        """Firmware mode per finger: position while free, force closed loop while holding (grip_mode.py).
-        Anything but following (home, disable, fault) returns every finger to position first."""
-        if (self.mode is Mode.ENABLED and self.phase is Phase.FOLLOW and step is not None
-                and step.state is HandState.HOLD and self.grip_mode.active()):
-            return self.grip_mode.keep()
-        if following and step is not None and step.q_command is not None and self._measured_fresh(t):
-            current = self.grip_guard.current_now(t) or {}
-            # the operator's own target (before the grip guard caps the command at the contact)
-            wanted = step.q_target if step.q_target is not None else step.q_command
-            return self.grip_mode.update(t, wanted, self._measured_rad() or {},
-                                         self.grip_guard.relative_force(t), current, self.grip_guard.tips_now(t))
-        if self.grip_mode.active():
-            return self.grip_mode.release_all(t)
-        return None
-
     def _slot_speeds(self, t: float, following: bool) -> list[int]:
         """SetSpeed1 per slot: the driver speed, slowed per joint at contact while following."""
         out = [self.config.driver_speed] * N_SLOTS
@@ -387,25 +368,15 @@ class HandController:
                 out.angle = list(step.registers)
         following = (self.mode is Mode.ENABLED and self.phase is Phase.FOLLOW
                       and step is not None and step.state is HandState.RUNNING)
-        grip = self._grip_step(t, following, step)
-        if grip is not None and grip.released and self.measured is not None:
-            measured = self._measured_rad() or {}
-            self.retargeter.reseed({j: measured[j] for j in grip.released if j in measured})
-        if grip is not None and grip.pinned and out.angle is not None and self.measured is not None:
-            for slot, joint in enumerate(self._slots):  # held by force (or switching): angle target = where it is
-                if joint in grip.pinned:
-                    out.angle[slot] = int(self.measured[0][slot])
-        if grip is not None and grip.modes:
-            out.mode = slot_list(grip.modes, self._slots, -1)
         if self.mode is Mode.ENABLED:
             speeds = self._slot_speeds(t, following)
-            forces = slot_list(grip.force_g if grip else {}, self._slots, self.config.driver_force)
-            if (t - self._last_resend >= self.config.resend_s or speeds != self._speeds_sent
-                    or forces != self._forces_sent):
+            if t - self._last_resend >= self.config.resend_s or speeds != self._speeds_sent:
                 self._last_resend = t
                 out.speed = speeds
-                out.force = forces
-                self._speeds_sent, self._forces_sent = speeds, forces
+                out.force = [self.config.driver_force] * N_SLOTS
+                self._speeds_sent = speeds
+        if not following:
+            self.admittance.reset()
         out.haptics = self.feedback.update(t, active=following,
                                            q_command=step.q_command if step else None,
                                            q_measured=self._measured_rad())
@@ -439,8 +410,7 @@ class HandController:
             "grip_guard": dict(self.grip_guard.engaged) if following and self.grip_guard.engaged else None,
             "current_ma": self.grip_guard.current_now(t),
             "contact_slow": sorted(self.grip_guard.in_contact) or None,
-            "grip_mode": self.grip_mode.record(),
-            "finger_mode": out.mode,
+            "admittance": self.admittance.record() if following else None,
             "speed": out.speed,
             "hand_status": self._status,  # driver status, only on the tick after one arrived (1 Hz)
         }

@@ -51,6 +51,20 @@ against a held cup); a contact towards the palm at ~733 raised it only ~90 g and
 while a hand-held cup gave way. Stiffness not measured (needs a rigid fixture); user 10.06: leave thumb_1
 for now.
 
+## Runtime mode switch: refused (10.06 15:00, right index)
+Writing FINGER_MODE over SDO while the hand is in OP fails ("mailbox protocol not supported", 3.5-7.7 s
+per request, the mode stays 0); at PREOP (driver start) it works. So no firmware mode switching while
+teleoperating. The process data loop was not disturbed (separate SDO thread, no WKC warnings).
+
+## Controller chosen: position-based admittance in mode 0 (motion_acq hand/admittance.py)
+User 10.06: position and force together, not switched; linkage with a non-backdrivable lead screw, so
+admittance, not impedance. Per finger, every tick: q_cmd = q_operator - y, y low-passes
+f / 2000 g/rad (+ (f - 800) / 200 above 800 g), tau 0.5 s in contact / 0.15 s once free; in contact the
+command leads the finger by <= 0.02 x (1 - f/800) rad. Simulated (25-50 ms delay, 1.6 rad/s finger,
+contact 1.6-29 kg/rad): grip settles at stiffness x penetration (284 / 512 / 599 g for 0.3 rad), impact
+peak ~1 kg at 25 ms delay; at 50 ms delay the stiffest contact (29 kg/rad) limit-cycles: thumb_2 to be
+checked on the real hand.
+
 ## For the controller and the simulator
 - Position following: mode 0. Grip force: not from a position margin (object dependent); either a force
   loop in software around mode 0, or firmware mode 1 while holding (accurate, low current, but it ignores
