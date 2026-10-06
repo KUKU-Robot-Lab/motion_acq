@@ -150,7 +150,7 @@ admittance:
   joints: [index_1, middle_1, ring_1, pinky_1, thumb_2]
   stiffness_g_per_rad: 2000.0
   deadband_g: 40.0
-  filter_tau_s: 0.5       # simulated (25-50 ms delay, 1.6 rad/s finger, contact 1.6-29 kg/rad): settles, no oscillation
+  filter_tau_s: 1.0       # 10.06 right index on a cup: 0.5 s limit-cycled 100-440 g (contact ~55 kg/rad, 1 reg ~100 g); sim: 1.0 settles to 1 register
   release_tau_s: 0.15     # once the force is gone the offset fades in ~0.5 s (simulated)
   lead_rad: 0.02          # in contact the command leads the finger by <= 0.02 x (1 - f / max_force) rad
   max_force_g: 800.0              # above: backs off at over_stiffness (soft ceiling ~800 g + 200 g/rad)
