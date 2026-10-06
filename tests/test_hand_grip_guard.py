@@ -118,3 +118,49 @@ def test_controller_opens_at_once_when_the_operator_lets_go():
         out = rig.step(POSE_ANGLES["flat"])
     assert out.record["grip_guard"] is None
     assert out.angle[3] > cup + 200  # opened well past the cup
+
+
+# -- contact speed and force bias (arXiv 2603.08988: overshoot grows with contact speed) ------------
+
+def test_contact_slows_only_that_joint_and_releases_with_hysteresis():
+    g = guard_with(force=(0, 0, 0, 150, 0, 0))
+    speeds = g.speeds(1.0, 2000)
+    assert speeds["index_1"] == 300 and speeds["middle_1"] == 2000
+    g.on_force(NAMES, (0, 0, 0, 80, 0, 0), 1.01)
+    assert g.speeds(1.01, 2000)["index_1"] == 300  # still above half the contact level
+    g.on_force(NAMES, (0, 0, 0, 40, 0, 0), 1.02)
+    assert g.speeds(1.02, 2000)["index_1"] == 2000
+
+
+def test_tip_touch_or_current_also_mean_contact():
+    g = guard_with(current=(60, 60, 500, 60, 60, 60))
+    g.on_tips({"thumb": 0.3, "index": 0.0}, 1.0)
+    speeds = g.speeds(1.0, 2000)
+    assert speeds["middle_1"] == speeds["thumb_1"] == speeds["thumb_2"] == 300 and speeds["index_1"] == 2000
+
+
+def test_rest_bias_is_learnt_and_subtracted():
+    """Index reads ~96 g at rest (10.06): 96 + 150 must not count as 246 g pressing."""
+    g = guard_with(force=(0, 0, 0, 96, 0, 0))
+    for k in range(60):
+        g.on_force(NAMES, (0, 0, 0, 96 + k % 3, 0, 0), 1.0)
+        g.learn_rest(1.0)
+    assert g.bias["index_1"] == pytest.approx(97, abs=1)
+    g.on_force(NAMES, (0, 0, 0, 96 + 100, 0, 0), 1.0)
+    assert g.speeds(1.0, 2000)["index_1"] == 2000  # 100 g over rest: below contact_force_g
+    g.on_force(NAMES, (0, 0, 0, 96 + 450, 0, 0), 1.0)
+    assert g.ceilings(MEASURED, 1.0) == {"index_1": pytest.approx(0.83)}
+
+
+def test_controller_sends_contact_speed_at_once_and_driver_speed_after():
+    rig = Rig(make_controller())
+    follow_fist_on_a_cup(rig, 500, steps=3)
+    sent = [o.speed for o in rig.sent[-3:] if o.speed is not None]
+    index_slot = 3
+    assert sent and sent[0][index_slot] == 300 and sent[0][2] == 2000
+    for _ in range(30):
+        press_index(rig, 0)
+        out = rig.step(POSE_ANGLES["flat"])
+    speeds = [o.speed for o in rig.sent[-30:] if o.speed is not None]
+    assert speeds[-1] == [2000] * 6
+    assert out.record["contact_slow"] is None

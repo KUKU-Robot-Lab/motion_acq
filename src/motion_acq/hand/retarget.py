@@ -224,7 +224,9 @@ class HandRetargeter:
         """(raw map output, limited and amplitude-scaled target) for one glove sample."""
         points = points_from_signals(signals) if self.kinematic is not None else None
         if points is not None:
-            raw = self.kinematic.solve(points)
+            ratio = self.calibration.thumb_bend_ratio(signals)
+            closed = self.config.limits_rad["thumb_2"][1]
+            raw = self.kinematic.solve(points, None if ratio is None else ratio * closed)
             self.missing_inputs, self.method_used = [], "kinematic"
         else:  # examples map: the method itself, or no hand model data / alignment this tick
             raw = self.calibration.predict(signals)

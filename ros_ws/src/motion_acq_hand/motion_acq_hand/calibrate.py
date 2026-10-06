@@ -40,7 +40,8 @@ from rclpy.node import Node
 from senseglove_msgs.msg import SenseGloveState
 from std_msgs.msg import Float64MultiArray, String
 
-from motion_acq.hand.calibration import OPEN_POSE, CalibrationError, HandCalibration, fit_error, rezero, run_session
+from motion_acq.hand.calibration import (
+    OPEN_POSE, CalibrationError, HandCalibration, fit_error, rezero, run_session, thumb_of)
 from motion_acq.hand.feedback import HAPTICS_BEAT_S, OFF, haptics_topic_for, heartbeat, strap_only
 from motion_acq.hand.kinematic import glove_points
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state, tip_signals
@@ -160,7 +161,7 @@ def main(argv: list[str] | None = None) -> None:
             saved = HandCalibration.load(out, side=side)
             ask(f"[편 손 맞춤] {config.examples[OPEN_POSE].prompt}. 자세를 잡고 멈춘 뒤 Enter 를 누르세요 ")
             say("  기록 중: 그대로 멈춰 있으세요")
-            calibration = rezero(saved, record(OPEN_POSE))
+            calibration = rezero(saved, record(OPEN_POSE), OPEN_POSE, thumb_of(config.examples[OPEN_POSE].target))
             calibration.save(out)
             shift = ", ".join(f"{n} {v:+.2f}" for m in calibration.models.values()
                               for n, v in zip(m.inputs, m.offset) if abs(v) > 0.02)

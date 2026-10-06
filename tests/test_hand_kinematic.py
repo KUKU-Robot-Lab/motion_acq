@@ -103,3 +103,53 @@ def test_solve_is_fast():
         kr.solve(pts)
     assert (time.perf_counter() - start) / 50 < 0.004  # well inside the 8.3 ms tick
     assert align_open_hand("right", []) is None
+
+
+def test_flat_hand_alignment_needs_the_thumb_to_pick_the_right_handedness():
+    """10.06 left: the eight finger points of a flat hand are near one plane, so a mirror fits them
+    as well; one real fit came out mirrored (operator thumb 11 cm off, thumb pinned)."""
+    from motion_acq.hand.kinematic import FINGERS, fit_alignment, knuckle_prefix, tip_prefix
+
+    t = TipTables.load(table_path("left"))
+    robot = t.open_points().copy()
+    plane = robot[:, 2].mean()
+    robot[:, 2] = plane  # exactly planar fingers: both handedness fit them
+    thumb = t.thumb_tip((1.57, 0.0))
+    mirror = np.diag([-1100.0, 1100.0, 1100.0])  # left-handed glove frame, mm
+
+    def to_glove(x):
+        return mirror @ x + np.array([12.0, -30.0, -150.0])
+
+    pts = {}
+    for k, f in enumerate(FINGERS):
+        pts[knuckle_prefix(f)] = to_glove(robot[k])
+        pts[tip_prefix(f)] = to_glove(robot[4 + k])
+    pts[tip_prefix("thumb")] = to_glove(thumb)
+    with_thumb = fit_alignment(t, pts, (1.57, 0.0))
+    without = fit_alignment(t, pts)
+    gap_with = np.linalg.norm(with_thumb.apply(pts[tip_prefix("thumb")]) - thumb)
+    gap_without = np.linalg.norm(without.apply(pts[tip_prefix("thumb")]) - thumb)
+    assert np.linalg.det(with_thumb.rotation) < 0 and gap_with < 0.015
+    assert gap_without > 3 * gap_with  # (squashed fingers fit the table only roughly)
+
+
+def test_thumb_bend_prior_moves_thumb_2_with_the_operator_thumb():
+    """10.06 left: tip matching sent the operator's thumb bend to thumb_1; thumb_2 sat near 0."""
+    import dataclasses
+
+    from motion_acq.hand.kinematic import KinematicConfig, points_from_signals
+
+    cal = rezero(make_calibration("left"), [with_model(POSE_ANGLES["open"])] * 10)
+    t = TipTables.load(table_path("left"))
+    bent = with_model(synthetic_angles(0.0, 1.0, 0.0))
+    assert cal.thumb_bend_ratio(bent) == pytest.approx(1.0, abs=0.05)
+    assert cal.thumb_bend_ratio(with_model(POSE_ANGLES["flat"])) == pytest.approx(0.0, abs=0.05)
+    pts = points_from_signals(bent)
+    off = KinematicRetargeter(t, cal.alignment, dataclasses.replace(KinematicConfig(), thumb_bend_weight=0.0))
+    on = KinematicRetargeter(t, cal.alignment, dataclasses.replace(KinematicConfig(), thumb_bend_weight=0.03))
+    # the synthetic hand model already puts the tip where the robot's bent thumb is: both find it,
+    # the prior must not pull it away
+    assert on.solve(pts, 0.4746)["thumb_2"] >= off.solve(pts, 0.4746)["thumb_2"] - 0.02
+    # a tip left at the straight-thumb position but a bent glove joint: the prior bends thumb_2
+    straight = points_from_signals(with_model(POSE_ANGLES["flat"]))
+    assert on.solve(straight, 0.4746)["thumb_2"] > off.solve(straight, 0.4746)["thumb_2"] + 0.05

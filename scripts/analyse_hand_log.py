@@ -81,8 +81,12 @@ def main(path: str) -> int:
         failures.append(f"{len(pressed)} cycles of index pressing but the grip guard never engaged")
     if too_hard:
         failures.append(f"{len(too_hard)} cycles with index force >= 1000 g (guard did not hold the finger)")
+    slowed = [r for r in running if "index_1" in (r.get("contact_slow") or [])]
+    if pressed and not slowed:
+        failures.append("index pressed but never ran at contact speed")
     print(f"index pressing cycles {len(pressed)}, grip guard on index in {len(guarded)}, "
-          f"max index force {max(((r.get('joint_force') or {}).get('index_1', 0.0) for r in running), default=0):.0f} g")
+          f"max index force {max(((r.get('joint_force') or {}).get('index_1', 0.0) for r in running), default=0):.0f} g, "
+          f"index at contact speed in {len(slowed)}")
     lag = []
     for r in running[30:]:
         if r["measured_registers"] is not None:

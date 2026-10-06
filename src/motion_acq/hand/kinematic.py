@@ -130,9 +130,26 @@ class TipTables:
         return np.array([self.knuckles[f] for f in FINGERS] + [self.finger_tips[f][0] for f in FINGERS])
 
 
-def fit_alignment(tables: TipTables, open_points: Mapping[str, np.ndarray]) -> Alignment:
-    src = np.array([open_points[knuckle_prefix(f)] for f in FINGERS] + [open_points[tip_prefix(f)] for f in FINGERS])
-    return umeyama(src, tables.open_points())
+    def thumb_tip(self, thumb_q: tuple[float, float]) -> np.ndarray:
+        """Robot thumb tip at (thumb_1, thumb_2), nearest table point."""
+        k = int(np.argmin(np.sum((self.thumb_q - np.asarray(thumb_q, float)) ** 2, axis=1)))
+        return self.thumb_tips[k]
+
+
+def fit_alignment(tables: TipTables, open_points: Mapping[str, np.ndarray],
+                  thumb_q: tuple[float, float] | None = None) -> Alignment:
+    """Umeyama from the knuckles and straight fingertips, plus the thumb tip when the robot thumb
+    pose of that hand shape is known. 10.06 left hand: the eight finger points of a flat hand lie
+    almost in one plane, so a mirror fits them as well as the true rotation; one fit came out
+    mirrored (det -1) and put the operator's thumb 11 cm off the robot's, on the other side of
+    the palm (thumb pinned at thumb_1 0.6 / thumb_2 0.47, its glove brake on all run). The thumb
+    tip lies off that plane and fixes the handedness."""
+    src = [open_points[knuckle_prefix(f)] for f in FINGERS] + [open_points[tip_prefix(f)] for f in FINGERS]
+    dst = list(tables.open_points())
+    if thumb_q is not None and tip_prefix("thumb") in open_points:
+        src.append(open_points[tip_prefix("thumb")])
+        dst.append(tables.thumb_tip(thumb_q))
+    return umeyama(np.array(src), np.array(dst))
 
 
 @dataclass(frozen=True)
@@ -141,6 +158,11 @@ class KinematicConfig:
     touch_m: float = 0.015  # ... and where the target becomes "tips together"
     pinch_weight: float = 8.0
     smooth_weight: float = 2e-4  # per rad^2, toward the previous solution
+    # thumb_2 toward the operator's own thumb bend (glove thumb joint, 0..1 of the robot range), per
+    # rad^2. 10.06 left: tip matching alone sent the operator's thumb flexion to thumb_1 (corr 0.85)
+    # and thumb_2 barely moved (corr with the glove bend 0.09), because the human thumb tip sweeps
+    # across the palm when it bends while the robot's thumb_2 curls its tip toward the thumb base.
+    thumb_bend_weight: float = 0.0
 
 
 class KinematicRetargeter:
@@ -158,7 +180,8 @@ class KinematicRetargeter:
             cost = cost + self.c.smooth_weight * (self.t.finger_q - self.prev[FINGER_JOINT[f]]) ** 2
         return int(np.argmin(cost))
 
-    def solve(self, points: Mapping[str, np.ndarray]) -> dict[str, float]:
+    def solve(self, points: Mapping[str, np.ndarray], thumb_bend: float | None = None) -> dict[str, float]:
+        """thumb_bend: the operator's thumb_2 (rad) from the glove's thumb joint, if known."""
         c = self.c
         tgt = {f: self.a.apply(points[tip_prefix(f)]) for f in ("thumb",) + FINGERS}
         idx = {f: self._finger(f, tgt[f], None) for f in FINGERS}
@@ -175,6 +198,8 @@ class KinematicRetargeter:
             vec = shrink * (tgt[f] - tgt["thumb"])  # thumb -> finger; zero once the operator's tips touch
             pinch[f] = (vec, w)
             cost = cost + w * np.sum((tips[f] - self.t.thumb_tips - vec) ** 2, axis=1)
+        if thumb_bend is not None and c.thumb_bend_weight > 0:
+            cost = cost + c.thumb_bend_weight * (self.t.thumb_q[:, 1] - thumb_bend) ** 2
         if self.prev is not None:
             cost = cost + c.smooth_weight * np.sum(
                 (self.t.thumb_q - np.array([self.prev["thumb_1"], self.prev["thumb_2"]])) ** 2, axis=1)

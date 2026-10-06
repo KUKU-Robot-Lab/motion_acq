@@ -34,6 +34,11 @@ kinematic:
   touch_m: 0.015     # ... and where the robot tips are put together
   pinch_weight: 8.0
   smooth_weight: 0.0002
+  # thumb_2 toward the operator's own thumb bend (glove thumb_pip, 0 at open/flat .. 1 at thumb_bend).
+  # Offline on the 10.06 left log (scratch sweep, bend prior weight w): w 0 -> corr(thumb_2, bend)
+  # 0.07, thumb tip error 6 mm; 0.01 -> 0.81 / 10 mm; 0.03 -> 0.96 / 18 mm. Pinch terms (weight 8)
+  # still dominate near a pinch.
+  thumb_bend_weight: 0.01
 
 # One map per joint group, each from the glove inputs that group needs (10.05 left
 # test: with all inputs in one map the thumb rotation sat at 1.2-1.7 rad, since a pose
@@ -151,6 +156,17 @@ grip_guard:
   margin_rad: 0.03
   backoff_rad: 0.03
   stale_s: 0.3
+  # Contact speed (Tan, Xie, Correll, arXiv 2603.08988, Inspire RH56DFX): the hand does not slow
+  # before contact and its force overshoot grows with speed (+1618 % at full speed, small at 1/40
+  # of it). From the first sign of contact (tip >= contact_tip_n, force over rest >=
+  # contact_force_g, or current >= contact_current_ma) that joint runs at contact_speed (SetSpeed1,
+  # 2000 = full stroke in 1 s) until all three fall below half. To be tuned on the real hand
+  # (scripts/hand_contact_probe.py measures overshoot per speed).
+  contact_speed: 300.0
+  contact_force_g: 120.0
+  contact_current_ma: 450.0
+  contact_tip_n: 0.2
+  bias_samples: 50.0   # force readings at rest (home, during the reference take) before the bias is used
 
 # RH56F1 sensors -> Nova 2 haptics (motion_acq.hand.feedback; 10.05 user: the
 # glove limits the operator to what the hand can do and shows contact). Only

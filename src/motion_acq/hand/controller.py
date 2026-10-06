@@ -50,7 +50,7 @@ from enum import Enum
 from typing import Mapping, Sequence
 
 from motion_acq.hand.grip_guard import GripGuard
-from motion_acq.hand.feedback import OFF, HapticFeedback, Haptics
+from motion_acq.hand.feedback import OFF, HapticFeedback, Haptics, tip_forces_n
 from motion_acq.hand.nova2 import SIDE_PREFIX, glove_joint_names
 from motion_acq.hand.retarget import HandRetargeter, HandState
 from motion_acq.hand.rh56f1 import N_SLOTS, Rh56f1Map
@@ -141,6 +141,7 @@ class HandController:
         self._home_registers = hand_map.to_registers(self.home_rad, side=side)
         self.feedback = HapticFeedback(retargeter.config.feedback, retargeter.config.closed_rad)
         self.grip_guard = GripGuard(retargeter.config.grip_guard)
+        self._speeds_sent: list[int] | None = None
         self._last_reading: dict[str, object] = {}
         self._reference: list[tuple[float, dict]] = []  # (t, glove signals) while in REFERENCE
         self.reference_note: str | None = None
@@ -160,6 +161,7 @@ class HandController:
     def on_touch(self, finger_forces, palm_data, t: float) -> None:
         self._hand_changed("touch", (tuple(finger_forces), tuple(palm_data)), t)
         self.feedback.on_touch(finger_forces, palm_data, t)
+        self.grip_guard.on_tips(tip_forces_n(finger_forces), t)
 
     def on_joint_force(self, names, values, t: float) -> None:
         self._hand_changed("force", tuple(values), t)
@@ -260,6 +262,8 @@ class HandController:
         self.mode = Mode.ENABLED
         self._set_phase(Phase.TO_HOME, t)
         self._last_resend = -math.inf
+        self._speeds_sent = None
+        self.grip_guard.reset()
         return None
 
     def _step_enabled(self, t: float):
@@ -274,6 +278,7 @@ class HandController:
             self._phase_t0 = t
         step = self.retargeter.step_to(self.home_rad, t)
         if self.phase is Phase.REFERENCE:
+            self.grip_guard.learn_rest(t)  # home, open and still: the force bias of free joints
             self._take_reference(t)
             return step
         if self._at_home(t):
@@ -297,7 +302,7 @@ class HandController:
 
     def _take_reference(self, t: float) -> None:
         """Collect the operator's still reference pose; then re-zero and align, and follow."""
-        from motion_acq.hand.calibration import CalibrationError, rezero, unsteady_inputs
+        from motion_acq.hand.calibration import CalibrationError, rezero, thumb_of, unsteady_inputs
 
         cfg = self.retargeter.config
         glove = self.glove
@@ -310,7 +315,9 @@ class HandController:
         covered = bool(self._reference) and t - self._reference[0][0] >= 0.9 * cfg.reference_s
         if covered and len(window) >= 10 and not unsteady_inputs(window, cal.inputs):
             try:
-                self.retargeter.set_calibration(rezero(cal, window, cfg.reference_pose))
+                example = cfg.examples.get(cfg.reference_pose)
+                self.retargeter.set_calibration(rezero(cal, window, cfg.reference_pose,
+                                                       thumb_of(example.target if example else None)))
                 aligned = "aligned" if self.retargeter.calibration.alignment is not None else "no hand model"
                 self.reference_note = f"reference taken ({len(window)} samples, {aligned})"
             except CalibrationError as exc:
@@ -320,6 +327,18 @@ class HandController:
             self.reference_note = (f"reference pose not held still in {cfg.reference_timeout_s:g} s: "
                                    "following the saved calibration")
             self._set_phase(Phase.FOLLOW, t)
+
+    def _slot_speeds(self, t: float, following: bool) -> list[int]:
+        """SetSpeed1 per slot: the driver speed, slowed per joint at contact while following."""
+        out = [self.config.driver_speed] * N_SLOTS
+        if not following:
+            self.grip_guard.in_contact = set()
+            return out
+        speeds = self.grip_guard.speeds(t, self.config.driver_speed)
+        for axis in self.hand_map.axes_of(self.side):
+            if axis.name in speeds:
+                out[axis.slot] = int(round(speeds[axis.name]))
+        return out
 
     def tick(self, t: float, *, subscribers_ready: bool) -> Outputs:
         out = Outputs(hand_id=None if self.measured is None else self.measured[1])
@@ -336,15 +355,18 @@ class HandController:
             self.retargeter.state = HandState.IDLE
         step = None
         if self.mode is Mode.ENABLED:
-            if t - self._last_resend >= self.config.resend_s:
-                self._last_resend = t
-                out.speed = [self.config.driver_speed] * N_SLOTS
-                out.force = [self.config.driver_force] * N_SLOTS
             step = self._step_enabled(t)
             if step.state in (HandState.RUNNING, HandState.HOMING) and step.registers is not None:
                 out.angle = list(step.registers)
         following = (self.mode is Mode.ENABLED and self.phase is Phase.FOLLOW
                       and step is not None and step.state is HandState.RUNNING)
+        if self.mode is Mode.ENABLED:
+            speeds = self._slot_speeds(t, following)
+            if t - self._last_resend >= self.config.resend_s or speeds != self._speeds_sent:
+                self._last_resend = t
+                out.speed = speeds
+                out.force = [self.config.driver_force] * N_SLOTS
+                self._speeds_sent = speeds
         out.haptics = self.feedback.update(t, active=following,
                                            q_command=step.q_command if step else None,
                                            q_measured=self._measured_rad())
@@ -377,6 +399,8 @@ class HandController:
             "haptics": out.haptics.to_dict(),
             "grip_guard": dict(self.grip_guard.engaged) if following and self.grip_guard.engaged else None,
             "current_ma": self.grip_guard.current_now(t),
+            "contact_slow": sorted(self.grip_guard.in_contact) or None,
+            "speed": out.speed,
             "hand_status": self._status,  # driver status, only on the tick after one arrived (1 Hz)
         }
         self._status = None

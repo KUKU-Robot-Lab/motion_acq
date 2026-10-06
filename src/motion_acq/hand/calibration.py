@@ -56,6 +56,20 @@ class HandCalibration:
     def inputs(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(n for m in self.models.values() for n in m.inputs))
 
+    def thumb_bend_ratio(self, signals: Mapping[str, float], key: str = "thumb_pip") -> float | None:
+        """Operator thumb bend 0 (straight, as in the open/flat poses) .. 1 (as in thumb_bend), from the
+        glove's own thumb joint, with today's re-zero shift; None if not calibrated for it."""
+        if key not in signals or "thumb_bend" not in self.medians:
+            return None
+        straight = [self.medians[p][key] for p in ("open", "flat") if key in self.medians.get(p, {})]
+        bent = self.medians["thumb_bend"].get(key)
+        if not straight or bent is None or abs(bent - sum(straight) / len(straight)) < 1e-3:
+            return None
+        shift = next((float(m.offset[m.inputs.index(key)]) for m in self.models.values()
+                      if key in m.inputs and m.offset.size == len(m.inputs)), 0.0)
+        lo = sum(straight) / len(straight)
+        return min(max((float(signals[key]) - shift - lo) / (bent - lo), 0.0), 1.0)
+
     def missing_inputs(self, signals: Mapping[str, float]) -> list[str]:
         return [n for n in self.inputs if n not in signals]
 
@@ -103,7 +117,7 @@ class HandCalibration:
 
 
 def rezero(calibration: HandCalibration, open_samples: Sequence[Mapping[str, float]],
-           pose: str = OPEN_POSE) -> HandCalibration:
+           pose: str = OPEN_POSE, thumb_q: tuple[float, float] | None = None) -> HandCalibration:
     """Shift the inputs so today's hand in `pose` (an example pose) reads like the calibration's,
     and align the glove hand model to the robot from its knuckles and straight fingertips."""
     now = {n: statistics.median(s[n] for s in open_samples) for n in calibration.inputs
@@ -115,19 +129,28 @@ def rezero(calibration: HandCalibration, open_samples: Sequence[Mapping[str, flo
     ref = calibration.medians[pose]
     models = {g: m.with_offset([now[n] - ref[n] if n in now and n in ref else 0.0 for n in m.inputs])
               for g, m in calibration.models.items()}
-    alignment = align_open_hand(calibration.side, open_samples) or calibration.alignment
+    alignment = align_open_hand(calibration.side, open_samples, thumb_q) or calibration.alignment
     return HandCalibration(calibration.side, calibration.user, models, calibration.medians,
                            calibration.created, time.strftime("%Y-%m-%dT%H:%M:%S"), calibration.glove, alignment)
 
 
-def align_open_hand(side: str, open_samples: Sequence[Mapping[str, float]]) -> Alignment | None:
-    """Kinematic alignment from the open hand's knuckles and fingertips (None: no hand model data)."""
+def thumb_of(target: Mapping[str, float] | None) -> tuple[float, float] | None:
+    """(thumb_1, thumb_2) of an example's robot target, if it has both."""
+    if not target or "thumb_1" not in target or "thumb_2" not in target:
+        return None
+    return float(target["thumb_1"]), float(target["thumb_2"])
+
+
+def align_open_hand(side: str, open_samples: Sequence[Mapping[str, float]],
+                    thumb_q: tuple[float, float] | None = None) -> Alignment | None:
+    """Kinematic alignment from the open hand's knuckles and fingertips, and its thumb tip when the
+    robot thumb pose of that hand shape is given (None: no hand model data)."""
     points = [points_from_signals(s) for s in open_samples]
     points = [p for p in points if p is not None]
     if len(points) < max(3, len(open_samples) // 2):
         return None
     median = {k: np.median(np.array([p[k] for p in points]), axis=0) for k in points[0]}
-    return fit_alignment(TipTables.load(table_path(side)), median)
+    return fit_alignment(TipTables.load(table_path(side)), median, thumb_q)
 
 
 # -- operator session (the ROS calibrate node supplies ask / record / say) -----------------------------
@@ -231,7 +254,8 @@ def run_session(
             except ConflictError as exc:
                 say(f"  주의: 여전히 비슷하게 읽히는 자세가 있어 둘의 중간으로 따라갑니다 ({exc})")
         medians = {p: {n: statistics.median(s[n] for s in samples[p]) for n in inputs} for p in order}
-        return HandCalibration(side, user, models, medians, alignment=align_open_hand(side, samples[OPEN_POSE]))
+        return HandCalibration(side, user, models, medians, alignment=align_open_hand(side, samples[OPEN_POSE],
+                                                                                thumb_of(examples[OPEN_POSE][1])))
 
 
 def fit_error(calibration: HandCalibration, examples: Mapping[str, tuple[str, Mapping[str, float]]]) -> float:
