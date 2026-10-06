@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Admittance on the real hand, one finger, scripted operator target (no glove) — run with approval.
 
-Runs motion_acq.hand.admittance (+ the grip guard) exactly as the hand controller does, at 120 Hz,
-for one joint against an object held still in its way. The "operator" target ramps from 0.2 rad
+--via driver (default): sends the target on /hand_<s>/angle_target, the driver's canonical admittance at
+500 Hz (robot_control components/rh56f1.yaml) does the rest; offsets read from /hand_<s>/admittance_offset.
+--via local: runs motion_acq.hand.admittance (+ the grip guard) here at 120 Hz on angle_set (10.06 first try).
+One joint against an object held still in its way. The "operator" target ramps from 0.2 rad
 before the contact to `penetration` past it at `speed`, holds, then opens again. Reports per trial
 the held force (expected ~ stiffness x penetration below 800 g), the peak at impact, oscillation
 (force range over the last second of the hold) and the command -> force delay.
@@ -25,6 +27,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import rclpy  # noqa: E402
 from rclpy.node import Node  # noqa: E402
+from std_msgs.msg import Int32MultiArray  # noqa: E402
 from rh56f1_interfaces.msg import (GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1,  # noqa: E402
                                    SetSpeed1, TouchData1)
 
@@ -38,8 +41,10 @@ RATE = 120.0
 
 
 class Hand(Node):
-    def __init__(self, side: str) -> None:
+    def __init__(self, side: str, via: str = "driver") -> None:
         super().__init__("hand_admittance_check")
+        self.via = via
+        self.drv_offset = [0] * 6
         ns = f"/hand_{side}"
         self.side = side
         self.reg = None
@@ -50,6 +55,9 @@ class Hand(Node):
         self.limits = cfg.limits_rad
         self.map = load_rh56f1_map()
         self.angle_pub = self.create_publisher(SetAngle1, f"{ns}/angle_set", 10)
+        self.target_pub = self.create_publisher(SetAngle1, f"{ns}/angle_target", 10)
+        self.create_subscription(Int32MultiArray, f"{ns}/admittance_offset",
+                                 lambda m: setattr(self, "drv_offset", [int(v) for v in m.data]), 10)
         self.speed_pub = self.create_publisher(SetSpeed1, f"{ns}/speed_set", 10)
         self.force_pub = self.create_publisher(SetForce1, f"{ns}/force_set", 10)
         self.create_subscription(GetAngleAct1, f"{ns}/angle_actual", self._on_angle, 10)
@@ -76,12 +84,16 @@ class Hand(Node):
         msg.joint_values = [int(v) for v in values]
         pub.publish(msg)
 
-    def command(self, joint: str, q: float) -> int:
+    def command(self, joint: str, q: float, target: bool = False) -> int:
+        """target: on angle_target (the driver's admittance) instead of angle_set (position)."""
         q = min(max(q, self.limits[joint][0]), self.limits[joint][1])
         regs = self.map.to_registers({**self.rad(), joint: q}, side=self.side)
-        slot = next(a.slot for a in self.map.axes_of(self.side) if a.name == joint)
-        self.send(SetAngle1, self.angle_pub, [regs[i] if i == slot else -1 for i in range(6)])
+        slot = self.slot(joint)
+        self.send(SetAngle1, self.target_pub if target else self.angle_pub, [regs[i] if i == slot else -1 for i in range(6)])
         return regs[slot]
+
+    def slot(self, joint: str) -> int:
+        return next(a.slot for a in self.map.axes_of(self.side) if a.name == joint)
 
     def spin(self, seconds: float) -> None:
         end = time.monotonic() + seconds
@@ -107,17 +119,21 @@ def ramp_trial(h: Hand, joint: str, q_contact: float, pen: float, speed: float, 
             break
         q_op = start + min(t, ramp_s) * speed
         force = h.guard.relative_force(now)
-        offsets = h.adm.update(now, force, h.guard.tips_now(now))
         measured = h.rad()
-        q = q_op - offsets.get(joint, 0.0)
-        caps = h.guard.ceilings(measured, now)
-        for j, top in h.adm.ceilings(measured).items():
-            caps[j] = min(top, caps.get(j, top))
-        if joint in caps:
-            q = min(q, caps[joint])
-        reg = h.command(joint, q)
+        if h.via == "driver":   # the driver's admittance: send the operator target, read its offset (registers)
+            reg = h.command(joint, q_op, target=True)
+            q, off = q_op, h.drv_offset[h.slot(joint)] / 550.0
+        else:
+            offsets = h.adm.update(now, force, h.guard.tips_now(now))
+            q = q_op - offsets.get(joint, 0.0)
+            caps = h.guard.ceilings(measured, now)
+            for j, top in h.adm.ceilings(measured).items():
+                caps[j] = min(top, caps.get(j, top))
+            if joint in caps:
+                q = min(q, caps[joint])
+            reg, off = h.command(joint, q), offsets.get(joint, 0.0)
         rows.append((round(t, 4), round(q_op, 4), round(q, 4), reg, round(measured[joint], 4),
-                     round(force.get(joint, 0.0), 1), offsets.get(joint, 0.0)))
+                     round(force.get(joint, 0.0), 1), off))
         next_t += 1.0 / RATE
         while time.monotonic() < next_t:
             rclpy.spin_once(h, timeout_sec=max(0.0, next_t - time.monotonic()))
@@ -127,7 +143,7 @@ def ramp_trial(h: Hand, joint: str, q_contact: float, pen: float, speed: float, 
     forces = [r[5] for r in rows]
     held = [r[5] for r in hold]
     # delay: first tick the command moves past the contact -> first tick the force rises 60 g
-    t_cmd = next((r[0] for r in rows if r[2] > q_contact + 0.01), None)
+    t_cmd = next((r[0] for r in rows if r[1] > q_contact + 0.01), None)
     t_f = next((r[0] for r in rows if r[5] > 60.0), None)
     return {"penetration": pen, "speed": speed, "peak_g": max(forces, default=None),
             "held_g": statistics.median(held) if held else None,
@@ -143,9 +159,11 @@ def main(argv=None) -> int:
     ap.add_argument("--penetrations", default="0.1,0.2,0.4")
     ap.add_argument("--speeds", default="0.5,4.0", help="operator target speeds, rad/s")
     ap.add_argument("--hold-s", type=float, default=3.0)
+    ap.add_argument("--via", choices=("driver", "local"), default="driver",
+                    help="driver: angle_target (the driver's 500 Hz admittance); local: this script at 120 Hz")
     args = ap.parse_args(argv)
     rclpy.init()
-    h = Hand(args.side)
+    h = Hand(args.side, args.via)
     for _ in range(50):
         h.spin(0.1)
         if h.reg is not None and h.guard.force is not None:
