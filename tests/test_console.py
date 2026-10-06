@@ -247,6 +247,7 @@ def test_arm_needs_a_quest_source(console):
 def test_real_motion_needs_the_operator_confirmation(console, monkeypatch):
     console.set_mode("real")
     monkeypatch.setattr(console, "blockers", lambda key: [])
+    monkeypatch.setattr(console, "_arm_hand_sides", lambda: ())  # the hands: test below
     started = []
     monkeypatch.setattr(console, "_spawn", lambda launch, confirmed=False: started.append(launch) or {"ok": True})
     reply = console.start("arm", {"arm_side": "left"})
@@ -292,8 +293,6 @@ def test_real_arm_blockers(console, monkeypatch):
                                  "left": {"port": "can1", "up": False, "fd": False}}})
     monkeypatch.setattr(console, "probe_raw", lambda name: probes_now.get(name))
     console.update_settings({"arm_side": "right"})
-    assert any("오른손 노드" in b for b in console.blockers("arm"))  # 10.06: the arm closes the hand first
-    monkeypatch.setattr(console.sup, "is_running", lambda key: key in ("hand_right", "hand_left"))
     assert console.blockers("arm") == []
     console.update_settings({"arm_side": "both"})
     assert any("can1" in b for b in console.blockers("arm"))
@@ -426,7 +425,7 @@ def test_webxr_arm_needs_the_direction_check(console, monkeypatch):
     console.set_mode("real")
     data = _fresh({"can": {"right": {"port": "can0", "up": True, "fd": True}}})
     monkeypatch.setattr(console, "probe_raw", lambda name: data.get(name))
-    monkeypatch.setattr(console.sup, "is_running", lambda key: key in ("quest_view", "hand_right", "hand_left"))
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key == "quest_view")
     assert any("방향 확인" in b for b in console.blockers("arm"))
     monkeypatch.setattr(console.direction, "stop", lambda: None)
     assert console.action("direction:ok")["ok"] and console.settings["webxr_arm_ok"]
@@ -607,3 +606,22 @@ def test_hand_link_closes_the_hands_before_the_arm_path(monkeypatch):
     finally:
         silent.close()
     assert parse_arm_message(json.dumps({"arm": "dance"}).encode()) is None
+
+
+def test_arm_start_brings_up_the_hands_first_in_one_approval(console, monkeypatch):
+    """10.06 user: [팔 시작] = hands fist -> rest -> home -> fingers; the hand nodes come up with the arm."""
+    console.set_mode("real")
+    console.update_settings({"user": "op1", "arm_side": "right"})
+    monkeypatch.setattr(console, "blockers", lambda key: [])
+    monkeypatch.setattr(console, "_hand_precheck", lambda side: [])
+    monkeypatch.setattr(console, "_hand_driver_present", lambda side: False)
+    jobs = []
+    monkeypatch.setattr(console, "_job", lambda name, fn: jobs.append(name) or {"ok": True})
+    reply = console.start("arm")
+    assert reply["need_confirm"] and "주먹" in reply["summary"]
+    lines = reply["command"].splitlines()
+    assert "rh56f1_driver.py --side right" in lines[0] and "arm_link_port:=47161" in reply["command"]
+    assert "teleop-real" in lines[-1] or "--side right" in lines[-1]
+    assert console.start("arm", confirm=True, token=reply["token"]) == {"ok": True} and jobs == ["arm"]
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key == "hand_right")   # node already up
+    assert "rh56f1_driver" not in console.start("arm")["command"]

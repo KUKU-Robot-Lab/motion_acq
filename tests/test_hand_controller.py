@@ -431,18 +431,29 @@ def test_arm_path_holds_the_fist_then_home_opens_and_follows():
                                           HOME_R, strict=True)) <= 2   # opened at home before following
 
 
-def test_arm_parks_a_hand_nobody_enabled_and_leaves_it_at_the_fist():
+def test_arm_start_parks_a_disabled_hand_then_home_hands_it_the_glove():
+    """10.06 user: [팔 시작] = fist -> rest -> home, then the fingers follow the glove."""
     rig = Rig(make_controller())
-    assert rig.step(POSE_ANGLES["open"]).angle is None
+    assert rig.step(POSE_ANGLES["open"]).angle is None   # node up, disabled: nothing sent
+    rig.ctl.set_arm_phase("rest")                        # the arm process came up at rest: hold the fist
     rig.ctl.set_arm_phase("path")
     run_until(rig, POSE_ANGLES["open"], lambda o: rig.ctl.at_rest(rig.t))
+    assert not rig.ctl.want_enable
     rig.ctl.set_arm_phase("home")
-    rig.step(POSE_ANGLES["open"])                   # last command: the fist
-    out = rig.step(POSE_ANGLES["open"])
-    assert rig.ctl.mode is Mode.DISABLED and out.angle is None
-    assert max(abs(a - b) for a, b in zip(rig.hand, REST_R, strict=True)) <= 2
-    rig.ctl.request_enable(True)                     # [켜기] at home: open, then the glove
     run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["state"] == "running")
+    assert any(o.record["phase"] == "to_home" for o in rig.sent)   # opened at home first
+    rig.ctl.set_arm_phase("path")                                  # the stop: fist again
+    run_until(rig, POSE_ANGLES["fist"], lambda o: rig.ctl.at_rest(rig.t))
+    rig.ctl.set_arm_phase("rest")
+    for _ in range(50):
+        out = rig.step(POSE_ANGLES["open"])
+    assert out.record["phase"] == "rest" and rig.ctl.at_rest(rig.t)
+
+
+def test_home_without_a_path_does_not_enable():
+    rig = Rig(make_controller())
+    rig.ctl.set_arm_phase("home")                       # the arm was already home (no path played)
+    assert not rig.ctl.want_enable and rig.step(POSE_ANGLES["open"]).angle is None
 
 
 def test_a_blocked_fist_is_a_fault_the_arm_sees():

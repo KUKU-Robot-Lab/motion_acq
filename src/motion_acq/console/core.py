@@ -33,6 +33,8 @@ DEFAULT_SETTINGS = {"user": "", "arm_side": "right", "scale": units.DEFAULT_SCAL
                     "webxr_arm_ok": ""}  # set once by the direction check: arms may follow the headset view
 SENSECOM = ROOT / "ros_ws/install/senseglove_com/share/senseglove_com/Linux/SenseCom_Linux_Latest/SenseCom.x86_64"
 HAND_NODE_VISIBLE_S = 20.0
+HAND_LINK_NOTE = (" 손: 노드가 꺼진 채 먼저 뜨고, 팔이 손을 주먹으로 쥔 뒤 차렷 -> 홈. 홈에서 손이 펴지면 1 초 동안 "
+                  "손을 편 채 멈춰 있을 것(기준 자세), 그 뒤 장갑을 따라간다. 정지 때는 손을 주먹으로 쥔 뒤 차렷.")
 HAND_DRIVER_UP_S = 30.0  # EtherCAT: OP and the first /hand_<side>/angle_actual
 ARM_UNITS = ("arm", "record")
 
@@ -191,7 +193,55 @@ class Console:
             if key == "record":
                 missing = [item["name"] for item in self.record_checklist() if not item["ok"]]
                 extra = (" 빠진 것: " + ", ".join(missing) + ".") if missing else " 모든 스트림이 준비됨."
+            if key in ARM_UNITS and self._arm_hand_sides():
+                return self._start_arm_with_hands(launch, extra, confirm=confirm, token=token)
             return self._gate(launch, confirm=confirm, token=token, extra=extra)
+
+    # -- arm start with the RH56F1 hands (10.06 user: fist -> rest -> home -> fingers) ----------------
+    def _arm_hand_sides(self) -> tuple[str, ...]:
+        side = str(self.settings["arm_side"])
+        sides = ("right", "left") if side == "both" else (side,)
+        return tuple(s for s in sides if s in self.station.hand_link and s in self.station.hands)
+
+    def _start_arm_with_hands(self, arm: Launch, extra: str, *, confirm: bool, token: str) -> dict:
+        """[팔 시작] brings up the hand driver and node of each arm side first (disabled). The arm then closes
+        the hands to the fist (hand_link), plays rest -> home, and at home the hands open, take the open-hand
+        reference and follow the gloves."""
+        sides = self._arm_hand_sides()
+        problems, launches = [], []
+        for side in sides:
+            if self.sup.is_running(f"hand_{side}"):
+                continue
+            side_ko = "오른손" if side == "right" else "왼손"
+            problems += [f"{side_ko}: {p}" for p in self._hand_precheck(side)]
+            if self.mode == "real" and not self._hand_driver_present(side):
+                launches.append(units.hand_driver(self.station, self.mode, side))
+            launches.append(self.build(f"hand_{side}"))
+        if problems:
+            return {"ok": False, "error": " / ".join(problems)}
+        if not launches:
+            return self._gate(arm, confirm=confirm, token=token, extra=extra + HAND_LINK_NOTE)
+        launches.append(arm)
+        reply, approved = self._approve(arm.key, launches, title=arm.title,
+                                        summary=arm.summary + HAND_LINK_NOTE + extra, confirm=confirm, token=token)
+        if reply is not None:
+            return reply
+        return self._job(arm.key, lambda: self._arm_with_hands_job(sides, approved))
+
+    def _arm_with_hands_job(self, sides: tuple[str, ...], launches: list[Launch]) -> str:
+        for launch in launches[:-1]:
+            side = launch.key.split("_", 1)[1]
+            if launch.key.startswith("ecat_"):
+                self._spawn_task_checked(launch)
+                self._wait_hand(side, starting=True, need_node=False, timeout_s=HAND_DRIVER_UP_S)
+            else:
+                if self.mode == "real":
+                    self._wait_hand(side, starting=True, need_node=False, timeout_s=5.0)
+                self._spawn_task_checked(launch)
+        for side in sides:
+            self._wait_hand(side, starting=False, need_node=True, timeout_s=HAND_NODE_VISIBLE_S)
+        self._spawn_task_checked(launches[-1])
+        return "팔 시작: 손 주먹 -> 차렷 -> 홈 -> 손 펴고 장갑 따라감"
 
     def _approve(self, key: str, launches: list[Launch], *, title: str, summary: str, confirm: bool,
                  token: str) -> tuple[dict | None, list[Launch]]:

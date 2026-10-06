@@ -15,8 +15,9 @@ States
 
 Arm link (10.06 user: fist -> arm home -> hand open): while the arm moves along its stored rest <-> home
 path or rests (set_arm_phase "path" / "rest"), the hand is held at rest (phase REST), a disabled hand
-included (the arm start was approved with it); at "home" an enabled hand walks home and follows the glove
-again, a hand that was never enabled stops at rest. at_rest() is what the arm waits for.
+included (the arm start was approved with it); when the arm arrives home from its path the hand is
+enabled ([팔 시작] = rest -> home, then the fingers): it opens, takes the reference and follows the glove.
+at_rest() is what the arm waits for.
 
 Enable needs: a fresh angle_actual whose six registers are plausible (no 0,
 -1 or 65535 sentinels, within each axis' command range ± margin), and every
@@ -228,8 +229,12 @@ class HandController:
         return self.arm_phase in ("path", "rest")
 
     def set_arm_phase(self, phase: str) -> None:
+        """10.06 user: [팔 시작] = rest -> home, and from home the fingers follow the glove: an arm that
+        arrives home from its path enables the hand."""
         if phase not in ARM_PHASES:
             raise ValueError(f"arm phase must be one of {ARM_PHASES}, not {phase!r}")
+        if phase == "home" and self.arm_phase == "path" and self.mode is not Mode.FAULT:
+            self.want_enable = True
         self.arm_phase = phase
 
     def at_rest(self, t: float) -> bool:
