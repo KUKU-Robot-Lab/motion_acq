@@ -151,9 +151,14 @@ def main(argv=None) -> int:
     ap.add_argument("--contact-g", type=float, default=120.0)
     ap.add_argument("--contact-ma", type=float, default=450.0)
     ap.add_argument("--pre", type=int, default=60, help="registers before the contact where slow trials start")
+    ap.add_argument("--open", type=int, default=None, dest="open_reg",
+                    help="register the joint opens to between trials (default: fully open). 10.06 thumb_1: "
+                         "914 (beside the index), so opening never sweeps into the operator holding the object")
     args = ap.parse_args(argv)
     slot = SLOTS.index(args.finger)
     open_reg = THUMB_1_OPEN[args.side] if args.finger == "thumb_1" else OPEN[args.finger]
+    if args.open_reg is not None:
+        open_reg = args.open_reg
     closed = CLOSED[args.finger]
     rclpy.init()
     p = Probe(args.side)
