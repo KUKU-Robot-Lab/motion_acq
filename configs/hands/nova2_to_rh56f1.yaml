@@ -156,7 +156,8 @@ admittance:
   deadband_g: 40.0
   filter_tau_s: 1.0       # 10.06 right index on a cup: 0.5 s limit-cycled 100-440 g (contact ~55 kg/rad, 1 reg ~100 g); sim: 1.0 settles to 1 register
   release_tau_s: 0.15     # once the force is gone the offset fades in ~0.5 s (simulated)
-  lead_rad: 0.02          # in contact the command leads the finger by <= 0.02 x (1 - f / max_force) rad
+  rate_on_g: 60.0         # from this force (over the deadband) the command closes at <= rate_rad_s x (1 - f / max_force),
+  rate_rad_s: 0.3         # restarting from the measured angle (10.06: a lead cap held a rigid cup at ~350 g)
   max_force_g: 800.0              # above: backs off at over_stiffness (soft ceiling ~800 g + 200 g/rad)
   over_stiffness_g_per_rad: 200.0
   max_offset_rad: 1.6

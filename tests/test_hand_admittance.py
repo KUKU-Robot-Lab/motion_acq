@@ -135,3 +135,19 @@ def test_stiff_contact_skips_the_soft_first_touch():
     assert stiff_contact(soft) is None
     stall = [(0.6, 120.0), (0.6 + reg, 130.0), (0.6 + 3 * reg, 150.0), (0.6 + 3 * reg, 300.0)]
     assert stiff_contact(stall) == pytest.approx(0.6, abs=1e-9)  # the trace ends in a stall: slope to the last sample
+
+
+def test_contact_ceiling_restarts_from_the_finger_and_closes_at_the_rate():
+    """10.06: a lead cap held a rigid cup at ~350 g; now the command closes at a bounded rate, no cap."""
+    adm = Admittance(AdmittanceConfig(filter_tau_s=1.0))
+    adm.update(0.0, {"index_1": 90.0}, {})                       # 50 g over the deadband: fast free-space closing
+    assert adm.ceilings(0.0, {"index_1": 0.6}) == {}
+    adm.update(0.01, {"index_1": 440.0}, {})                     # 400 g: contact
+    assert adm.ceilings(0.01, {"index_1": 0.6}) == {"index_1": pytest.approx(0.6 + 0.3 * 0.5 * 0.01)}
+    top = adm.ceilings(0.02, {"index_1": 0.6})["index_1"]
+    assert top == pytest.approx(0.6 + 2 * 0.3 * 0.5 * 0.01)      # keeps closing, no cap vs the finger
+    assert adm.ceilings(0.03, {"index_1": 0.6}, {"index_1": 0.4})["index_1"] == pytest.approx(0.4 + 0.0015)  # opened
+    for k in range(1, 41):                                       # force gone, offset fades (0.15 s)
+        adm.update(0.03 + 0.05 * k, {"index_1": 0.0}, {})
+        last = adm.ceilings(0.03 + 0.05 * k, {"index_1": 0.6})
+    assert last == {}                                            # free again

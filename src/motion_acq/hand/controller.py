@@ -284,7 +284,7 @@ class HandController:
             ceilings = self.grip_guard.ceilings(measured, t)
             # admittance: the operator's target minus the force term (admittance.py), every tick
             offsets = self.admittance.update(t, self.grip_guard.relative_force(t), self.grip_guard.tips_now(t))
-            for j, top in self.admittance.ceilings(measured).items():
+            for j, top in self.admittance.ceilings(t, measured, self.retargeter.command()).items():
                 ceilings[j] = min(top, ceilings.get(j, top))
             return self.retargeter.step(glove[0] if fresh and glove else None, t, ceilings, offsets)
         if self._phase_t0 is None:

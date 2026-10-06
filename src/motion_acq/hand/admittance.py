@@ -39,7 +39,9 @@ class AdmittanceConfig:
     deadband_g: float = 40.0  # force readings below this (over rest) are not contact
     filter_tau_s: float = 0.5  # low-pass of the force term in contact (stability on stiff contacts)
     release_tau_s: float = 0.15  # ... once the force is gone (the offset fades so re-gripping is not slowed)
-    lead_rad: float = 0.02  # in contact the command leads the measured finger by at most this x (1 - f / max_force)
+    rate_on_g: float = 60.0  # over the deadband: from this force on the command closes at a bounded rate (fast free-space
+    #                          closing reads 50-60 g, 10.06)
+    rate_rad_s: float = 0.3  # ... at most this x (1 - f / max_force), from the measured angle when the force came on
     max_force_g: float = 800.0  # above this the force term backs off far faster (operator closing a lot)
     over_stiffness_g_per_rad: float = 200.0  # ... at this stiffness: f = 800 + 200 g per rad more closing
     max_offset_rad: float = 1.6  # never more than the whole finger range
@@ -48,7 +50,7 @@ class AdmittanceConfig:
 
     def __post_init__(self) -> None:
         if (self.stiffness_g_per_rad <= 0 or self.over_stiffness_g_per_rad <= 0 or self.max_force_g <= 0
-                or self.filter_tau_s < 0 or self.release_tau_s < 0 or self.deadband_g < 0 or self.max_offset_rad <= 0 or self.lead_rad < 0):
+                or self.filter_tau_s < 0 or self.release_tau_s < 0 or self.deadband_g < 0 or self.max_offset_rad <= 0 or self.rate_on_g < 0 or self.rate_rad_s <= 0):
             raise ValueError("admittance: stiffness, over_stiffness, max_force, max_offset > 0; filter_tau, deadband >= 0")
         if not 0 < self.proximal_scale <= 1:
             raise ValueError("admittance: proximal_scale in (0, 1]")
@@ -73,21 +75,35 @@ class Admittance:
     offset: dict[str, float] = field(default_factory=dict)  # y per joint (rad, >= 0: backs the command off)
     force: dict[str, float] = field(default_factory=dict)  # the force term used (g)
     _t: float | None = None
+    _lim: dict[str, float] = field(default_factory=dict)  # rate-limited ceiling per joint while limiting
+    _tc: float | None = None
 
     def reset(self) -> None:
-        self.offset, self.force, self._t = {}, {}, None
+        self.offset, self.force, self._t, self._lim, self._tc = {}, {}, None, {}, None
 
-    def ceilings(self, q_measured: Mapping[str, float] | None) -> dict[str, float]:
-        """In contact the command may lead the measured finger by lead_rad x (1 - f / max_force) at most:
-        a fast approach would otherwise drive it deep into a stiff object before the filtered force
-        term reacts (simulated with 25-50 ms delay and a 1.6 rad/s finger: impact peak 2.1 -> ~1 kg)."""
+    def ceilings(self, t: float, q_measured: Mapping[str, float] | None,
+                 q_last: Mapping[str, float] | None = None) -> dict[str, float]:
+        """Once the force passes rate_on_g the command restarts from the measured angle and closes at most
+        rate_rad_s x (1 - f / max_force) (opening at once: from `q_last`, the command last sent) until the force
+        and the offset are gone, as the driver's admittance (robot_control rh56f1_hand). 10.06: a lead cap vs the
+        measured angle held a rigid cup at ~350 g whatever the penetration (55 g per register past the finger)."""
         c = self.config
+        dt = 0.0 if self._tc is None else min(max(t - self._tc, 0.0), 0.1)
+        self._tc = t
         if not c.enabled or not q_measured:
+            self._lim = {}
             return {}
         out = {}
         for j, f in self.force.items():
-            if f > 0 and j in q_measured:
-                out[j] = float(q_measured[j]) + c.lead_rad * max(0.0, 1.0 - f / c.max_force_g)
+            if j not in q_measured:
+                continue
+            if j not in self._lim and f > c.rate_on_g:
+                self._lim[j] = float(q_measured[j])
+            if j in self._lim:
+                base = min(self._lim[j], float(q_last[j])) if q_last and j in q_last else self._lim[j]
+                out[j] = self._lim[j] = base + c.rate_rad_s * max(0.0, 1.0 - f / c.max_force_g) * dt
+                if f <= 0 and self.offset.get(j, 0.0) < 0.002:
+                    del self._lim[j]
         return out
 
     def update(self, t: float, force_rel: Mapping[str, float], tips_n: Mapping[str, float]) -> dict[str, float]:

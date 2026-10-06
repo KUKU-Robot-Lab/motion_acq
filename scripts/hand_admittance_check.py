@@ -139,7 +139,7 @@ def ramp_trial(h: Hand, joint: str, q_contact: float, pen: float, speed: float, 
             offsets = h.adm.update(now, force, h.guard.tips_now(now))
             q = q_op - offsets.get(joint, 0.0)
             caps = h.guard.ceilings(measured, now)
-            for j, top in h.adm.ceilings(measured).items():
+            for j, top in h.adm.ceilings(now, measured, {joint: rows[-1][2]} if rows else None).items():
                 caps[j] = min(top, caps.get(j, top))
             if joint in caps:
                 q = min(q, caps[joint])

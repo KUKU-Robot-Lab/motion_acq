@@ -65,6 +65,19 @@ contact 1.6-29 kg/rad): grip settles at stiffness x penetration (284 / 512 / 599
 peak ~1 kg at 25 ms delay; at 50 ms delay the stiffest contact (29 kg/rad) limit-cycles: thumb_2 to be
 checked on the real hand.
 
+## 10.06 evening: the lead cap capped the grip; replaced by a closing rate
+Right index, rigid cup, driver admittance at 500 Hz (robot_control components/rh56f1.yaml): 0.4 rad past the
+contact held 353 / 362 g instead of ~800 g, finger still at the cup, 245-272 mA. The lead cap (command <= 11
+x (1 - f/800) registers past the measured finger) with ~55 g per register of command past a rigid object
+gives f = 605 (1 - f/800) -> ~345 g, whatever the penetration. The same cap made fast free-space closing
+(4 rad/s target) move at ~0.45 rad/s: the motion alone reads 50-60 g over rest, above the 40 g deadband.
+Now: once the force is 60 g over the deadband the command restarts from the measured angle and closes at
+<= 0.3 rad/s x (1 - f/800), opening at once, until the force and the offset are gone (else the offset
+releasing in 0.15 s re-closes the command into the object: relaxation cycle in simulation). Simulated with
+that plant (55 and 10 g/register, 24-50 ms delay): no cycle, 0.4 rad -> 750-840 g, 0.5 rad/s approach peak
+< 900 g. A fast approach (4 rad/s) into a rigid object is not limited before the force is read: real peak to
+be measured (the guard's 800 mA current limit stays).
+
 ## For the controller and the simulator
 - Position following: mode 0. Grip force: not from a position margin (object dependent); either a force
   loop in software around mode 0, or firmware mode 1 while holding (accurate, low current, but it ignores
