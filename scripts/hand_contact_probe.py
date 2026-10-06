@@ -50,12 +50,12 @@ class Probe(Node):
         self.status: dict | None = None
         self.hand_id = 1
         self.create_subscription(GetAngleAct1, f"{ns}/angle_actual", self._on_angle, 10)
-        self.create_subscription(GetForceAct1, f"{ns}/force_actual", lambda m: setattr(self, "force", list(m.joint_values)), 10)
-        self.create_subscription(GetCurrentAct1, f"{ns}/current_actual", lambda m: setattr(self, "current", list(m.joint_values)), 10)
+        self.create_subscription(GetForceAct1, f"{ns}/force_actual", lambda m: setattr(self, "force", [int(v) for v in m.joint_values]), 10)
+        self.create_subscription(GetCurrentAct1, f"{ns}/current_actual", lambda m: setattr(self, "current", [int(v) for v in m.joint_values]), 10)
         self.create_subscription(String, f"{ns}/ecat_status", self._on_status, 10)
 
     def _on_angle(self, m: GetAngleAct1) -> None:
-        self.angle, self.hand_id = list(m.joint_values), int(m.hand_id)
+        self.angle, self.hand_id = [int(v) for v in m.joint_values], int(m.hand_id)
 
     def _on_status(self, m: String) -> None:
         try:
