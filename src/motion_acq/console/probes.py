@@ -244,6 +244,23 @@ def external_hand_drivers() -> dict[str, list[int]]:
     return out
 
 
+# Hand command inputs of the RH56F1 driver: angle_set (position) and angle_target (the driver's admittance,
+# what the motion_acq hand node sends since 10.06). Whoever publishes either commands the hand.
+COMMAND_TOPICS = ("angle_set", "angle_target")
+
+
+def command_publishers(sections: dict, side: str) -> tuple[int, list[str], int]:
+    """(publishers, publisher node names, subscribers) over both command topics of one hand."""
+    pubs, nodes, subs = 0, [], 0
+    for topic in COMMAND_TOPICS:
+        text = sections.get(f"{side}_{topic}", "")
+        n_pub, n_sub = parse_topic_info(text)
+        pubs += n_pub or 0
+        subs = max(subs, n_sub or 0)
+        nodes += [n for n in parse_publisher_nodes(text) if n not in nodes]
+    return pubs, nodes, subs
+
+
 def ros_state(station: Station, mode: str) -> dict:
     """Hand driver topics and who commands them, on the domain the hand nodes use."""
     from motion_acq.console.units import UnitError, ros_argv
@@ -254,7 +271,7 @@ def ros_state(station: Station, mode: str) -> dict:
         domain, env = FAKE_DOMAIN, {"ROS_DOMAIN_ID": FAKE_DOMAIN, "ROS_LOCALHOST_ONLY": "1"}
     script = "echo @@list; ros2 topic list"
     for side in station.hands:
-        for topic in ("angle_actual", "angle_set"):
+        for topic in ("angle_actual", *COMMAND_TOPICS):
             script += f"; echo @@{side}_{topic}; ros2 topic info -v /hand_{side}/{topic}"
     try:
         argv = list(ros_argv("bash -c " + shlex.quote(script)))
@@ -268,11 +285,10 @@ def ros_state(station: Station, mode: str) -> dict:
     hands = {}
     for side in station.hands:
         driver_pubs, _ = parse_topic_info(sections.get(f"{side}_angle_actual", ""))
-        cmd_text = sections.get(f"{side}_angle_set", "")
-        cmd_pubs, cmd_subs = parse_topic_info(cmd_text)
-        hands[side] = {"driver": bool(driver_pubs), "angle_set_publishers": cmd_pubs or 0,
-                       "angle_set_publisher_nodes": parse_publisher_nodes(cmd_text),
-                       "angle_set_subscribers": cmd_subs or 0,
+        cmd_pubs, cmd_nodes, cmd_subs = command_publishers(sections, side)
+        hands[side] = {"driver": bool(driver_pubs), "angle_set_publishers": cmd_pubs,
+                       "angle_set_publisher_nodes": cmd_nodes,
+                       "angle_set_subscribers": cmd_subs,
                        "ecat_status": f"/hand_{side}/ecat_status" in topics}
     gloves = {}
     if station.hands:

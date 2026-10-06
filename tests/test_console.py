@@ -223,6 +223,15 @@ Endpoint type: SUBSCRIPTION
     assert probes.parse_topic_info(text) == (1, 1)
 
 
+def test_hand_command_publishers_cover_angle_target():
+    """10.06: the hand node sends angle_target; [켜기] waited for it on angle_set and timed out."""
+    target = "Publisher count: 1\n\nNode name: motion_acq_hand_left\nEndpoint type: PUBLISHER\n\nSubscription count: 1\n"
+    pos = "Publisher count: 1\n\nNode name: pd_node_left\nEndpoint type: PUBLISHER\n\nSubscription count: 1\n"
+    assert probes.command_publishers({"left_angle_target": target}, "left") == (1, ["motion_acq_hand_left"], 1)
+    assert probes.command_publishers({"left_angle_target": target, "left_angle_set": pos}, "left") == (
+        2, ["pd_node_left", "motion_acq_hand_left"], 1)
+
+
 # -- console model -------------------------------------------------------------------------------
 
 @pytest.fixture

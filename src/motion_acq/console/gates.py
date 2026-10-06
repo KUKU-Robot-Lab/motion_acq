@@ -3,7 +3,7 @@
 Real mode is strict: a probe that failed, has not run yet or is older than
 FAST_STALE_S blocks too, so a missing reading never passes as "free". The
 hand checks read ROS on the domain the hand nodes use and name the nodes
-publishing /hand_<side>/angle_set: only our own motion_acq_hand_<side> may.
+publishing /hand_<side>/angle_set or angle_target: only our own motion_acq_hand_<side> may.
 """
 
 from __future__ import annotations
@@ -157,9 +157,9 @@ def hand_blockers(console, side: str, ros: dict | None, *, starting: bool) -> li
     foreign = nodes if starting else [n for n in nodes if n != ours]
     if foreign or (starting and count):
         who = ", ".join(foreign) or f"{count} 개"
-        out.append(f"/hand_{side}/angle_set 을 다른 노드({who})가 발행 중(s2r pd?): 그쪽 손 제어를 먼저 끌 것")
+        out.append(f"/hand_{side}/angle_set·angle_target 을 다른 노드({who})가 발행 중(s2r pd?): 그쪽 손 제어를 먼저 끌 것")
     elif not starting and (count != len(nodes) or ours not in nodes):
-        out.append(f"/hand_{side}/angle_set 발행자를 확인하지 못했다(우리 노드 {ours} 가 아직 안 보임): 잠시 뒤 다시")
+        out.append(f"/hand_{side} 명령 발행자를 확인하지 못했다(우리 노드 {ours} 가 아직 안 보임): 잠시 뒤 다시")
     if not (ros.get("glove_topics") or {}).get(side) and console.mode == "real":
         out.append("장갑 토픽 없음: 장갑 연결과 드라이버 먼저")
     return out
