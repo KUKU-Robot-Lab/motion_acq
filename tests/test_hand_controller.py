@@ -27,12 +27,15 @@ HAND_MAP = load_rh56f1_map()
 DT = 1 / 30
 
 
-def make_controller(side: str = "right", amplitude: float = 1.0, reference_s: float = 0.0,
+def make_controller(side: str = "right", amplitude: float = 1.0, reference_s: float = 0.0, haptics: bool = False,
                     **cfg) -> HandController:
-    """reference_s 0: follow right after home (the reference take has its own tests)."""
+    """reference_s 0: follow right after home (the reference take has its own tests). haptics: the glove
+    feedback on (the station config has it off since 10.06)."""
     import dataclasses
 
     config = dataclasses.replace(CONFIG, reference_s=reference_s)
+    if haptics:
+        config = dataclasses.replace(config, feedback=dataclasses.replace(config.feedback, enabled=True))
     rt = HandRetargeter(config, make_calibration(side), HAND_MAP, side, amplitude=amplitude)
     return HandController(rt, HAND_MAP, side, ControllerConfig(**cfg))
 
@@ -318,7 +321,7 @@ def test_frozen_glove_holds_until_it_changes_again():
 
 def test_haptics_only_while_following_and_sensors_recorded():
     """10.05: robot tip contact brakes the glove finger only once the hand follows the glove."""
-    rig = Rig(make_controller())
+    rig = Rig(make_controller(haptics=True))
     touch = [0, 0, 0, 400, 0]  # index 4 N
     rig.ctl.on_touch(touch, [0] * 9, rig.t)
     out = rig.step(POSE_ANGLES["open"])
@@ -348,7 +351,7 @@ def test_a_hand_that_stops_answering_is_a_fault_and_releases_the_glove():
     """10.05 22:24: the left RH56F1 dropped off EtherCAT holding a cup; its state kept coming,
     bit-identical, for 24 s. The hand ignored the open command and the stale contact kept
     the glove braked."""
-    rig = Rig(make_controller())
+    rig = Rig(make_controller(haptics=True))
     rig.ctl.request_enable(True)
     for k in range(120):
         _sensors(rig, [0, 0, 0, 300 + k % 3, 0], 400 + k % 5, rig.t)

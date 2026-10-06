@@ -38,7 +38,9 @@ kinematic:
   # Offline on the 10.06 left log (scratch sweep, bend prior weight w): w 0 -> corr(thumb_2, bend)
   # 0.07, thumb tip error 6 mm; 0.01 -> 0.81 / 10 mm; 0.03 -> 0.96 / 18 mm. Pinch terms (weight 8)
   # still dominate near a pinch.
-  thumb_bend_weight: 0.01
+  # 10.06 evening user (left and right teleop): thumb_2 hardly moved on its own (target 0..0.27 of 0.47 rad,
+  # corr with thumb_1 0.43-0.60) -> 0.03.
+  thumb_bend_weight: 0.03
 
 # One map per joint group, each from the glove inputs that group needs (10.05 left
 # test: with all inputs in one map the thumb rotation sat at 1.2-1.7 rad, since a pose
@@ -202,7 +204,8 @@ grip_guard:
 # Brakes act on flexion only (thumb, index, middle, ring; pinky -> ring).
 # Starting values, to be tuned on the worn glove.
 feedback:
-  enabled: true
+  # 10.06 evening user (left and right teleop): the glove brakes got in the way of the motion -> off.
+  enabled: false
   tip_on_n: 0.3          # robot tip force where the glove brake starts (N)
   tip_full_n: 3.0        # ... and where it is full
   joint_force_on: 150    # RH56F1 joint force (force_actual) while its command is ahead: robot finger held back
