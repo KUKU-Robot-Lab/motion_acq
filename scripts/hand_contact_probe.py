@@ -162,7 +162,10 @@ def main(argv=None) -> int:
     closed = CLOSED[args.finger]
     rclpy.init()
     p = Probe(args.side)
-    p.spin_for(1.0)
+    for _ in range(50):  # DDS discovery can take a few seconds
+        p.spin_for(0.1)
+        if p.angle is not None and p.force is not None and p.current is not None:
+            break
     if p.angle is None or p.force is None or p.current is None:
         print("✗ no angle/force/current from the hand driver (ROS_DOMAIN_ID=126? driver up?)")
         return 1
