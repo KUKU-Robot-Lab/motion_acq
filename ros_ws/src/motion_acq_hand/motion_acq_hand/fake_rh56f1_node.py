@@ -21,8 +21,24 @@ from rclpy.node import Node
 from std_msgs.msg import Int32MultiArray
 from rh56f1_interfaces.msg import GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1, TouchData1
 
+import os
+import sys
+from pathlib import Path
+
 from motion_acq.hand.retarget import load_hand_retarget_config
 from motion_acq.hand.rh56f1 import N_SLOTS, load_rh56f1_map
+
+
+
+def _hand_contract():
+    """robot_control.rh56f1_hand: the driver's canonical admittance (contract components/rh56f1.yaml)."""
+    src = Path(os.environ.get("RL_WS", Path.home() / "rl_ws")) / "robot_control" / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    import robot_control.rh56f1_hand as hand  # noqa: PLC0415
+
+    return hand
+
 
 SLOT_NAMES = ["pinky", "ring", "middle", "index", "thumb_bend", "thumb_rotation"]
 SLOT_JOINTS = ["pinky_1", "ring_1", "middle_1", "index_1", "thumb_2", "thumb_1"]  # EtherCAT node joint_names
@@ -61,7 +77,11 @@ class FakeRh56f1(Node):
         # angle_target: the driver's per-finger admittance (sim2real rh56f1_admittance.h, mirrored below)
         self.create_subscription(SetAngle1, f"{ns}/angle_target", self._on_target, 10)
         self.adm_on = [False] * N_SLOTS
-        self.adm_y = [0.0] * N_SLOTS
+        self.hand = _hand_contract()
+        self.adm_params = self.hand.load_admittance()
+        self.adm_state = self.hand.AdmState()
+        self.adm_state.bias = [10.0] * N_SLOTS
+        self.last_tips = [0] * 5
         self.last_force = [0.0] * N_SLOTS
         self.adm_pub = self.create_publisher(Int32MultiArray, f"{ns}/admittance_offset", 10)
         self.create_subscription(SetSpeed1, f"{ns}/speed_set", self._on_speed, 10)
@@ -85,7 +105,8 @@ class FakeRh56f1(Node):
         for i, value in enumerate(list(msg.joint_values)[:N_SLOTS]):
             if value != -1:
                 self.target[i] = float(value)
-                self.adm_on[i], self.adm_y[i] = False, 0.0
+                self.adm_on[i] = False
+                self.adm_state.y[i], self.adm_state.limiting[i] = 0.0, 0
 
     def _on_target(self, msg: SetAngle1) -> None:
         if not self._accept(msg):
@@ -104,17 +125,13 @@ class FakeRh56f1(Node):
             self.force = list(msg.joint_values)
 
     def _sent(self, i: int) -> float:
-        """The register the driver would send: target, or target + admittance offset (rh56f1_admittance.h
-        defaults: k 3.6 g/reg, deadband 40 g, tau 1.0 / 0.15 s, lead 11 reg; tip and soft cap left out)."""
+        """The register the driver would send: target, or the driver's admittance (robot_control.rh56f1_hand,
+        contract values; rest bias 10 g as this fake's free reading)."""
         if not self.adm_on[i]:
             return self.target[i]
-        f = max(self.last_force[i] - 10.0 - 40.0, 0.0)
-        tau = 1.0 if f > 0 else 0.15
-        self.adm_y[i] += self.dt / (tau + self.dt) * (f / 3.6 - self.adm_y[i])
-        cmd = self.target[i] + self.adm_y[i]
-        if f > 0:
-            cmd = max(cmd, self.present[i] - 11.0 * max(0.0, 1.0 - f / 800.0))
-        return cmd
+        tip = float(self.last_tips[i]) if i < 5 else -1.0
+        return self.hand.adm_step(self.adm_params, self.adm_state, i, self.dt, self.target[i], self.present[i],
+                                  self.last_force[i], tip)
 
     def _tick(self) -> None:
         step = self.reg_per_s * self.dt
@@ -148,6 +165,7 @@ class FakeRh56f1(Node):
         touch.header.stamp = stamp
         touch.finger_forces = [CONTACT_TIP_COUNTS if pressing and f == "index" else 0
                                for f in ("pinky", "ring", "middle", "index", "thumb")]
+        self.last_tips = list(touch.finger_forces)
         touch.palm_data = [0] * 9
         self.touch_pub.publish(touch)
         self.adm_pub.publish(Int32MultiArray(data=[int(round(sent[i] - self.target[i])) if self.adm_on[i] else 0
