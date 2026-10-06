@@ -77,7 +77,8 @@ def main(path: str) -> int:
     guarded = [r for r in running if (r.get("grip_guard") or {}).get("index_1")]
     pressed = [r for r in running if (r.get("joint_force") or {}).get("index_1", 0.0) >= 400]
     too_hard = [r for r in running if (r.get("joint_force") or {}).get("index_1", 0.0) >= 1000]
-    held = [r for r in running if ((r.get("admittance") or {}).get("index_1") or {}).get("offset_rad", 0) > 0.01]
+    held = [r for r in running if ((r.get("admittance") or {}).get("index_1") or {}).get("offset_rad", 0) > 0.01
+            or (r.get("driver_admittance_reg") or [0] * 6)[3] > 5]  # the driver's admittance (angle_target)
     if pressed and not guarded and not held:
         failures.append(f"{len(pressed)} cycles of index pressing but neither the admittance nor the grip guard acted")
     print(f"index backed off by the admittance in {len(held)} cycles")

@@ -48,6 +48,9 @@ class HandRetargetConfig:
     stale_s: float = 0.2
     driver_speed: int = 2000
     driver_force: int = 600
+    # angle_target: the hand driver's own per-finger admittance at 500 Hz (sim2real cd542da, shared with the
+    # policies); angle_set: plain position (the motion_acq admittance can then run here instead)
+    driver_command: str = "angle_target"
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
     method: str = "examples"  # "kinematic": fingertip retargeting when the calibration has an alignment
     # reference at [켜기] (10.06 user): once the hand is home, the operator holds this example pose
@@ -85,6 +88,12 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
     home = {str(k): float(v) for k, v in raw["home_rad"].items()}
     if set(home) != set(limits):
         raise ValueError("home_rad and limits_rad must list the same joints")
+    command = str((raw.get("driver") or {}).get("command", "angle_target"))
+    if command not in ("angle_target", "angle_set"):
+        raise ValueError(f"driver.command must be angle_target or angle_set, not {command!r}")
+    if command == "angle_target" and bool((raw.get("admittance") or {}).get("enabled", True)):
+        raise ValueError("driver.command angle_target runs the driver's admittance: set admittance.enabled false "
+                         "(two admittance loops would fight)")
     grouped = [j for _, joints in groups.values() for j in joints]
     if sorted(grouped) != sorted(limits):
         raise ValueError(f"groups must cover every joint exactly once: {grouped} vs {sorted(limits)}")
@@ -115,6 +124,7 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         max_step_dt_s=float(lim.get("max_step_dt_s", 0.1)),
         rate_hz=float(raw.get("rate_hz", 120.0)), stale_s=float(raw.get("stale_s", 0.2)),
         driver_speed=int(drv.get("speed", 2000)), driver_force=int(drv.get("force", 600)),
+        driver_command=str(drv.get("command", "angle_target")),
         feedback=feedback_config(raw.get("feedback")),
         method=method,
         reference_pose=str(ref.get("pose", "flat")), reference_s=float(ref.get("seconds", 1.0)),

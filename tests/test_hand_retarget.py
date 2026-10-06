@@ -312,3 +312,19 @@ def test_thumb_rotation_follows_the_thumb_over_its_whole_range():
         seq.append(step.q_command["thumb_1"])
     assert seq == sorted(seq)
     assert seq[0] < 1.0 and seq[2] == pytest.approx(1.57, abs=0.1) and seq[-1] > 1.9
+
+
+def test_driver_command_and_admittance_must_not_both_run(tmp_path):
+    import yaml as _yaml
+
+    from motion_acq.hand.retarget import DEFAULT_RETARGET, load_hand_retarget_config
+
+    raw = _yaml.safe_load(DEFAULT_RETARGET.read_text())
+    raw["admittance"]["enabled"] = True
+    path = tmp_path / "r.yaml"
+    path.write_text(_yaml.safe_dump(raw))
+    with pytest.raises(ValueError, match="fight"):
+        load_hand_retarget_config(path)
+    raw["driver"]["command"] = "angle_set"
+    path.write_text(_yaml.safe_dump(raw))
+    assert load_hand_retarget_config(path).driver_command == "angle_set"

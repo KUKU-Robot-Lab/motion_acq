@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from test_hand_controller import Rig, make_controller, run_until
+from test_hand_controller import Rig, run_until
 
 from motion_acq.hand.admittance import Admittance, AdmittanceConfig, admittance_config
 from motion_acq.hand.synthetic import POSE_ANGLES
@@ -78,8 +78,20 @@ NAMES = ["r_hj_pinky_1", "r_hj_ring_1", "r_hj_middle_1", "r_hj_index_1", "r_hj_t
 
 
 def test_controller_grip_force_follows_how_far_the_operator_closes():
-    """A spring cup at the index: the held force ends near stiffness x penetration, not at saturation."""
-    rig = Rig(make_controller())
+    """motion_acq's own 120 Hz admittance (driver.command angle_set; the default is the driver's, angle_target).
+    A spring cup at the index: the held force ends near stiffness x penetration, not at saturation."""
+    import dataclasses
+
+    import test_hand_controller as thc
+    from hand_fixtures import CONFIG, make_calibration
+
+    from motion_acq.hand.controller import ControllerConfig, HandController
+    from motion_acq.hand.retarget import HandRetargeter
+
+    cfg = dataclasses.replace(CONFIG, reference_s=0.0, driver_command="angle_set",
+                              admittance=dataclasses.replace(CONFIG.admittance, enabled=True))
+    rt = HandRetargeter(cfg, make_calibration("right"), thc.HAND_MAP, "right")
+    rig = Rig(HandController(rt, thc.HAND_MAP, "right", ControllerConfig()))
     rig.ctl.request_enable(True)
     run_until(rig, POSE_ANGLES["flat"], lambda o: o.record["state"] == "running")
     out = run_until(rig, POSE_ANGLES["fist"], lambda o: o.angle[3] < 1450)
@@ -95,3 +107,9 @@ def test_controller_grip_force_follows_how_far_the_operator_closes():
     assert out.record["admittance"]["index_1"]["offset_rad"] > 0.1
     assert 100 < force < 950  # held near the admittance ceiling, below the guard, far from 1.1-1.85 kg
     assert out.angle[2] < 1000  # free fingers still reach the fist
+
+
+def test_driver_admittance_is_the_default_and_excludes_ours():
+    from hand_fixtures import CONFIG
+
+    assert CONFIG.driver_command == "angle_target" and not CONFIG.admittance.enabled

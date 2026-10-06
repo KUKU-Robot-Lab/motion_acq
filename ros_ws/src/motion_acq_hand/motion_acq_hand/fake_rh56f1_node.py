@@ -2,7 +2,8 @@
 
     ros2 run motion_acq_hand fake_rh56f1 --ros-args -p side:=right
 
-Subscribes /hand_<side>/angle_set (SetAngle1, -1 = leave the axis), speed_set,
+Subscribes /hand_<side>/angle_set (SetAngle1, -1 = leave the axis) and angle_target (same + the driver's
+per-finger admittance), speed_set,
 force_set; publishes /hand_<side>/angle_actual (GetAngleAct1), force_actual
 (GetForceAct1) and touch_data (TouchData1).
 
@@ -17,6 +18,7 @@ from __future__ import annotations
 from motion_acq_hand.common import check_side, declare, hand_ns, require_fake_isolation, spin_node
 
 from rclpy.node import Node
+from std_msgs.msg import Int32MultiArray
 from rh56f1_interfaces.msg import GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1, TouchData1
 
 from motion_acq.hand.retarget import load_hand_retarget_config
@@ -56,6 +58,12 @@ class FakeRh56f1(Node):
         prefix = "r" if self.side == "right" else "l"
         self.joint_names = [f"{prefix}_hj_{j}" for j in SLOT_JOINTS]
         self.create_subscription(SetAngle1, f"{ns}/angle_set", self._on_angle, 10)
+        # angle_target: the driver's per-finger admittance (sim2real rh56f1_admittance.h, mirrored below)
+        self.create_subscription(SetAngle1, f"{ns}/angle_target", self._on_target, 10)
+        self.adm_on = [False] * N_SLOTS
+        self.adm_y = [0.0] * N_SLOTS
+        self.last_force = [0.0] * N_SLOTS
+        self.adm_pub = self.create_publisher(Int32MultiArray, f"{ns}/admittance_offset", 10)
         self.create_subscription(SetSpeed1, f"{ns}/speed_set", self._on_speed, 10)
         self.create_subscription(SetForce1, f"{ns}/force_set", self._on_force, 10)
         self.dt = 1.0 / rate_hz
@@ -77,6 +85,15 @@ class FakeRh56f1(Node):
         for i, value in enumerate(list(msg.joint_values)[:N_SLOTS]):
             if value != -1:
                 self.target[i] = float(value)
+                self.adm_on[i], self.adm_y[i] = False, 0.0
+
+    def _on_target(self, msg: SetAngle1) -> None:
+        if not self._accept(msg):
+            return
+        for i, value in enumerate(list(msg.joint_values)[:N_SLOTS]):
+            if value != -1:
+                self.target[i] = float(value)
+                self.adm_on[i] = i < 5  # thumb_1 stays position (as the driver default)
 
     def _on_speed(self, msg: SetSpeed1) -> None:
         if self._accept(msg):
@@ -86,24 +103,39 @@ class FakeRh56f1(Node):
         if self._accept(msg):
             self.force = list(msg.joint_values)
 
+    def _sent(self, i: int) -> float:
+        """The register the driver would send: target, or target + admittance offset (rh56f1_admittance.h
+        defaults: k 3.6 g/reg, deadband 40 g, tau 1.0 / 0.15 s, lead 11 reg; tip and soft cap left out)."""
+        if not self.adm_on[i]:
+            return self.target[i]
+        f = max(self.last_force[i] - 10.0 - 40.0, 0.0)
+        tau = 1.0 if f > 0 else 0.15
+        self.adm_y[i] += self.dt / (tau + self.dt) * (f / 3.6 - self.adm_y[i])
+        cmd = self.target[i] + self.adm_y[i]
+        if f > 0:
+            cmd = max(cmd, self.present[i] - 11.0 * max(0.0, 1.0 - f / 800.0))
+        return cmd
+
     def _tick(self) -> None:
         step = self.reg_per_s * self.dt
+        sent = [self._sent(i) for i in range(N_SLOTS)]
         for i in range(N_SLOTS):
-            err = self.target[i] - self.present[i]
+            err = sent[i] - self.present[i]
             self.present[i] += max(-step, min(step, err))
         pressing = False
         if self.object_index_reg >= 0 and self.present[INDEX_SLOT] < self.object_index_reg:
             self.present[INDEX_SLOT] = float(self.object_index_reg)
-            pressing = self.target[INDEX_SLOT] < self.object_index_reg
+            pressing = sent[INDEX_SLOT] < self.object_index_reg
         stamp = self.get_clock().now().to_msg()
         force = GetForceAct1()
         force.header.stamp = stamp
         force.hand_id = self.hand_id
         self.ticks += 1
         noise = self.ticks % 3  # live readings are never exactly still (hand_node faults a frozen hand)
-        press = CONTACT_JOINT_FORCE + PRESS_G_PER_REG * (self.object_index_reg - self.target[INDEX_SLOT])
+        press = CONTACT_JOINT_FORCE + PRESS_G_PER_REG * (self.object_index_reg - sent[INDEX_SLOT])
         values = [int(min(press, 1800)) + noise if pressing and i == INDEX_SLOT else 10 + noise for i in range(N_SLOTS)]
         force.joint_values = values
+        self.last_force = [float(v) for v in values]
         force.joint_names = self.joint_names
         self.force_pub.publish(force)
         current = GetCurrentAct1()
@@ -118,6 +150,8 @@ class FakeRh56f1(Node):
                                for f in ("pinky", "ring", "middle", "index", "thumb")]
         touch.palm_data = [0] * 9
         self.touch_pub.publish(touch)
+        self.adm_pub.publish(Int32MultiArray(data=[int(round(sent[i] - self.target[i])) if self.adm_on[i] else 0
+                                                   for i in range(N_SLOTS)]))
         msg = GetAngleAct1()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.hand_id = self.hand_id

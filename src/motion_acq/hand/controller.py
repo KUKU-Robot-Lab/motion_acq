@@ -144,6 +144,7 @@ class HandController:
         self.grip_guard = GripGuard(retargeter.config.grip_guard)
         self._speeds_sent: list[int] | None = None
         self.admittance = Admittance(retargeter.config.admittance)
+        self._driver_adm: list[int] | None = None
         self._last_reading: dict[str, object] = {}
         self._reference: list[tuple[float, dict]] = []  # (t, glove signals) while in REFERENCE
         self.reference_note: str | None = None
@@ -169,6 +170,10 @@ class HandController:
         self._hand_changed("force", tuple(values), t)
         self.feedback.on_joint_force(names, values, t)
         self.grip_guard.on_force(names, values, t)
+
+    def on_driver_admittance(self, offsets: Sequence[int]) -> None:
+        """/hand_<s>/admittance_offset: registers the driver's admittance opened each finger (slot order)."""
+        self._driver_adm = [int(v) for v in offsets] if any(offsets) else None
 
     def on_current(self, names, values, t: float) -> None:
         """GetCurrentAct1 (mA per actuator): the grip guard's second reading."""
@@ -411,6 +416,7 @@ class HandController:
             "current_ma": self.grip_guard.current_now(t),
             "contact_slow": sorted(self.grip_guard.in_contact) or None,
             "admittance": self.admittance.record() if following else None,
+            "driver_admittance_reg": self._driver_adm,
             "speed": out.speed,
             "hand_status": self._status,  # driver status, only on the tick after one arrived (1 Hz)
         }

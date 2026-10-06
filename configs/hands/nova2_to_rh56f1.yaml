@@ -135,6 +135,10 @@ stale_s: 0.2       # no glove sample for this long -> HOLD
 driver:
   speed: 2000      # SetSpeed1, same as sim2real pd hw_speed
   force: 600       # SetForce1 [g], same as sim2real pd hw_force
+  # 10.06 user: one hand control logic for teleop and policies, in the EtherCAT driver at 500 Hz.
+  # angle_target = the driver's per-finger admittance (sim2real cd542da, rh56f1_ports.yaml admittance);
+  # angle_set = plain position (then admittance.enabled below can run the 120 Hz motion_acq version).
+  command: angle_target
 
 # Admittance per finger (motion_acq.hand.admittance; 10.06 user: position + force loop together, not
 # switched; linkage, non-backdrivable lead screw -> admittance, not impedance). Every tick:
@@ -146,7 +150,7 @@ driver:
 # 120 Hz -> a 0.016. thumb_1 stays with the grip guard only (its force reads negative under an outward load).
 # The firmware stays in mode 0 (mode switches over SDO are refused in OP, 10.06 right index).
 admittance:
-  enabled: true
+  enabled: false   # the driver's admittance runs instead (driver.command angle_target)
   joints: [index_1, middle_1, ring_1, pinky_1, thumb_2]
   stiffness_g_per_rad: 2000.0
   deadband_g: 40.0

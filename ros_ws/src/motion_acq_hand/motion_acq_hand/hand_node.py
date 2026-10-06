@@ -47,7 +47,7 @@ import rclpy
 from rclpy.node import Node
 from rh56f1_interfaces.msg import GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1, TouchData1
 from senseglove_msgs.msg import SenseGloveState
-from std_msgs.msg import Bool, Float64MultiArray, String
+from std_msgs.msg import Bool, Float64MultiArray, Int32MultiArray, String
 
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.controller import ControllerConfig, HandController
@@ -92,7 +92,8 @@ class HandNode(Node):
         self.controller.request_enable(enable_on_start)
 
         ns = hand_ns(self.side)
-        self.angle_pub = self.create_publisher(SetAngle1, f"{ns}/angle_set", 10)
+        # angle_target: the driver's per-finger admittance (500 Hz, shared with the policies); angle_set: position
+        self.angle_pub = self.create_publisher(SetAngle1, f"{ns}/{config.driver_command}", 10)
         self.speed_pub = self.create_publisher(SetSpeed1, f"{ns}/speed_set", 10)
         self.force_pub = self.create_publisher(SetForce1, f"{ns}/force_set", 10)
         self.status_pub = self.create_publisher(String, f"/motion_acq/hand_{self.side}/status", 10)
@@ -103,6 +104,9 @@ class HandNode(Node):
         self.create_subscription(GetForceAct1, f"{ns}/force_actual", self._on_force, 10)
         self.create_subscription(GetCurrentAct1, f"{ns}/current_actual", self._on_current, 10)
         self.create_subscription(String, f"{ns}/ecat_status", self._on_status, 10)
+        # the driver's admittance: registers it opened each finger past the target (logged, slot order)
+        self.create_subscription(Int32MultiArray, f"{ns}/admittance_offset",
+                                 lambda m: self.controller.on_driver_admittance(list(m.data)), 10)
         self.haptics_pub = self.create_publisher(Float64MultiArray, haptics_topic, 10) if haptics else None
         self._haptics_sent: tuple[list[float], float] | None = None
         self._haptics_beat = False
@@ -114,7 +118,7 @@ class HandNode(Node):
         self._last_mode = self.controller.mode
         self.create_timer(1.0 / config.rate_hz, self._tick)
         self.get_logger().info(
-            f"hand {self.side}: glove {topic} -> {ns}/angle_set at {config.rate_hz:g} Hz, "
+            f"hand {self.side}: glove {topic} -> {ns}/{config.driver_command} at {config.rate_hz:g} Hz, "
             f"amplitude {amplitude:g}, speed {speed}, force {force}, "
             f"haptics {haptics_topic if haptics else 'off'} "
             f"({'enable on start (fake)' if enable_on_start else 'disabled until enabled'})"
