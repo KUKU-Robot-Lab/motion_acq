@@ -87,7 +87,7 @@ head:
     # 10.12 user (option B): the camera pitch follows the operator's absolute head pitch.
     # Measured 10.12 at tilt 71.87: the head depth camera's table plane gives the optical axis
     # 72.8 deg below level (roll -6.9; the s2r "18.93" was not the camera pitch), so the camera is
-    # level near encoder -1. The window above stops at 41.8 (31 deg below level) until the
+    # level near encoder -1. The window above stops at 41.8 (~43 deg below level) until the
     # mechanical upper limit is checked on the robot.
     home_pitch_deg: -72.8
   motor:
