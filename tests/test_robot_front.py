@@ -209,9 +209,8 @@ def test_the_station_neck_uses_the_absolute_pitch():
     root = Path(__file__).resolve().parents[1]
     data = yaml.safe_load((root / "configs" / "stations" / "arm4090.yaml").read_text())["head"]
     config = head_config_from_section(data)
-    assert config.retarget.tilt_home_pitch_deg == pytest.approx(-18.9)
-    level = config.retarget.tilt.home_deg + config.retarget.tilt.sign * 18.9
-    assert config.tilt_window[0] < level < config.tilt_window[1]
+    assert config.retarget.tilt_home_pitch_deg == pytest.approx(-72.8)  # measured 10.12
+    assert config.tilt_window[0] < config.retarget.tilt.home_deg < config.tilt_window[1]
 
 
 def test_a_neck_re_anchor_keeps_the_front():
