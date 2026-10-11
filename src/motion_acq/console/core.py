@@ -11,6 +11,7 @@ expired command is asked again. What blocks a start lives in gates.py.
 from __future__ import annotations
 
 import collections
+import dataclasses
 import json
 import os
 import secrets
@@ -53,6 +54,14 @@ def same_command(a: Launch, b: Launch) -> bool:
         argv = list(launch.argv)
         return [("<out>" if i and argv[i - 1] == "--output-dir" else arg) for i, arg in enumerate(argv)]
     return a.key == b.key and masked(a) == masked(b) and a.env == b.env
+
+
+def _quiet(launch: Launch) -> Launch:
+    """The recorder without its own espeak cues: [혼자 녹화] speaks for it (10.12 user: two voices
+    overlapped, the old espeak 'recording episode' over the neural countdown)."""
+    if "--no-sounds" in launch.argv:
+        return launch
+    return dataclasses.replace(launch, argv=(*launch.argv, "--no-sounds"))
 
 
 class Console:
@@ -157,7 +166,8 @@ class Console:
             self.probes.refresh_ros()
 
     # -- building -----------------------------------------------------------------------
-    def build(self, key: str) -> Launch:
+    def build(self, key: str, *, also_running: frozenset[str] = frozenset()) -> Launch:
+        """also_running: units the same approval starts before this one (record: their streams)."""
         st, mode, s = self.station, self.mode, self.settings
         if key == "quest_view":
             return units.quest_view(st, mode)
@@ -172,7 +182,8 @@ class Console:
         if key in ("arm_right", "arm_left"):
             return units.arm(st, mode, key[4:], float(s["scale"]), key=key)
         if key == "record":
-            streams = units.record_streams(st, set(self.sup.running()))
+            # 10.12: [혼자 녹화] built the recorder before it started the neck and hands -> --no-sidecars
+            streams = units.record_streams(st, set(self.sup.running()) | set(also_running))
             out = ROOT / "outputs" / f"{st.name}_{time.strftime('%Y%m%d_%H%M%S')}"
             cameras = st.cameras if self.sup.is_running("quest_view") else ()
             return units.record(st, mode, str(s["arm_side"]), float(s["scale"]), streams=streams,
@@ -243,8 +254,10 @@ class Console:
             return reply
         return self._job(arm.key, lambda: self._arm_with_hands_job(sides, approved))
 
-    def _arm_hands_plan(self, arm: Launch) -> dict | tuple[tuple[str, ...], list[Launch], str]:
-        """(arm sides with hands, launches ending with the arm, note) or an error reply."""
+    def _arm_hands_plan(self, arm: Launch, also_running: frozenset[str] = frozenset()
+                        ) -> dict | tuple[tuple[str, ...], list[Launch], str]:
+        """(arm sides with hands, launches ending with the arm, note) or an error reply.
+        The recorder is rebuilt with the hand nodes (and also_running) this plan starts first."""
         sides = self._arm_hand_sides(arm.key)
         one_arm = arm.key not in ("arm", "record")
         note = ONE_ARM_HAND_NOTE if one_arm else HAND_LINK_NOTE
@@ -267,6 +280,10 @@ class Console:
         if problems:
             return {"ok": False, "error": " / ".join(problems)}
         launches += commands
+        if arm.key == "record":
+            started = {launch.key for launch in launches if launch.key.startswith("hand_")}
+            if started or also_running:
+                arm = self.build("record", also_running=frozenset(started) | also_running)
         launches.append(arm)
         return sides, launches, note
 
@@ -663,10 +680,11 @@ class Console:
                 self.update_settings({"arm_side": "both"})
             problems += self.blockers("record")
             if not problems:
-                arm_plan = self._arm_hands_plan(self.build("record"))
+                arm_plan = self._arm_hands_plan(self.build("record"),
+                                                frozenset({"head"}) if head else frozenset())
                 if isinstance(arm_plan, dict):
                     return arm_plan
-                plan = arm_plan
+                plan = (arm_plan[0], [*arm_plan[1][:-1], _quiet(arm_plan[1][-1])], arm_plan[2])
         if problems:
             return {"ok": False, "error": " / ".join(problems)}
         launches = ([head] if head else []) + (plan[1] if plan else [])

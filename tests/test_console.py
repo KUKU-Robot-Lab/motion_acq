@@ -895,7 +895,7 @@ def test_solo_starts_what_is_missing_with_one_confirmation(console, monkeypatch)
     monkeypatch.setattr(console, "blockers", lambda key: [])
     monkeypatch.setattr(console.sup, "is_running", lambda key: False)
     monkeypatch.setattr(console, "_arm_hands_plan",
-                        lambda arm: (("right", "left"), [arm], ""))
+                        lambda arm, also_running=frozenset(): (("right", "left"), [arm], ""))
     runs = []
     monkeypatch.setattr(console, "_solo_job", lambda launches, sides, seconds: runs.append(
         ([launch.key for launch in launches], sides, seconds)) or "done")
@@ -908,7 +908,46 @@ def test_solo_starts_what_is_missing_with_one_confirmation(console, monkeypatch)
             break
         time.sleep(0.01)
     assert runs == [(["head", "record"], ("right", "left"), 60)]
+
+
+def test_solo_records_without_the_recorder_s_own_voice(console, monkeypatch):
+    """10.12 user: the recorder's espeak cues overlapped the neural countdown (real mode had them on)."""
+    console.set_mode("real")
+    monkeypatch.setattr("motion_acq.console.gates.quest_source", lambda c: "mock")
+    monkeypatch.setattr(console, "blockers", lambda key: [])
+    monkeypatch.setattr(console.sup, "is_running", lambda key: False)
+    monkeypatch.setattr(console, "_arm_hands_plan",
+                        lambda arm, also_running=frozenset(): (("right", "left"), [arm], ""))
+    seen = []
+    monkeypatch.setattr(console, "_solo_job", lambda launches, sides, seconds: seen.append(launches) or "done")
+    reply = console.solo()
+    if reply.get("need_confirm"):
+        reply = console.solo(confirm=True, token=reply["token"])
+    for _ in range(50):
+        if seen:
+            break
+        time.sleep(0.01)
+    record = [launch for launch in seen[0] if launch.key == "record"][0]
+    assert record.argv.count("--no-sounds") == 1
     assert console.settings["arm_side"] == "both"
+
+
+def test_the_recorder_records_the_neck_and_hands_started_with_it(console, monkeypatch):
+    """10.12: [혼자 녹화] built the recorder before starting the neck and hands -> --no-sidecars."""
+    monkeypatch.setattr(console.sup, "is_running", lambda key: False)
+    monkeypatch.setattr(console, "_hand_precheck", lambda side, need_glove: [])
+    monkeypatch.setattr(console, "_hand_driver_present", lambda side: True)
+    console.update_settings({"arm_side": "both"})
+    sides, launches, _ = console._arm_hands_plan(console.build("record"), frozenset({"head"}))
+    argv = launches[-1].argv
+    assert launches[-1].key == "record" and "--no-sidecars" not in argv
+    assert {argv[i + 1] for i, a in enumerate(argv) if a == "--sidecar"} == {
+        "head=47101", "hand_right=47111", "hand_left=47112"}
+
+
+def test_the_recorder_alone_records_only_what_runs(console, monkeypatch):
+    monkeypatch.setattr(console.sup, "is_running", lambda key: False)
+    assert "--no-sidecars" in console.build("record").argv
 
 
 def test_solo_refuses_while_an_arm_unit_runs(console, monkeypatch):
