@@ -36,6 +36,12 @@ glove asked for more. Two fixes from it:
 * Release on the operator opening (glove target below the touch point by contact_cap_open_rad), not on
   the contact signs fading: a held finger at its cap often reads < 60 g, the cap was released after
   0.3 s and re-taken deeper (ring 0.67 -> 0.74 -> 0.76 rad, up to 800 g), a slower staircase creep.
+* Force and current count only from a stalled joint (10.11 arm4090 user: index/middle stopped short
+  of the cup): a free RH56F1 finger reads 100-350 g / 150-390 mA while it accelerates (1-2 rad/s at
+  the "touch") and ~110 g bent past 1.1 rad at rest, both over contact_force_g, so every quick close
+  "touched" in free air (103 touches in 4 min, 0 blocked: the finger then reached its cap freely).
+  A stalled joint has moved less than contact_stall_rad in contact_stall_s while its command is
+  contact_stall_rad ahead of it; a tip at contact_tip_n / contact_cap_tip_n counts as it is.
 * The touch needs force, current or a tip of contact_cap_tip_n (0.5 N): the ring tip read 0.2 N with
   the hand open for 90 s after a grasp (drift), which pinned a stale cap at 0.74 rad on a free ring.
   If the object slips out, the finger stays at its cap until the operator opens.
@@ -43,6 +49,7 @@ glove asked for more. Two fixes from it:
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
@@ -75,6 +82,10 @@ class GripGuardConfig:
     contact_cap_rad: float = 0.0
     contact_cap_open_rad: float = 0.05  # released once the glove target opens this far below the touch
     contact_cap_tip_n: float = 0.5  # a tip touch for the cap (tips drift ~0.2-0.3 N after a grasp)
+    # force / current contact only from a stalled joint (0 = any joint, the old rule): it moved less
+    # than contact_stall_rad in contact_stall_s while its command is at least that far ahead
+    contact_stall_rad: float = 0.0
+    contact_stall_s: float = 0.1
 
     def __post_init__(self) -> None:
         if not 0 < self.force_off_g < self.force_on_g < self.force_hard_g:
@@ -89,6 +100,8 @@ class GripGuardConfig:
             raise ValueError("grip_guard: contact (slow down) must come before the hold levels")
         if self.contact_cap_rad < 0 or self.contact_cap_open_rad < 0 or self.contact_cap_tip_n <= 0:
             raise ValueError("grip_guard: contact_cap_rad, contact_cap_open_rad >= 0, contact_cap_tip_n > 0")
+        if self.contact_stall_rad < 0 or self.contact_stall_s <= 0:
+            raise ValueError("grip_guard: contact_stall_rad >= 0, contact_stall_s > 0")
 
 
 def grip_guard_config(raw: Mapping | None) -> GripGuardConfig:
@@ -117,6 +130,37 @@ class GripGuard:
     _rest: dict[str, list[float]] = field(default_factory=dict)
     bias: dict[str, float] = field(default_factory=dict)
     touch: dict[str, float] = field(default_factory=dict)  # joint -> measured rad where it touched
+    _motion: dict[str, deque] = field(default_factory=dict)  # joint -> (t, measured) over contact_stall_s
+    _command: dict[str, float] = field(default_factory=dict)
+
+    def observe(self, measured_rad: Mapping[str, float] | None, command_rad: Mapping[str, float] | None,
+                t: float) -> None:
+        """The measured angles and the command in force: what tells a stalled joint from a moving one."""
+        self._command = dict(command_rad or {})
+        if not measured_rad:
+            self._motion = {}
+            return
+        keep = self.config.contact_stall_s * 1.5
+        for j, q in measured_rad.items():
+            h = self._motion.setdefault(j, deque())
+            h.append((t, float(q)))
+            while h and t - h[0][0] > keep:
+                h.popleft()
+
+    def stalled(self, joint: str) -> bool:
+        """Barely moved over contact_stall_s while the command is ahead (pressing on something). True
+        for any joint when contact_stall_rad is 0 (the old rule) or nothing was observed yet."""
+        c = self.config
+        if c.contact_stall_rad <= 0:
+            return True
+        h = self._motion.get(joint)
+        if not h or joint not in self._command:
+            return not self._motion  # no measured stream at all: the old rule
+        t, q = h[-1]
+        if t - h[0][0] < c.contact_stall_s - 1e-9:
+            return False  # too short a history to tell
+        moved = max(abs(q - qq) for tt, qq in h if t - tt <= c.contact_stall_s + 1e-9)
+        return moved < c.contact_stall_rad and self._command[joint] - q >= c.contact_stall_rad
 
     def on_force(self, names: Sequence[str], values: Sequence[float], t: float) -> None:
         self.force = (joint_values(names, values), t)
@@ -141,6 +185,7 @@ class GripGuard:
         self.current = (joint_values(names, values), t)
 
     def reset(self) -> None:
+        self._motion, self._command = {}, {}
         self.engaged = {}
         self.in_contact = set()
         self.release_touch()
@@ -153,8 +198,9 @@ class GripGuard:
         c = self.config
         force, current, tips = self.relative_force(t), self._fresh(self.current, t), self._fresh(self.tips, t)
         tip_of = {j: tips.get(f, 0.0) for f, joints in TIP_JOINTS.items() for j in joints}
-        return {j for j in CAP_JOINTS if j in self.engaged or force.get(j, 0.0) >= c.contact_force_g
-                or abs(current.get(j, 0.0)) >= c.contact_current_ma or tip_of.get(j, 0.0) >= c.contact_cap_tip_n}
+        return {j for j in CAP_JOINTS if j in self.engaged or tip_of.get(j, 0.0) >= c.contact_cap_tip_n
+                or ((force.get(j, 0.0) >= c.contact_force_g or abs(current.get(j, 0.0)) >= c.contact_current_ma)
+                    and self.stalled(j))}
 
     def contact_ceilings(self, measured_rad: Mapping[str, float] | None, target_rad: Mapping[str, float] | None,
                          t: float) -> dict[str, float]:
@@ -233,7 +279,8 @@ class GripGuard:
         contact = set()
         for j in JOINTS:
             f, i, tip = force.get(j, 0.0), abs(current.get(j, 0.0)), tip_of.get(j, 0.0)
-            if j in self.engaged or f >= c.contact_force_g or i >= c.contact_current_ma or tip >= c.contact_tip_n:
+            if (j in self.engaged or tip >= c.contact_tip_n
+                    or ((f >= c.contact_force_g or i >= c.contact_current_ma) and self.stalled(j))):
                 contact.add(j)
             elif j in self.in_contact and (f >= c.contact_force_g / 2 or i >= c.contact_current_ma / 2
                                            or tip >= c.contact_tip_n / 2):

@@ -153,12 +153,13 @@ def test_rest_bias_is_learnt_and_subtracted():
     assert g.ceilings(MEASURED, 1.0) == {"index_1": pytest.approx(0.83)}
 
 
-def test_controller_sends_contact_speed_at_once_and_driver_speed_after():
+def test_controller_sends_contact_speed_once_stalled_and_driver_speed_after():
     rig = Rig(make_controller())
-    follow_fist_on_a_cup(rig, 500, steps=3)
-    sent = [o.speed for o in rig.sent[-3:] if o.speed is not None]
+    follow_fist_on_a_cup(rig, 500, steps=20)
     index_slot = 3
-    assert sent and sent[0][index_slot] == 300 and sent[0][2] == 2000
+    slow = [i for i, o in enumerate(rig.sent[-20:]) if o.speed is not None and o.speed[index_slot] == 300]
+    assert slow and slow[0] <= 15  # within contact_stall_s (0.1 s = 12 ticks) of the block
+    assert rig.sent[-20 + slow[0]].speed[2] == 2000  # only the pressing finger slows
     for _ in range(30):
         press_index(rig, 0)
         out = rig.step(POSE_ANGLES["flat"])
@@ -226,3 +227,70 @@ def test_controller_contact_cap_stops_the_finger_soon_after_the_touch():
     rig.ctl.command("home")
     out = rig.step(POSE_ANGLES["fist"])
     assert out.record["contact_touch_rad"] is None
+
+
+# -- stalled joints (10.11 18:03 arm4090: free fingers read 100-350 g while closing fast and stopped at
+#    a cap in free air, 103 "touches", none blocked) --
+
+def stall_guard(**cfg) -> GripGuard:
+    return guard_with(force=(0, 0, 0, 200, 0, 0), contact_cap_rad=0.07, contact_stall_rad=0.03,
+                      contact_stall_s=0.1, **cfg)
+
+
+def feed(g, index_path, command, t0=1.0, dt=1 / 120):
+    t = t0
+    for q in index_path:
+        g.observe({**MEASURED, "index_1": q}, {**MEASURED, "index_1": command}, t)
+        g.on_force(NAMES, (0, 0, 0, 200, 0, 0), t)
+        t += dt
+    return t - dt
+
+
+def test_a_moving_finger_reading_force_is_no_contact():
+    g = stall_guard()
+    t = feed(g, [0.2 + 0.015 * k for k in range(20)], command=0.6)  # closing at 1.8 rad/s
+    assert g.contact_ceilings({**MEASURED, "index_1": 0.485}, {**MEASURED, "index_1": 0.9}, t) == {}
+    assert g.speeds(t, 2000)["index_1"] == 2000
+
+
+def test_a_finger_resting_at_its_command_reading_force_is_no_contact():
+    """Bent past 1.1 rad a free finger reads ~110 g at rest: at its command, nothing holds it back."""
+    g = stall_guard()
+    t = feed(g, [1.25] * 20, command=1.26)
+    assert g.contact_ceilings({**MEASURED, "index_1": 1.25}, {**MEASURED, "index_1": 1.26}, t) == {}
+
+
+def test_a_stalled_finger_behind_its_command_touches():
+    g = stall_guard()
+    t = feed(g, [0.5 + 0.001 * k for k in range(20)], command=0.7)
+    assert g.contact_ceilings({**MEASURED, "index_1": 0.52}, {**MEASURED, "index_1": 0.9}, t) == {
+        "index_1": pytest.approx(0.59)}
+    assert g.speeds(t, 2000)["index_1"] == 300
+
+
+def test_a_stall_needs_a_full_window_and_a_tip_needs_none():
+    g = stall_guard()
+    t = feed(g, [0.5] * 5, command=0.7)  # 0.03 s of history
+    assert g.contact_ceilings({**MEASURED, "index_1": 0.5}, {**MEASURED, "index_1": 0.9}, t) == {}
+    g.on_tips({"index": 0.6}, t)  # a fingertip press counts at once, moving or not
+    assert g.contact_ceilings({**MEASURED, "index_1": 0.5}, {**MEASURED, "index_1": 0.9}, t) == {
+        "index_1": pytest.approx(0.57)}
+
+
+def test_stall_config_is_checked():
+    with pytest.raises(ValueError):
+        GripGuardConfig(contact_stall_s=0.0)
+    assert grip_guard_config({"contact_stall_rad": 0.03}).contact_stall_rad == 0.03
+
+
+def test_controller_free_fast_close_with_force_does_not_cap():
+    """The rig's finger follows its command; a force reading while it closes is no touch."""
+    rig = Rig(make_controller())
+    rig.ctl.request_enable(True)
+    run_until(rig, POSE_ANGLES["flat"], lambda o: o.record["state"] == "running")
+    run_until(rig, POSE_ANGLES["flat"], lambda o: o.record["phase"] == "follow")
+    for _ in range(60):
+        press_index(rig, 250)
+        out = rig.step(POSE_ANGLES["fist"])
+    assert out.record["contact_touch_rad"] is None
+    assert out.record["q_command_rad"]["index_1"] > 1.4

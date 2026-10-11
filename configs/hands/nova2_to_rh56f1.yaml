@@ -226,6 +226,11 @@ grip_guard:
   # 0.5 N (the ring tip drifted to 0.2-0.3 N with the hand open after a grasp)
   contact_cap_open_rad: 0.05
   contact_cap_tip_n: 0.5
+  # 10.11 18:03 run: free fingers read 100-350 g while accelerating and ~110 g bent past 1.1 rad, so
+  # quick closes "touched" in free air and stopped at the cap. Force / current now count only from a
+  # stalled joint: moved < 0.03 rad in 0.1 s with the command >= 0.03 rad ahead. Tips count as before.
+  contact_stall_rad: 0.03
+  contact_stall_s: 0.1
 
 # RH56F1 sensors -> Nova 2 haptics (motion_acq.hand.feedback; 10.05 user: the
 # glove limits the operator to what the hand can do and shows contact). Only

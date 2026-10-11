@@ -369,6 +369,7 @@ class HandController:
             fresh = (glove is not None and t - glove[1] <= self.config.glove_stale_s
                      and not self.glove_frozen(t))
             measured = self._measured_rad() if self._measured_fresh(t) else None
+            self.grip_guard.observe(measured, self.retargeter.command(), t)  # stalled vs moving joints
             ceilings = self.grip_guard.ceilings(measured, t)
             # contact cap: a touching joint goes at most contact_cap_rad past where it touched (10.11)
             for j, top in self.grip_guard.contact_ceilings(measured, self._operator_target, t).items():
