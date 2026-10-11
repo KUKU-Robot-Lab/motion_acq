@@ -477,3 +477,32 @@ def test_key_unlock_follows_from_the_current_direction_and_locks_again():
     for _ in range(59):
         session.tick()
     assert tick_to_deg(bus.present_ticks[1]) == pytest.approx(-2.9 + 10.0, abs=0.3)
+
+
+def test_locking_before_any_anchor_keeps_the_head_still():
+    """10.12 real run: Space, then Space again before the head anchored (front not set) sent the
+    retargeter's never-used command (0, 0); the tilt jumped about 30 deg up to its window edge."""
+    bus = fake_bus()
+    driver = make_driver(bus)
+    driver.start()
+
+    class Tracker:
+        def latest(self):
+            return FakeSample(pose_from_yaw_pitch(0, 0), False)  # never anchors
+
+    session = HeadSession(
+        Tracker(), driver,
+        HeadRetargeter(make_config(max_velocity_deg_s=60.0, max_acceleration_deg_s2=300.0)),
+        auto_start_delay_s=2.0, max_consecutive_faults=3, clock=Clock(), unlock="key",
+    )
+    session.tick()
+    session.toggle_lock()  # unlock: waits for the HMD, never anchors
+    for _ in range(10):
+        session.tick()
+    assert not session.anchored
+    session.toggle_lock()  # lock again
+    for _ in range(30):
+        session.tick()
+        assert tick_to_deg(bus.present_ticks[1]) == pytest.approx(-2.9, abs=0.1)
+        assert tick_to_deg(bus.present_ticks[2]) == pytest.approx(71.8, abs=0.1)
+    assert not session.returning

@@ -106,10 +106,14 @@ class HeadSession:
             log.info("Head unlocked: anchoring at the current HMD direction.")
         else:
             self.locked = True
+            # 10.12: walk back from where the head was last told to be. Not anchored since the
+            # last lock, the retargeter's command is stale (or its initial (0, 0)): use the
+            # measured pose, which sent the tilt 30 deg up at real speed.
+            start = self.retargeter.command_deg if self.anchored else self.measured
             self.retargeter.state = HeadState.IDLE
             # 10.04 user: a lock brings the head back to home (as the start and the end do)
-            self.returning = True
-            self._return_cmd = list(self.retargeter.command_deg)
+            self.returning = start is not None
+            self._return_cmd = None if start is None else list(start)
             log.info("Head locked: returning to home.")
 
     def _step_return(self, now: float) -> None:
