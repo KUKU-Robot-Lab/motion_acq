@@ -150,7 +150,7 @@ def synthetic_sdk(angles: Mapping[str, float], side: str, config=None) -> dict[s
     """The nova2_sdk node's values (motion_acq.hand.direct, unprefixed) for this hand shape: the robot
     pose in `angles` (q_*) read back through the direct map of `config` (DirectConfig, default Nova2Dex's
     numbers), so a hand driven by that map follows it."""
-    from motion_acq.hand.direct import DirectConfig
+    from motion_acq.hand.direct import DirectConfig, piecewise
 
     c = config if config is not None else DirectConfig()
     closed = {"thumb_2": 0.474555, **{f"{f}_1": 1.5285594 for f in CURLED}}
@@ -160,7 +160,5 @@ def synthetic_sdk(angles: Mapping[str, float], side: str, config=None) -> dict[s
 
     out = {f"nflex_{f}": c.finger_open[f] + unit(f"{f}_1") * (c.finger_full[f] - c.finger_open[f]) for f in CURLED}
     out["nflex_thumb"] = c.thumb_open + unit("thumb_2") * (c.thumb_full - c.thumb_open)
-    (a, b), (y0, y1) = c.thumb_1_rad, c.thumb_yaw_rad[side]
-    u = float(np.clip((angles.get("q_thumb_1", 1.57) - a) / (b - a), 0.0, 1.0))
-    out["thumb_0_x"] = y0 + u * (y1 - y0)
+    out["thumb_0_x"] = piecewise(angles.get("q_thumb_1", 1.57), c.thumb_1_rad, c.thumb_yaw_rad[side])
     return out

@@ -9,8 +9,8 @@ straight (here: motion_acq_nova2's nova2_sdk node, /motion_acq/nova2_sdk/<side>)
 * the thumb bend (RH56F1 thumb_2, Inspire thumb pitch): the thumb's normalized flexion, thumb_open ..
   thumb_full (Nova2Dex: 0 .. 0.733333);
 * the thumb rotation across the palm (RH56F1 thumb_1, Inspire thumb yaw): the SDK hand angle of the
-  thumb's first joint about X, from thumb_yaw_rad[side][0] to [1] (Nova2Dex right glove: 0 .. -0.3 rad)
-  onto thumb_1_rad.
+  thumb's first joint about X, piecewise linear through thumb_yaw_rad[side] onto thumb_1_rad (Nova2Dex
+  right glove: 0 .. -0.3 rad onto the whole Inspire yaw).
 The Nova 2 has one thumb bend sensor, so the glove's thumb mcp and pip move together (10.11 logs:
 pip ~ f(mcp), R^2 0.91-0.98); one thumb value per robot thumb joint is all it can give.
 
@@ -24,7 +24,7 @@ The glove signals here are the SDK message's names with SDK_PREFIX.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import Mapping, Sequence
 
 SDK_PREFIX = "sdk_"
 FINGER_JOINTS = {"index_1": "index", "middle_1": "middle", "ring_1": "ring", "pinky_1": "pinky"}
@@ -50,10 +50,12 @@ class DirectConfig:
     finger_full: Mapping[str, float] = field(default_factory=lambda: _per_finger(0.928571))
     thumb_open: float = 0.0
     thumb_full: float = 0.733333
-    # side -> thumb_0_x at the thumb_1_rad ends
-    thumb_yaw_rad: Mapping[str, tuple[float, float]] = field(
+    # side -> thumb_0_x at each thumb_1_rad point; thumb_1 is piecewise linear through the points and
+    # clipped at the ends (10.11 user: three points, so home stays beside the index and both ends of the
+    # robot's range are used, as Nova2Dex maps the whole yaw onto the whole Inspire range)
+    thumb_yaw_rad: Mapping[str, tuple[float, ...]] = field(
         default_factory=lambda: {"right": (0.0, -0.3), "left": (0.0, 0.3)})
-    thumb_1_rad: tuple[float, float] = (0.8, 2.0)
+    thumb_1_rad: tuple[float, ...] = (0.8, 2.0)
 
     def __post_init__(self) -> None:
         if set(self.finger_open) != set(FINGERS) or set(self.finger_full) != set(FINGERS):
@@ -65,9 +67,15 @@ class DirectConfig:
             raise DirectError("direct: thumb_full must be at least 0.05 above thumb_open")
         if set(self.thumb_yaw_rad) != set(SIDES):
             raise DirectError("direct: thumb_yaw_rad needs right and left")
-        for side, (a, b) in self.thumb_yaw_rad.items():
-            if abs(b - a) < 0.02:
-                raise DirectError(f"direct: thumb_yaw_rad {side} needs two angles at least 0.02 rad apart")
+        n = len(self.thumb_1_rad)
+        if n < 2 or any(b - a < 0.05 for a, b in zip(self.thumb_1_rad, self.thumb_1_rad[1:])):
+            raise DirectError("direct: thumb_1_rad needs two or more angles, rising by at least 0.05 rad")
+        for side, yaw in self.thumb_yaw_rad.items():
+            if len(yaw) != n:
+                raise DirectError(f"direct: thumb_yaw_rad {side} needs {n} angles, one per thumb_1_rad point")
+            steps = [b - a for a, b in zip(yaw, yaw[1:])]
+            if not (all(d >= 0.02 for d in steps) or all(d <= -0.02 for d in steps)):
+                raise DirectError(f"direct: thumb_yaw_rad {side} must run one way, at least 0.02 rad per step")
 
 
 def direct_config(raw: Mapping | None) -> DirectConfig:
@@ -84,15 +92,27 @@ def direct_config(raw: Mapping | None) -> DirectConfig:
         if k in raw:
             out[k] = float(raw[k])
     if "thumb_yaw_rad" in raw:
-        out["thumb_yaw_rad"] = {str(s): (float(v[0]), float(v[1])) for s, v in raw["thumb_yaw_rad"].items()}
+        out["thumb_yaw_rad"] = {str(s): tuple(float(x) for x in v) for s, v in raw["thumb_yaw_rad"].items()}
     if "thumb_1_rad" in raw:
-        out["thumb_1_rad"] = (float(raw["thumb_1_rad"][0]), float(raw["thumb_1_rad"][1]))
+        out["thumb_1_rad"] = tuple(float(x) for x in raw["thumb_1_rad"])
     return DirectConfig(**out)
 
 
 def _unit(x: float, a: float, b: float) -> float:
     """0 at a, 1 at b, clipped."""
     return min(max((x - a) / (b - a), 0.0), 1.0)
+
+
+def piecewise(x: float, xs: Sequence[float], ys: Sequence[float]) -> float:
+    """Linear between the points (xs rising or falling), clipped to ys at the ends."""
+    if xs[0] > xs[-1]:
+        xs, ys = xs[::-1], ys[::-1]
+    if x <= xs[0]:
+        return ys[0]
+    for (x0, y0), (x1, y1) in zip(zip(xs, ys), zip(xs[1:], ys[1:])):
+        if x <= x1:
+            return y0 + (x - x0) / (x1 - x0) * (y1 - y0)
+    return ys[-1]
 
 
 class DirectRetargeter:
@@ -122,7 +142,9 @@ class DirectRetargeter:
         out = {j: _unit(float(signals[SDK_PREFIX + "nflex_" + f]), c.finger_open[f], c.finger_full[f])
                for j, f in FINGER_JOINTS.items()}
         out["thumb_2"] = _unit(float(signals[SDK_PREFIX + "nflex_thumb"]), c.thumb_open, c.thumb_full)
-        out["thumb_1"] = _unit(float(signals[SDK_PREFIX + THUMB_YAW]), *self.yaw)
+        t1 = c.thumb_1_rad
+        rad = piecewise(float(signals[SDK_PREFIX + THUMB_YAW]), self.yaw, t1)
+        out["thumb_1"] = (rad - t1[0]) / (t1[-1] - t1[0])
         return out
 
     def solve(self, signals: Mapping[str, float]) -> dict[str, float]:
@@ -131,7 +153,7 @@ class DirectRetargeter:
             raise DirectError(f"direct: no SDK values {missing} (is motion_acq_nova2 nova2_sdk running?)")
         out = {}
         for j, x in self.units(signals).items():
-            a, b = self.config.thumb_1_rad if j == "thumb_1" else self.limits_rad[j]
+            a, b = (self.config.thumb_1_rad[0], self.config.thumb_1_rad[-1]) if j == "thumb_1" else self.limits_rad[j]
             out[j] = a + x * (b - a)
         return out
 

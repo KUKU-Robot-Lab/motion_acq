@@ -28,7 +28,8 @@ def test_configured_method_is_direct_with_the_measured_numbers():
     assert CONFIGURED.method == "direct"
     c = CONFIGURED.direct
     assert c.finger_open["index"] == 0.27 and c.finger_full["ring"] == 0.90 and c.thumb_full == 0.70
-    assert c.thumb_yaw_rad == {"right": (0.12, -0.08), "left": (-0.07, 0.19)} and c.thumb_1_rad == (1.57, 2.0)
+    assert c.thumb_yaw_rad == {"right": (0.22, 0.12, -0.17), "left": (-0.34, -0.07, 0.35)}
+    assert c.thumb_1_rad == (0.6, 1.57, 2.0943951)  # the robot's whole thumb_1 range, home in the middle
     assert direct_config({"finger_full": 0.9}).finger_full == {f: 0.9 for f in ("index", "middle", "ring", "pinky")}
     with pytest.raises(DirectError, match="unknown keys"):
         direct_config({"finger_range": 1.0})
@@ -76,15 +77,21 @@ def test_measured_open_hand_is_straight_and_fist_is_closed():
         assert min(q[j] for j in ("index_1", "middle_1", "ring_1", "pinky_1")) > 1.4
         t, i, m, r, x = across
         q = d.solve(sdk(t, i, m, r, r, x))
-        assert q["thumb_1"] == pytest.approx(2.0) and q["index_1"] < 0.05
+        assert 1.8 < q["thumb_1"] < 2.0 and q["index_1"] < 0.05  # the 20:42 across pose, short of today's ends
 
 
 def test_each_glove_has_its_own_thumb_rotation_ends():
     right = DirectRetargeter(CONFIGURED.direct, LIMITS, "right")
     left = DirectRetargeter(CONFIGURED.direct, LIMITS, "left")
-    assert right.solve(sdk(yaw=-0.08))["thumb_1"] == pytest.approx(2.0)
-    assert left.solve(sdk(yaw=0.19))["thumb_1"] == pytest.approx(2.0)
-    assert left.solve(sdk(yaw=-0.3))["thumb_1"] == pytest.approx(1.57)  # past beside (spread): stays home
+    # 10.11 user: thumb_1's whole range; beside (the 20:42 pose) stays home
+    for d, (spread, beside, across) in ((right, (0.22, 0.12, -0.17)), (left, (-0.34, -0.07, 0.35))):
+        assert d.solve(sdk(yaw=beside))["thumb_1"] == pytest.approx(1.57)
+        assert d.solve(sdk(yaw=across))["thumb_1"] == pytest.approx(2.0943951)
+        assert d.solve(sdk(yaw=spread))["thumb_1"] == pytest.approx(0.6)
+        assert d.solve(sdk(yaw=across + (across - beside)))["thumb_1"] == pytest.approx(2.0943951)  # clipped
+        half = d.solve(sdk(yaw=(beside + across) / 2))["thumb_1"]
+        assert half == pytest.approx((1.57 + 2.0943951) / 2)
+    assert left.solve(sdk(yaw=-0.2))["thumb_1"] < 1.57 < left.solve(sdk(yaw=0.0))["thumb_1"]
 
 
 def test_missing_sdk_values_say_which_node_to_start():
@@ -105,7 +112,7 @@ def test_fake_glove_sdk_values_map_back_to_its_robot_pose(side, pose):
             {SDK_PREFIX + k: v for k, v in synthetic_sdk(angles, side, config).items()})
         for j in ("thumb_2", "index_1", "middle_1", "ring_1", "pinky_1"):
             assert q[j] == pytest.approx(min(angles[f"q_{j}"], LIMITS[j][1]), abs=1e-6)  # synthetic ends 1e-4 past
-        lo, hi = config.thumb_1_rad
+        lo, hi = config.thumb_1_rad[0], config.thumb_1_rad[-1]
         assert q["thumb_1"] == pytest.approx(min(max(angles["q_thumb_1"], lo), hi), abs=1e-6)
 
 
@@ -127,7 +134,7 @@ def test_controller_follows_the_sdk_without_a_reference_take():
         out = rig.step(sdk(thumb=0.70, index=0.9, middle=0.9, ring=0.9, pinky=0.9, yaw=-0.08))
     assert out.record["method"] == "direct"
     q = out.record["q_command_rad"]
-    assert q["index_1"] > 1.4 and q["ring_1"] > 1.4 and q["thumb_2"] > 0.4 and q["thumb_1"] > 1.9
+    assert q["index_1"] > 1.4 and q["ring_1"] > 1.4 and q["thumb_2"] > 0.4 and q["thumb_1"] > 1.8
     assert out.record["features"]["unit_index_1"] == pytest.approx(1.0)
 
 

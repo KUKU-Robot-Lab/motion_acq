@@ -47,8 +47,14 @@ direct:
   finger_full: {index: 0.82, middle: 0.88, ring: 0.90, pinky: 0.90}
   thumb_open: 0.30
   thumb_full: 0.70
-  thumb_yaw_rad: {right: [0.12, -0.08], left: [-0.07, 0.19]}
-  thumb_1_rad: [1.57, 2.0]
+  # 10.11 user: use thumb_1's whole range (0.6 .. 2.094), as Nova2Dex does. thumb_0_x during the 20:54
+  # teleop (after the SDK re-calibration), 0.5/99.5 percentile: left -0.34 .. 0.35 (median 0.00), right
+  # 0.17 .. -0.17 (median -0.03); with [1.57, 2.0] thumb_1 sat at an end 30% (left) / 55% (right) of the
+  # time. Three points per glove: [the other way (spread), beside the index (20:42 pose, = home 1.57),
+  # across the palm]. The right glove barely reads past beside on the spread side (up to ~0.22), so its
+  # lower segment is steep (0.10 rad of glove for 0.97 rad of robot); retune if the right thumb jitters there.
+  thumb_yaw_rad: {right: [0.22, 0.12, -0.17], left: [-0.34, -0.07, 0.35]}
+  thumb_1_rad: [0.6, 1.57, 2.0943951]
 # Reference at [켜기] (10.06 user): when the robot hand reaches home (fingers straight, thumb
 # beside the index), the operator holds that same pose still for `seconds`; the take
 # re-zeroes the saved map and re-aligns the glove hand model, then the hand follows the glove.
