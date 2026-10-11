@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import sys
 import time
 from datetime import datetime
@@ -45,6 +46,36 @@ BASELINE_S = 1.0
 def signed16(raw: int) -> int:
     raw &= 0xFFFF
     return raw - 0x10000 if raw & 0x8000 else raw
+
+
+IIO_ROOT = Path("/sys/bus/iio/devices")
+
+
+def find_accel(root: Path = IIO_ROOT) -> Path | None:
+    """The head D435i accelerometer (kernel HID sensor, readable without sudo), or None."""
+    for dev in sorted(root.glob("iio:device*")):
+        name = dev / "name"
+        if name.is_file() and name.read_text().strip() == "accel_3d":
+            return dev
+    return None
+
+
+def camera_pitch_deg(x: float, y: float, z: float) -> float:
+    """Optical-axis elevation from the raw D435i HID accel (negative = looks down).
+
+    The raw z axis points out of the back of the camera: at the arm4090 home it
+    reads -72.1 deg, against -72.8 from the depth table plane (10.12)."""
+    return -math.degrees(math.atan2(z, math.hypot(x, y)))
+
+
+def read_pitch(dev: Path | None) -> float | None:
+    if dev is None:
+        return None
+    try:
+        x, y, z = (int((dev / f"in_accel_{a}_raw").read_text()) for a in "xyz")
+    except (OSError, ValueError):
+        return None
+    return camera_pitch_deg(x, y, z)
 
 
 def contact(goal: float, present: float, current_ma: float, baseline_ma: float, *,
@@ -83,6 +114,8 @@ def main() -> int:
     def present() -> float:
         return tick_to_deg(driver.bus.read4(tilt_id, ADDR_PRESENT_POSITION))
 
+    accel = find_accel()
+    print(f"camera IMU: {accel or 'not found (pitch column stays empty)'}", flush=True)
     driver.start()
     reason = "reached --stop-deg"
     limit = None
@@ -101,16 +134,18 @@ def main() -> int:
         t0 = time.monotonic()
         with out.open("w", newline="") as f:
             log = csv.writer(f)
-            log.writerow(["t_s", "goal_deg", "present_deg", "current_ma"])
+            log.writerow(["t_s", "goal_deg", "present_deg", "current_ma", "camera_pitch_deg"])
             last_print = goal
             while True:
                 goal = max(args.stop_deg, goal - step)
                 driver.command(home_pan, goal)
                 time.sleep(1.0 / RATE_HZ)
-                at, amps = present(), current_ma()
-                log.writerow([f"{time.monotonic() - t0:.3f}", f"{goal:.2f}", f"{at:.2f}", f"{amps:.0f}"])
+                at, amps, pitch = present(), current_ma(), read_pitch(accel)
+                pitch_s = "" if pitch is None else f"{pitch:.2f}"
+                log.writerow([f"{time.monotonic() - t0:.3f}", f"{goal:.2f}", f"{at:.2f}", f"{amps:.0f}", pitch_s])
                 if last_print - goal >= 5.0:
-                    print(f"  goal {goal:6.1f}  at {at:6.1f}  current {amps:5.0f} mA", flush=True)
+                    print(f"  goal {goal:6.1f}  at {at:6.1f}  current {amps:5.0f} mA  camera {pitch_s or '-'} deg",
+                          flush=True)
                     last_print = goal
                 why = contact(goal, at, amps, baseline, max_lag_deg=args.max_lag_deg,
                               current_margin_ma=args.current_margin_ma)
