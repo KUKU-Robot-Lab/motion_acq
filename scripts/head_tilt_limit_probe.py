@@ -87,7 +87,7 @@ def main() -> int:
     reason = "reached --stop-deg"
     limit = None
     try:
-        driver.move_to(home_pan, home_tilt, speed_deg_s=HOME_SPEED_DEG_S)
+        driver.move_to(home_pan, home_tilt, speed_deg_s=HOME_SPEED_DEG_S, tolerance_deg=cfg.home_tolerance_deg)
         samples = []
         t_end = time.monotonic() + BASELINE_S
         while time.monotonic() < t_end:
@@ -129,7 +129,8 @@ def main() -> int:
         reason = "Ctrl+C"
     finally:
         try:
-            driver.move_to(home_pan, home_tilt, speed_deg_s=HOME_SPEED_DEG_S, settle_timeout_s=10.0)
+            driver.move_to(home_pan, home_tilt, speed_deg_s=HOME_SPEED_DEG_S,
+                            tolerance_deg=cfg.home_tolerance_deg, settle_timeout_s=10.0)
         finally:
             driver.stop()
     print(f"stopped: {reason}; highest tilt reached {limit if limit is None else round(limit, 1)} deg; "
