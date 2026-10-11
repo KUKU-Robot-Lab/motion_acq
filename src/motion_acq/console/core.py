@@ -29,7 +29,7 @@ SPACE_UNITS = ("record", "arm", "arm_right", "arm_left", "head")
 ALLOWED_KEYS = {" ", "r", "q", "h", "\x1b", "\n", "y\n", "n\n"}
 CONFIRM_TTL_S = 120.0
 DEFAULT_SETTINGS = {"user": "", "arm_side": "right", "scale": units.DEFAULT_SCALE,
-                    "task": "teleop demonstration", "episodes": 10,
+                    "task": "teleop demonstration", "episodes": 10, "solo_s": 60,
                     "webxr_arm_ok": ""}  # set once by the direction check: arms may follow the headset view
 SENSECOM = ROOT / "ros_ws/install/senseglove_com/share/senseglove_com/Linux/SenseCom_Linux_Latest/SenseCom.x86_64"
 HAND_NODE_VISIBLE_S = 20.0
@@ -74,6 +74,8 @@ class Console:
         self.space_target: str | None = None
         self.events: collections.deque = collections.deque(maxlen=40)
         self.jobs: dict[str, dict] = {}
+        self.solo_state: dict | None = None  # [혼자 녹화] stage and seconds left
+        self._solo_stop = threading.Event()
         self.pending: dict[str, tuple[str, Launch, float]] = {}  # key -> (token, launch, time)
         self.lock = threading.RLock()
         self.probes = Probes(station, lambda: self.mode) if probes else None
@@ -135,6 +137,8 @@ class Console:
                 clean["task"] = str(values["task"])[:200]
             if "episodes" in values:
                 clean["episodes"] = max(1, min(500, int(float(values["episodes"]))))
+            if "solo_s" in values:  # [혼자 녹화] length (10.12 user: 60 s)
+                clean["solo_s"] = max(5, min(600, int(float(values["solo_s"]))))
             self.settings = clean
             self._settings_path().write_text(json.dumps(clean, ensure_ascii=False, indent=1))
             return clean
@@ -227,6 +231,20 @@ class Console:
         The arm then closes the hands to the fist (hand_link), plays rest -> home, and at home the hands
         open. All at once (arm / record) the hands are set back to auto first, so they follow the gloves
         when the arms follow; one arm alone leaves its hand's [홈] / [따라가기] as the operator set it."""
+        plan = self._arm_hands_plan(arm)
+        if isinstance(plan, dict):
+            return plan
+        sides, launches, note = plan
+        if len(launches) == 1:
+            return self._gate(arm, confirm=confirm, token=token, extra=extra + note)
+        reply, approved = self._approve(arm.key, launches, title=arm.title,
+                                        summary=arm.summary + note + extra, confirm=confirm, token=token)
+        if reply is not None:
+            return reply
+        return self._job(arm.key, lambda: self._arm_with_hands_job(sides, approved))
+
+    def _arm_hands_plan(self, arm: Launch) -> dict | tuple[tuple[str, ...], list[Launch], str]:
+        """(arm sides with hands, launches ending with the arm, note) or an error reply."""
         sides = self._arm_hand_sides(arm.key)
         one_arm = arm.key not in ("arm", "record")
         note = ONE_ARM_HAND_NOTE if one_arm else HAND_LINK_NOTE
@@ -249,14 +267,8 @@ class Console:
         if problems:
             return {"ok": False, "error": " / ".join(problems)}
         launches += commands
-        if not launches:
-            return self._gate(arm, confirm=confirm, token=token, extra=extra + note)
         launches.append(arm)
-        reply, approved = self._approve(arm.key, launches, title=arm.title,
-                                        summary=arm.summary + note + extra, confirm=confirm, token=token)
-        if reply is not None:
-            return reply
-        return self._job(arm.key, lambda: self._arm_with_hands_job(sides, approved))
+        return sides, launches, note
 
     def _arm_with_hands_job(self, sides: tuple[str, ...], launches: list[Launch]) -> str:
         commands = [launch for launch in launches[:-1] if launch.key.startswith("task_hand_")]
@@ -410,6 +422,11 @@ class Console:
             fn = {"app": self._quest_app, "view": self._quest_view, "connect": self._quest_connect,
                   "start": self._quest_start, "offhead": self._quest_offhead}[arg]
             return self._job("quest", fn)
+        if kind == "solo":
+            return self.solo(confirm=confirm, token=token)
+        if kind == "solo_stop":
+            self._solo_stop.set()
+            return {"ok": True}
         if kind == "quest" and arg == "front":
             return self._job("front", self._quest_front)
         if kind == "glove" and arg == "connect":
@@ -618,6 +635,116 @@ class Console:
             steps.append(self._quest_connect())
         steps.append(self._quest_start())
         return " / ".join(steps)
+
+    # -- [혼자 녹화] (10.12 user: one operator, no assistant) ----------------------------------------
+    def solo(self, *, confirm: bool = False, token: str = "") -> dict:
+        """Start what is missing (neck, hands + recorder for both arms) with one confirmation, then the
+        run (console.solo): countdown, front, neck + arms + hands, record solo_s, save, home."""
+        if self.jobs.get("solo", {}).get("state") == "running":
+            return {"ok": False, "error": "혼자 녹화가 이미 진행 중"}
+        source = gates.quest_source(self)
+        problems = []
+        if source is None:
+            problems.append("Quest 자세 입력 없음: 머리(Quest) [연결]·[시작] 먼저")
+        elif source == "external":
+            problems.append(gates.external_quest(self))
+        elif source == "view" and self.mode == "real" and not self.settings.get("webxr_arm_ok"):
+            problems.append("머리(Quest) > 방향 확인 먼저")
+        others = [k for k in ("arm", "arm_right", "arm_left") if self.sup.is_running(k)]
+        if others:
+            problems.append(f"팔 원격조작({', '.join(others)})을 먼저 정지: 혼자 녹화는 녹화 칸이 양팔을 움직인다")
+        head = None
+        if self.station.has_head and not self.sup.is_running("head"):
+            problems += self.blockers("head")
+            head = self.build("head")
+        plan: tuple[tuple[str, ...], list[Launch], str] | None = None
+        if not self.sup.is_running("record"):
+            if self.settings["arm_side"] != "both":
+                self.update_settings({"arm_side": "both"})
+            problems += self.blockers("record")
+            if not problems:
+                arm_plan = self._arm_hands_plan(self.build("record"))
+                if isinstance(arm_plan, dict):
+                    return arm_plan
+                plan = arm_plan
+        if problems:
+            return {"ok": False, "error": " / ".join(problems)}
+        launches = ([head] if head else []) + (plan[1] if plan else [])
+        seconds = int(self.settings["solo_s"])
+        summary = (f"혼자 녹화 {seconds} 초: " + ("목·손·녹화(양팔)를 켜고 홈에 오면 " if launches else "")
+                   + "10 초 카운트다운(마지막 5 초는 로봇 정면을 보고 가만히, 0 에서 정면 저장) → 목·양팔·양손이 "
+                   f"같이 따라가며 녹화 → {seconds} 초 뒤 저장, 모두 홈으로. 문제가 생기면 녹화가 팔을 홈으로 보내고 목도 홈.")
+        reply, approved = self._approve("solo", launches, title=f"혼자 녹화 ({seconds} 초)", summary=summary,
+                                        confirm=confirm, token=token)
+        if reply is not None:
+            return reply
+        self._solo_stop.clear()
+        sides = plan[0] if plan else ()
+        return self._job("solo", lambda: self._solo_job(approved, sides, seconds))
+
+    def _solo_job(self, launches: list[Launch], sides: tuple[str, ...], seconds: int) -> str:
+        from motion_acq.console import solo
+        from motion_acq.console.probes import front_request
+        from motion_acq.utils import speech
+
+        def say(text: str) -> None:
+            speech.say(text, lang="ko", interrupt=text in ("시작", solo.LOOK))
+
+        def record_phase() -> str | None:
+            if not self.sup.is_running("record"):
+                return None
+            ph = phases.phase("record", self.sup.log_tail("record", 60))
+            return ph[1] if ph else ""
+
+        def set_front() -> tuple[bool, str]:
+            if gates.quest_source(self) != "view" or self.mode != "real":
+                return True, "정면 없이 (가짜 Quest / HandUMI 앱)"
+            reply = front_request("POST", timeout=2.0) or {"ok": False, "text": "quest-view 가 답하지 않는다"}
+            return bool(reply.get("ok")), str(reply.get("text", ""))
+
+        def head_locked() -> bool | None:
+            if not self.station.has_head or not self.sup.is_running("head") or self.head_udp is None:
+                return None
+            rec = self.head_udp.get()
+            return None if rec is None else bool(rec.get("locked"))
+
+        def send(key: str, text: str) -> None:
+            self.sup.send_key(key, text)
+            self.intent("key", key=key, text=repr(text), by="solo")
+
+        def status(stage: str, left: float | None) -> None:
+            self.solo_state = {"stage": stage, "left": None if left is None else round(left, 1),
+                               "seconds": seconds}
+
+        threading.Thread(target=speech.prefetch, args=(solo.PHRASES,), daemon=True, name="solo-prefetch").start()
+        try:
+            status("켜는 중", None)
+            head = [launch for launch in launches if launch.key == "head"]
+            for launch in head:
+                result = self._spawn(launch, confirmed=True)
+                if not result.get("ok"):
+                    raise RuntimeError(f"목 시작 실패: {result.get('error')}")
+            rest = [launch for launch in launches if launch.key != "head"]
+            if rest:
+                self._arm_with_hands_job(sides, rest)
+            io = solo.SoloIO(say=say, now=time.monotonic, sleep=time.sleep, record_phase=record_phase,
+                             send=send, set_front=set_front, head_locked=head_locked,
+                             stop_requested=self._solo_stop.is_set, status=status)
+            if head:  # the neck reports after torque on and the walk home
+                deadline = time.monotonic() + 60.0
+                while head_locked() is not True or (self.head_udp and (self.head_udp.get() or {}).get("returning")):
+                    if time.monotonic() > deadline or not self.sup.is_running("head"):
+                        raise RuntimeError("목이 home 에 잠긴 채 준비되지 않았다: 목 로그 확인")
+                    time.sleep(0.2)
+            text = solo.run(io, seconds)
+            self.event("info", f"혼자 녹화: {text}")
+            return text
+        except solo.SoloAbort as exc:
+            if str(exc) != "중지":
+                speech.say(f"혼자 녹화를 멈췄습니다. {exc}", lang="ko")
+            raise RuntimeError(f"혼자 녹화 멈춤: {exc}") from exc
+        finally:
+            self.solo_state = None
 
     def _quest_front(self) -> str:
         """[정면 맞추기] (10.11): quest-view keeps the headset pose of now as the robot's front;
@@ -872,6 +999,7 @@ class Console:
             "direction": self.direction.snapshot(),
             "sensecom_installed": SENSECOM.exists(),
             "jobs": dict(self.jobs),
+            "solo": self.solo_state,
             "events": list(self.events)[-12:],
         }
 

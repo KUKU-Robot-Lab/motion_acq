@@ -887,3 +887,38 @@ def test_front_button_asks_quest_view(console, monkeypatch):
                         lambda method="GET", timeout=0.5: {"ok": False, "text": "고개가 움직였습니다 (9°): 다시"})
     with pytest.raises(RuntimeError, match="고개가"):
         console._quest_front()
+
+
+def test_solo_starts_what_is_missing_with_one_confirmation(console, monkeypatch):
+    """10.12 user: one button for the neck, the hands and the recorder (both arms), then the run."""
+    monkeypatch.setattr("motion_acq.console.gates.quest_source", lambda c: "mock")
+    monkeypatch.setattr(console, "blockers", lambda key: [])
+    monkeypatch.setattr(console.sup, "is_running", lambda key: False)
+    monkeypatch.setattr(console, "_arm_hands_plan",
+                        lambda arm: (("right", "left"), [arm], ""))
+    runs = []
+    monkeypatch.setattr(console, "_solo_job", lambda launches, sides, seconds: runs.append(
+        ([launch.key for launch in launches], sides, seconds)) or "done")
+    reply = console.solo()
+    if reply.get("need_confirm"):  # fake mode moves no robot: no confirmation needed
+        reply = console.solo(confirm=True, token=reply["token"])
+    assert reply["ok"]
+    for _ in range(50):
+        if runs:
+            break
+        time.sleep(0.01)
+    assert runs == [(["head", "record"], ("right", "left"), 60)]
+    assert console.settings["arm_side"] == "both"
+
+
+def test_solo_refuses_while_an_arm_unit_runs(console, monkeypatch):
+    monkeypatch.setattr("motion_acq.console.gates.quest_source", lambda c: "mock")
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key == "arm_right")
+    reply = console.solo()
+    assert not reply["ok"] and "arm_right" in reply["error"]
+
+
+def test_solo_length_is_a_setting():
+    from motion_acq.console import core
+
+    assert core.DEFAULT_SETTINGS["solo_s"] == 60

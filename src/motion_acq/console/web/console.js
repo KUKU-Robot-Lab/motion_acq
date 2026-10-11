@@ -278,16 +278,26 @@ function nodeRecord(s) {
   const items = s.record_checklist || [];
   const chips = `<div class="checklist">${items.map((i) => `<span class="check ${i.ok ? "ok" : "miss"}" title="${esc(i.detail)}">${i.ok ? "✓" : "!"} ${esc(i.name)}</span>`).join("")}</div>`;
   const n = { title: "녹화", dev: "LeRobot 데이터셋 · 모든 스트림 + 영상" };
+  // 10.12 user: one operator, no assistant
+  const solo = s.solo;
+  if (solo || jobRunning("solo")) {
+    const left = solo && solo.left !== null && solo.left !== undefined ? ` ${Math.ceil(solo.left)} 초` : "";
+    return { ...n, tone: "live", state: `혼자 녹화: ${solo ? solo.stage : "시작 중"}${left}`, sub: "음성 안내를 따라가세요", body: chips,
+             actions: btn("중지 (저장하고 홈)", { "data-action": "solo_stop" }, "danger") };
+  }
+  const soloBtn = btn(`혼자 녹화 (${s.settings.solo_s} 초)`, { "data-action": "solo",
+    title: "목·손·녹화를 켜고 10 초 카운트다운 → 정면 자동 저장 → 같이 따라가며 녹화 → 저장, 모두 홈" }, "go big");
+  const soloLine = job("solo").state && job("solo").state !== "running" ? jobLine("solo") : "";
   if (!running("record")) {
     const st = unitState("record");
     const armOn = running("arm");
-    return { ...n, tone: st ? st[0] : "mute", state: st ? st[1] : "대기", sub: "", body: chips,
-             actions: btn(`<svg><use href="#i-rec"/></svg>녹화 시작`, { "data-start": "record", disabled: armOn,
+    return { ...n, tone: st ? st[0] : "mute", state: st ? st[1] : "대기", sub: soloLine, body: chips,
+             actions: soloBtn + btn(`<svg><use href="#i-rec"/></svg>녹화 시작`, { "data-start": "record", disabled: armOn,
                           title: armOn ? "팔 원격조작을 먼저 정지" : "" }, "danger big") };
   }
   const st = unitState("record") || ["live", "실행 중"];
-  return { ...n, tone: st[0], state: st[1], sub: "", body: chips,
-           actions: btn("Space 시작/저장", { "data-key": "record", "data-text": " " }, "key") +
+  return { ...n, tone: st[0], state: st[1], sub: soloLine, body: chips,
+           actions: soloBtn + btn("Space 시작/저장", { "data-key": "record", "data-text": " " }, "key") +
                     btn("R 다시", { "data-key": "record", "data-text": "r" }, "key") +
                     btn("Q 마치기", { "data-key": "record", "data-text": "q" }, "key") +
                     btn("정지", { "data-stop": "record" }, "danger") };
@@ -494,7 +504,8 @@ function detailRecord(s) {
   const rows = (s.record_checklist || []).map((i) => [i.name, i.detail, i.ok ? "ok" : "warn"]);
   return `<h3>녹화</h3>${facts(rows)}
     <div class="row"><label class="field grow">작업 설명 <input type="text" id="task" maxlength="200" value="${esc(s.settings.task)}"></label>
-      <label class="field">에피소드 <input type="number" id="episodes" min="1" max="500" step="1" value="${esc(s.settings.episodes)}"></label></div>
+      <label class="field">에피소드 <input type="number" id="episodes" min="1" max="500" step="1" value="${esc(s.settings.episodes)}"></label>
+      <label class="field">혼자 녹화 초 <input type="number" id="solo_s" min="5" max="600" step="5" value="${esc(s.settings.solo_s)}"></label></div>
     <p class="hint">시작하면 팔이 차렷 → home 으로 간다. Space 로 에피소드 시작/저장, R 은 버리고 다시, Q 는 마침. 빠진 스트림(! 표시)은 데이터셋에 안 들어간다.</p>
     <div class="actions">${logButton("record")}</div>`;
 }
@@ -652,7 +663,8 @@ document.addEventListener("click", async (ev) => {
 
 document.addEventListener("change", (ev) => {
   const t = ev.target;
-  const field = { scale: ["scale", Number], task: ["task", String], episodes: ["episodes", Number], user: ["user", String] }[t.id];
+  const field = { scale: ["scale", Number], task: ["task", String], episodes: ["episodes", Number], user: ["user", String],
+                  solo_s: ["solo_s", Number] }[t.id];
   if (field) act("settings", { [field[0]]: field[1](t.value) }, null, "설정 저장");
 });
 
