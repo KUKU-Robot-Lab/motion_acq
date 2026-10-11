@@ -148,3 +148,69 @@ def test_wrist_drift_at_rest_is_aligned_before_the_path(monkeypatch):
         assert np.abs(env.streamer.feedback()["right"] - HOME["right"]).max() < 0.02
     finally:
         backend.disconnect()
+
+
+class Keys:
+    """A terminal the operator types lines into (the console sends them through the pty)."""
+
+    def __init__(self, *lines: str) -> None:
+        self.lines, self.asked = list(lines), 0
+
+    def isatty(self) -> bool:
+        return True
+
+    def readline(self) -> str:
+        self.asked += 1
+        return self.lines.pop(0) if self.lines else ""
+
+
+def test_failed_return_recovers_home_then_rest_instead_of_dropping(monkeypatch, caplog):
+    """10.11 left arm: the return home tripped the following error (j7 stuck) and the only choice was
+    to support the arm and switch off. Now: h = back home slowly (streamer restarted from where it
+    stopped), then r = the stored path to rest, and the motors go off at rest without asking."""
+    backend, env, home = fake_right(monkeypatch, feedforward=True)
+    backend.connect()
+    backend.home(home)
+    odd = HOME["right"] + np.deg2rad([10.0, 5.0, 0.0, -15.0, 0.0, 0.0, 20.0])
+    env.streamer.set_targets({"right": odd.astype(np.float32)})
+    env.streamer.wait_until_targets(timeout_s=10.0, tolerance_rad=0.05)
+    env.streamer._error = RuntimeError("following error (test)")  # the streamer dies where it is
+    env.streamer._stop.set()
+    keys = Keys("x\n", "h\n", "r\n")
+    monkeypatch.setattr("sys.stdin", keys)
+    with caplog.at_level("INFO"):
+        backend.disconnect()
+    assert keys.asked == 3 and not keys.lines              # x asked again; h home; r rest; no Enter needed
+    assert "restarting it from the measured pose" in caplog.text
+    assert "Recovery: arms at home" in caplog.text and "Recovery: arms at rest" in caplog.text
+    motors = backend.fake_sdk.arms[env.settings.right_port]._arm.get_motors()
+    assert max(abs(m.position) for m in motors) < 0.1      # at rest when the motors went off
+
+
+def test_recovery_enter_alone_switches_off_where_it_holds(monkeypatch, caplog):
+    backend, env, home = fake_right(monkeypatch, feedforward=True)
+    backend.connect()
+    backend.home(home)
+    keys = Keys("\n")
+    monkeypatch.setattr("sys.stdin", keys)
+    with caplog.at_level("ERROR"):
+        backend.disconnect()
+    assert keys.asked == 1 and "will drop" in caplog.text
+
+
+def test_teleop_target_just_past_a_limit_is_clipped_not_frozen(monkeypatch):
+    """10.11 left arm: j7 -1.5829 against the -1.5708 limit held the whole arm; now clipped onto it."""
+    backend, env, home = fake_right(monkeypatch, feedforward=True)
+    names = list(backend.joint_names)
+    j7 = names.index("openarm_right_joint7")
+    lower, upper = env.joint_limits["openarm_right_joint7"]
+    q = np.asarray(home, dtype=np.float64).copy()
+    q[j7] = upper + 0.012
+    out = env._split_side_q(q, names, "right", clip_rad=0.1)
+    assert out[6] == pytest.approx(upper, abs=1e-6)
+    q[j7] = upper + 0.3                                       # far past: still refused (held)
+    with pytest.raises(ValueError, match="outside"):
+        env._split_side_q(q, names, "right", clip_rad=0.1)
+    q[j7] = upper + 0.012
+    with pytest.raises(ValueError):                           # home / paths keep the strict check
+        env._split_side_q(q, names, "right")

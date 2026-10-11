@@ -147,7 +147,7 @@ def fresh_ros(console, ros: dict | None) -> dict | None:
     return ros if ros.get("domain") == expected_domain(console) else None
 
 
-def hand_blockers(console, side: str, ros: dict | None, *, starting: bool) -> list[str]:
+def hand_blockers(console, side: str, ros: dict | None, *, starting: bool, need_glove: bool = False) -> list[str]:
     ros = fresh_ros(console, ros)
     if ros is None:
         return [f"ROS 상태(도메인 {expected_domain(console)}) 확인 중: 잠시 뒤 다시"]
@@ -164,6 +164,6 @@ def hand_blockers(console, side: str, ros: dict | None, *, starting: bool) -> li
         out.append(f"/hand_{side}/angle_set·angle_target 을 다른 노드({who})가 발행 중(s2r pd?): 그쪽 손 제어를 먼저 끌 것")
     elif not starting and (count != len(nodes) or ours not in nodes):
         out.append(f"/hand_{side} 명령 발행자를 확인하지 못했다(우리 노드 {ours} 가 아직 안 보임): 잠시 뒤 다시")
-    if not (ros.get("glove_topics") or {}).get(side) and console.mode == "real":
+    if need_glove and not (ros.get("glove_topics") or {}).get(side) and console.mode == "real":
         out.append("장갑 토픽 없음: 장갑 연결과 드라이버 먼저")
     return out

@@ -170,6 +170,15 @@ function nodeGlove(s, side) {
   return { ...n, tone: "mute", state: "미연결", sub: jobLine("glove") || "장갑 전원을 켜고 [연결]", actions: connect };
 }
 
+// 10.11 user: a failed return must not end in a drop. The arm holds and asks: h / r / Enter alone.
+const recovering = (key) => /\[복구\]/.test(unit(key).prompt || "");
+function recoveryButtons(key) {
+  return btn("다시 홈", { "data-send": key, "data-text": "h\n", title: "멈춘 자리에서 천천히 home 으로 가서 버틴다 (분석용)" }, "primary") +
+         btn("차렷", { "data-send": key, "data-text": "r\n", title: "home 에서 저장 경로로 차렷 (손은 주먹) → 모터 끔" }, "") +
+         btn("모터 끄기", { "data-send": key, "data-text": "\n", "data-confirm": "팔을 손으로 받쳤나? 모터가 꺼지면 팔이 떨어진다.",
+                            title: "팔을 받친 뒤: 그 자리에서 모터를 끈다" }, "danger small");
+}
+
 function nodeArm(s, side) {
   const key = `arm_${side}`;
   const can = ((s.probes || {}).can || {})[side] || {};
@@ -188,13 +197,16 @@ function nodeArm(s, side) {
     return { ...n, tone: st ? st[0] : failed ? "bad" : (can.up && can.fd || !real() ? "ok" : "warn"),
              state: st ? st[1] : "꺼짐 (차렷)", sub: failed || canText,
              actions: btn("홈", { "data-start": key, disabled: busy, title: busy ? "전체(팔·녹화)가 실행 중" :
-               "차렷 → 저장 경로 → home (손은 주먹, home 에서 펼침). 이 팔만 움직인다" }, "primary") };
+               "차렷 → 저장 경로 → home. 손은 주먹 그대로(장갑 필요 없음). 이 팔만 움직인다" }, "primary") };
   }
   const st = unitState(key) || ["live", "실행 중"];
+  if (recovering(key))
+    return { ...n, tone: "bad", state: (unit(key).phase || [, "멈춤"])[1], sub: "팔은 그 자리에서 버티는 중 (정지 중이어도 고를 수 있다)",
+             actions: recoveryButtons(key) };
   return { ...n, tone: st[0], state: st[1], sub: canText,
            actions: btn("따라가기", { "data-key": key, "data-text": " ", title: "Space: 이 팔이 컨트롤러를 따라간다" }, "key") +
                     btn("홈", { "data-key": key, "data-text": "h", title: "H: 따라가던 팔이 home 으로 돌아가 Space 를 기다린다" }, "key") +
-                    btn("정지", { "data-stop": key, title: "home → 차렷 → 모터 끔" }, "danger small") };
+                    btn("차렷", { "data-stop": key, title: "home → 차렷(저장 경로, 손은 주먹) → 모터 끔" }, "danger small") };
 }
 
 function driverText(s, side) {
@@ -215,25 +227,29 @@ function nodeHand(s, side) {
   const n = { title: `로봇 ${SIDE_KO[side]}손`, dev: "RH56F1 EtherCAT" };
   const manual = running(key) ? rec?.manual : null;
   const home = btn("홈", { "data-action": `hand:${side}:home`, title: "home(펼침)으로 가서 멈춘다(장갑 무시)" }, manual === "home" ? "go" : "primary");
-  const follow = btn("따라가기", { "data-action": `hand:${side}:follow`, title: "home → 1초 기준 자세 → 장갑을 따라간다(팔과 무관)" },
+  const follow = btn("따라가기", { "data-action": `hand:${side}:follow`, title: "home → 1초 기준 자세 → 장갑을 따라간다(팔과 무관, 장갑 필요)" },
                      manual === "follow" ? "go" : "primary");
+  const fist = btn("주먹", { "data-action": `hand:${side}:fist`, title: "주먹으로 쥐고 멈춘다(노드는 그대로, 팔이 home 에 와도 안 폄)" },
+                   manual === "fist" ? "go" : "");
   if (jobRunning(key)) return { ...n, tone: "live", state: "준비 중 (드라이버·노드)...", sub: "" };
   if (!running(key)) {
     const st = unitState(key);
     const failed = job(key).state === "failed" ? job(key).text : "";
     return { ...n, tone: st ? st[0] : failed ? "bad" : "mute", state: st ? st[1] : "꺼짐",
-             sub: failed || driverText(s, side), actions: home + follow };
+             sub: failed || driverText(s, side), actions: home + follow + fist };
   }
   let st = ["ok", "노드 실행 (손 꺼짐)"];
   if (rec?.fault) st = ["bad", `FAULT ${rec.fault}`];
   else if (rec?.mode === "enabled" && rec.phase === "wait_arm")
     st = manual === "home" ? ["ok", "home 에서 멈춤"] : ["ok", "home 대기: 팔이 따라가면 같이 따라감"];
+  else if (rec?.mode === "enabled" && rec.phase === "rest" && manual === "fist") st = ["ok", "주먹으로 멈춤"];
   else if (rec?.mode === "enabled") st = HAND_PHASE[rec.phase] || ["live", rec.phase || "켜짐"];
   st = unitState(key, st);
-  const how = manual === "home" ? "수동: 홈" : manual === "follow" ? "수동: 따라가기" : "자동: 팔과 같이";
+  const how = manual === "home" ? "수동: 홈" : manual === "follow" ? "수동: 따라가기" : manual === "fist" ? "수동: 주먹" : "자동: 팔과 같이";
   const sub = job(key).state === "failed" ? job(key).text : rec?.refusal || rec?.reference || how;
   return { ...n, tone: st[0], state: st[1], sub,
-           actions: home + follow + btn("끄기", { "data-action": `hand_off:${side}`, title: "주먹으로 쥔 뒤 노드를 내린다" }, "danger small") };
+           actions: home + follow + fist +
+                    btn("끄기", { "data-action": `hand_off:${side}`, title: "주먹으로 쥔 뒤 노드를 내린다 (팔이 꺼져 있을 때)" }, "danger small") };
 }
 
 function nodeRecord(s) {
@@ -397,8 +413,9 @@ function detailArm(s) {
   rows.push(["RT 한도", p.rt ? `rtprio ${p.rt.rtprio}` : "-", p.rt?.ok ? "ok" : "warn"]);
   return `<h3>로봇 팔 · OpenArm</h3>${facts(rows)}
     <div class="row"><label class="field">이동 배율 <input type="number" id="scale" min="0.1" max="1.7" step="0.1" value="${esc(s.settings.scale)}" ${["arm", "record", "arm_right", "arm_left"].some(running) ? "disabled" : ""}></label></div>
-    <p class="hint">한 팔씩: 팔 칸의 [홈] = 차렷 → 저장 경로 → home (손은 주먹, home 에서 펼침), [따라가기] = Space,
-      따라가는 중 [홈] = home 으로 돌아가 다시 기다림, [정지] = home → 차렷 → 모터 끔. 손 칸의 [홈]/[따라가기]는 팔과 따로 움직인다.
+    <p class="hint">한 팔씩: 팔 칸의 [홈] = 차렷 → 저장 경로 → home (장갑 없이, 손은 주먹 그대로), [따라가기] = Space,
+      따라가는 중 [홈] = home 으로 돌아가 다시 기다림, [차렷] = home → 차렷 → 모터 끔. 돌아가다 실패하면 팔은 그 자리에서 버티고
+      [다시 홈] / [차렷] / 받치고 [모터 끄기] 를 고른다. 손 칸의 [홈]/[따라가기]/[주먹]은 팔과 따로 움직인다.
       모두 확인되면 가운데 [전체 시작]: 양팔 + 양손, Space 하나로 같이 따라간다.</p>
     <div class="actions">${logButton("arm_right").replace("전체 로그", "오른팔 로그")}${logButton("arm_left").replace("전체 로그", "왼팔 로그")}${logButton("arm").replace("전체 로그", "전체 시작 로그")}</div>`;
 }
@@ -498,6 +515,11 @@ function renderAlerts(s) {
   for (const [key, u] of Object.entries(s.units || {})) {
     if (!u.prompt) continue;
     const yn = /\[y\/n\]/i.test(u.prompt);
+    if (recovering(key)) {
+      items.push(`<div class="alert"><p><b>${esc(unitName(key))}</b> 이 멈춰서 버티는 중: <code>${esc(u.prompt)}</code></p>
+        <div class="actions">${recoveryButtons(key)}</div></div>`);
+      continue;
+    }
     items.push(`<div class="alert ${(key.startsWith("calib") || key.startsWith("rezero")) ? "warn" : ""}"><p><b>${esc(unitName(key))}</b> 이 입력을 기다린다: <code>${esc(u.prompt)}</code></p>
       ${yn ? `<button type="button" class="btn" data-send="${esc(key)}" data-text="y&#10;">y</button><button type="button" class="btn" data-send="${esc(key)}" data-text="n&#10;">n</button>`
            : `<button type="button" class="btn danger" data-send="${esc(key)}" data-text="&#10;">Enter 보내기</button>`}</div>`);
@@ -571,7 +593,10 @@ document.addEventListener("click", async (ev) => {
   } else if (d.start) act("start", { key: d.start, opts: d.opts ? JSON.parse(d.opts) : undefined }, b, `${unitName(d.start)} 시작`);
   else if (d.stop) act("stop", { key: d.stop }, b, `${unitName(d.stop)} 정지 요청 (안전 자세로)`);
   else if (d.key !== undefined && d.text !== undefined && d.key) act("key", { key: d.key, text: d.text }, null, `${unitName(d.key)} ← ${d.text === " " ? "Space" : d.text === "h" ? "홈(H)" : d.text.trim() || "Enter"}`);
-  else if (d.send) act("key", { key: d.send, text: d.text }, b, "입력 보냄");
+  else if (d.send) {
+    if (d.confirm && !(await confirmDialog("모터 끄기", d.confirm, "", true))) return;
+    act("key", { key: d.send, text: d.text }, b, "입력 보냄");
+  }
   else if (d.action) act("action", { name: d.action }, b, "요청함");
   else if (d.log) openDrawer(d.log);
   else if (d.select) { selected = d.select; if (S) render(S); if (!S?.settings.user) setTimeout(() => $("#user")?.focus(), 50); }

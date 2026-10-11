@@ -127,7 +127,13 @@ axes (forward / left / up) while the robot stays still; [방향 맞음] allows i
   (hold the open hand still for the 1 s reference). One by one (10.11): check each arm and hand alone with
   its own [홈] / [따라가기] first; a hand's [홈] / [따라가기] overrides its arm at home or following (the
   arm's path still holds the fist) and also clears a latched FAULT. [끄기] on a hand is refused while its
-  arm runs; a hand [끄기] alone ends at the fist too.
+  arm runs ([주먹] closes it and keeps the node); a hand [끄기] alone ends at the fist too.
+  One arm's [홈] (10.11, option B) needs no glove: its hand comes up, closes ([주먹]) and stays closed at
+  home; only the hand's own [홈] / [따라가기] opens it. Arm [차렷] = home -> rest -> motors off.
+- A failed return (following error, hand not closed, ...) no longer ends in "support the arm, Enter":
+  the arm holds where it stopped and the console offers [다시 홈] (h: the streamer restarts from the
+  measured pose, slowly home, hold there to look), [차렷] (r: home -> rest) or [모터 끄기] (Enter alone,
+  support the arm first).
 - The RH56F1 EtherCAT driver is never started here: bring it up from the s2r
   console. arm5080 has no head, gloves or hands in its rig, so those cards are hidden.
 

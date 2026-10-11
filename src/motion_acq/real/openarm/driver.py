@@ -45,6 +45,10 @@ GRIPPER_RECV_CAN_ID = 0x18
 DEFAULT_KP = (70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0)
 DEFAULT_KD = (2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5)
 JOINT_LIMIT_SNAP_TOLERANCE_RAD = 1e-4
+# Teleop targets a little past a URDF limit are clipped onto it instead of freezing the whole arm
+# (10.11 left arm: IK/playback asked j7 -90.7 deg against the -90 deg limit; the arm stopped following
+# for seconds, "Holding the previous safe target"). Farther than this is still refused and held.
+TELEOP_LIMIT_CLIP_RAD = 0.1
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 # A failed start retreats along the path only from this close to it.
 RETREAT_MAX_OFFSET_RAD = 0.3
@@ -516,6 +520,7 @@ class OpenArmCanEnvironment:
         self._path_progress: dict[str, tuple[np.ndarray, int]] = {}
         self._last_limit_warning_at = {side: 0.0 for side in SIDES}
         self._hand_link: HandLink | None = None
+        self._home_call: tuple[np.ndarray, list[str]] | None = None  # the last move_home (recovery goes there)
 
     def connect(self) -> None:
         if self.arms:
@@ -558,7 +563,7 @@ class OpenArmCanEnvironment:
         )
 
     def _split_side_q(
-        self, q: np.ndarray, joint_names: list[str], side: str
+        self, q: np.ndarray, joint_names: list[str], side: str, *, clip_rad: float = JOINT_LIMIT_SNAP_TOLERANCE_RAD
     ) -> np.ndarray:
         names = [f"openarm_{side}_joint{i}" for i in range(1, ARM_DOF + 1)]
         values = np.asarray(
@@ -571,8 +576,8 @@ class OpenArmCanEnvironment:
             lower, upper = limits
             scalar = float(value)
             if (
-                scalar < lower - JOINT_LIMIT_SNAP_TOLERANCE_RAD
-                or scalar > upper + JOINT_LIMIT_SNAP_TOLERANCE_RAD
+                scalar < lower - clip_rad
+                or scalar > upper + clip_rad
             ):
                 raise ValueError(
                     f"OpenArm target {name}={scalar:.8f} is outside "
@@ -772,6 +777,7 @@ class OpenArmCanEnvironment:
         if self.streamer is None:
             raise RuntimeError("home() before move_home()")
         targets = self._split_q(q, joint_names)
+        self._home_call = (np.asarray(q, dtype=np.float32).copy(), list(joint_names))
         for side, target in targets.items():
             log.info(
                 "Moving OpenArm %s slowly to home (deg): %s at %.1f deg/s max.",
@@ -822,7 +828,7 @@ class OpenArmCanEnvironment:
         targets: dict[str, np.ndarray] = {}
         for side in self.active_sides:
             try:
-                targets[side] = self._split_side_q(q, joint_names, side)
+                targets[side] = self._split_side_q(q, joint_names, side, clip_rad=TELEOP_LIMIT_CLIP_RAD)
             except ValueError as exc:
                 now = time.monotonic()
                 if now - self._last_limit_warning_at[side] >= 1.0:
@@ -841,31 +847,97 @@ class OpenArmCanEnvironment:
         if self.streamer is not None:
             self.streamer.raise_if_failed()
 
+    def _away_from_rest(self) -> dict[str, float]:
+        assert self.streamer is not None
+        feedback = self.streamer.feedback()
+        return {side: float(np.abs(q).max()) for side, q in feedback.items()
+                if float(np.abs(q).max()) > PATH_START_TOLERANCE_RAD}
+
+    def _restart_streamer(self) -> None:
+        """A streamer that failed (following error, CAN hiccup) restarts from the measured pose: the
+        motors keep their last command meanwhile, so the new one first takes the arm where it is."""
+        assert self.streamer is not None
+        try:
+            self.streamer.raise_if_failed()
+            return
+        except RuntimeError as exc:
+            log.warning("OpenArm streamer down (%s): restarting it from the measured pose.", exc.__cause__ or exc)
+        try:
+            self.streamer.stop()
+        except BaseException:  # noqa: BLE001 - the old failure, already reported
+            pass
+        initial = {side: getattr(arm, "read_startup_q", arm.read_q)() for side, arm in self.arms.items()}
+        for side, q in initial.items():
+            log.info("OpenArm %s measured (deg): %s", side, np.round(np.rad2deg(q), 1).tolist())
+        self.streamer = OpenArmJointStreamer(self.arms, self.settings, initial)
+        self.streamer.start()
+
+    def _recover_home(self) -> None:
+        """[다시 홈] (10.11 user): from wherever the arm stopped, slowly back to home and hold there."""
+        if self._home_call is None:
+            raise RuntimeError("home pose unknown (the arm never started home)")
+        self._restart_streamer()
+        self.move_home(*self._home_call)
+        log.info("Recovery: arms at home, holding. Look, then r = to rest or h = home again.")
+
+    def _recover_rest(self) -> None:
+        """[차렷] from home: the stored path to rest (the hands close first, hand link)."""
+        if self._home_call is None:
+            raise RuntimeError("home pose unknown")
+        self._restart_streamer()
+        self.rest(*self._home_call)
+        log.info("Recovery: arms at rest.")
+
     def _confirm_power_off_away_from_rest(self) -> None:
         """Stored-path robots: the motors only go off at rest without asking.
 
-        Anywhere else the arm drops (10.04). Hold where it is and, on a
-        terminal, wait for the operator to support it before switching off.
+        Anywhere else the arm drops (10.04). Hold where it is and, on a terminal,
+        offer the recovery (10.11 user: a failed return home must not end in a
+        drop; stop, look, then go home): h = slowly back home (the streamer
+        restarts from the measured pose if it failed) and hold, r = home -> rest
+        along the stored path, Enter alone = the operator supports the arm and
+        the motors go off. Anything else asks again.
         """
         if self.streamer is None or not self.settings.home_paths:
             return
-        feedback = self.streamer.feedback()
-        away = {side: float(np.abs(q).max()) for side, q in feedback.items()
-                if float(np.abs(q).max()) > PATH_START_TOLERANCE_RAD}
+        away = self._away_from_rest()
         if not away:
             return
         try:
             self.streamer.hold()
         except RuntimeError:
-            pass  # streamer down: the motors keep their last command until disabled
-        where = ", ".join(f"{side} {np.rad2deg(v):.0f} deg from rest" for side, v in away.items())
-        log.error("OpenArm motors are about to switch off away from rest (%s): the arm will drop.", where)
-        if not sys.stdin or not sys.stdin.isatty():
-            return
-        try:
-            input(f"\n*** OpenArm {where}. Support the arm, then press Enter to switch the motors off. ***\n")
-        except (EOFError, KeyboardInterrupt):
-            pass
+            pass  # streamer down: the motors keep their last command until restarted or disabled
+        interactive = bool(sys.stdin) and sys.stdin.isatty()
+        first = True
+        while away:
+            where = ", ".join(f"{side} {np.rad2deg(v):.0f} deg from rest" for side, v in away.items())
+            if first:  # later rounds: the Recovery lines say where the arm is
+                log.error("OpenArm motors are about to switch off away from rest (%s): the arm will drop.", where)
+                first = False
+            if not interactive:
+                return
+            try:
+                answer = input(f"\n*** [복구] OpenArm {where}, holding. h = back home slowly, r = home -> rest, "
+                               "or support the arm and press Enter alone to switch the motors off. ***\n")
+            except (EOFError, KeyboardInterrupt):
+                return
+            choice = answer.strip().lower()
+            if not choice:
+                return
+            try:
+                if set(choice) == {"h"}:
+                    self._recover_home()
+                elif set(choice) == {"r"}:
+                    self._recover_rest()
+                else:
+                    log.warning("Recovery: %r is not h / r / Enter.", answer)
+            except Exception as exc:  # noqa: BLE001 - stay in the menu, the arm holds or the streamer is down
+                log.error("Recovery failed: %s", exc)
+                try:
+                    self.streamer.hold()
+                except RuntimeError:
+                    pass
+            away = self._away_from_rest()
 
     def close(self) -> None:
         error: BaseException | None = None

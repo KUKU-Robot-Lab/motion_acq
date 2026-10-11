@@ -24,7 +24,9 @@ Operator command (10.11 user: check each hand on its own before everything toget
 enables the hand and keeps it open at home, command("follow") enables it and follows the glove, whatever
 the arm does at home or in teleop; command("auto") gives the decision back to the arm (the all-at-once
 start). The arm's path and rest still hold the fist (the stored paths assume it). An explicit home /
-follow also clears a latched FAULT (the operator asks for that hand again).
+follow also clears a latched FAULT (the operator asks for that hand again). command("fist") (10.11 user,
+option B) enables the hand and holds it at rest (fist) whatever the arm does: one arm's own [홈] sends it,
+so the hand stays closed at home too and only opens on the operator's [홈] / [따라가기].
 
 Enable needs: a fresh angle_actual whose six registers are plausible (no 0,
 -1 or 65535 sentinels, within each axis' command range ± margin), and every
@@ -69,7 +71,7 @@ from motion_acq.hand.nova2 import SIDE_PREFIX, glove_joint_names
 from motion_acq.hand.retarget import HandRetargeter, HandState
 from motion_acq.hand.rh56f1 import N_SLOTS, Rh56f1Map
 
-COMMANDS = ("home", "follow", "auto")
+COMMANDS = ("home", "follow", "fist", "auto")
 MEASURED_MARGIN = 100  # registers beyond the command range still accepted as plausible
 SENTINELS = (-1, 0, 65535)
 
@@ -159,7 +161,7 @@ class HandController:
         self.rest_rad = retargeter.config.park_rad
         self._rest_registers = hand_map.to_registers(self.rest_rad, side=side)
         self.arm_phase: str | None = None  # from the arm (path / home / rest); None: no arm link heard
-        self.manual: str | None = None  # operator command: home / follow; None: the arm decides (auto)
+        self.manual: str | None = None  # operator command: home / follow / fist; None: the arm decides (auto)
         self.feedback = HapticFeedback(retargeter.config.feedback, retargeter.config.closed_rad)
         self.grip_guard = GripGuard(retargeter.config.grip_guard)
         self._speeds_sent: list[int] | None = None
@@ -235,7 +237,7 @@ class HandController:
             self.retargeter.state = HandState.IDLE
 
     def command(self, kind: str) -> None:
-        """Operator [홈] / [따라가기] for this hand alone, or auto (the arm decides again)."""
+        """Operator [홈] / [따라가기] / [주먹] for this hand alone, or auto (the arm decides again)."""
         if kind not in COMMANDS:
             raise ValueError(f"hand command must be one of {COMMANDS}, not {kind!r}")
         self.manual = None if kind == "auto" else kind
@@ -253,7 +255,8 @@ class HandController:
 
     @property
     def arm_hold(self) -> bool:
-        return self.arm_phase in ("path", "rest")
+        """Held at rest (fist): the arm moves along its path or rests, or the operator's [주먹]."""
+        return self.arm_phase in ("path", "rest") or self.manual == "fist"
 
     def set_arm_phase(self, phase: str) -> None:
         """10.06 user: [팔 시작] = rest -> home, and from home the fingers follow the glove: an arm that

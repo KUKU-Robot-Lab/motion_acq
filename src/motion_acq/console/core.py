@@ -35,6 +35,9 @@ SENSECOM = ROOT / "ros_ws/install/senseglove_com/share/senseglove_com/Linux/Sens
 HAND_NODE_VISIBLE_S = 20.0
 HAND_LINK_NOTE = (" 손: 노드가 꺼진 채 먼저 뜨고, 팔이 손을 주먹으로 쥔 뒤 차렷 -> 홈. 홈에서 손이 펴지면 1 초 동안 "
                   "손을 편 채 멈춰 있을 것(기준 자세), 그 뒤 장갑을 따라간다. 정지 때는 손을 주먹으로 쥔 뒤 차렷.")
+# one arm alone (10.11 user, option B): its hand needs the driver, not the glove, and stays closed at home
+ONE_ARM_HAND_NOTE = (" 손: 드라이버·노드를 띄워 주먹으로 쥔다(장갑 필요 없음). 팔이 차렷 -> 홈에 와도 손은 주먹 그대로: "
+                     "펴려면 손 칸 [홈] / [따라가기]. [차렷] 때도 손을 주먹으로 쥔 뒤 차렷.")
 HAND_DRIVER_UP_S = 30.0  # EtherCAT: OP and the first /hand_<side>/angle_actual
 # arm / record: everything at once (the arm_side setting); arm_right / arm_left: one arm alone (10.11 user)
 ARM_UNITS = ("arm", "record", "arm_right", "arm_left")
@@ -221,34 +224,40 @@ class Console:
         open. All at once (arm / record) the hands are set back to auto first, so they follow the gloves
         when the arms follow; one arm alone leaves its hand's [홈] / [따라가기] as the operator set it."""
         sides = self._arm_hand_sides(arm.key)
-        problems, launches = [], []
+        one_arm = arm.key not in ("arm", "record")
+        note = ONE_ARM_HAND_NOTE if one_arm else HAND_LINK_NOTE
+        problems, launches, commands = [], [], []
         for side in sides:
             if self.sup.is_running(f"hand_{side}"):
                 rec = self.hand_udp[side].get() if side in self.hand_udp else None
-                if arm.key in ("arm", "record") and (rec or {}).get("manual"):
-                    launches.append(units.hand_command(self.station, self.mode, side, "auto"))
+                if one_arm and (rec or {}).get("manual") != "fist":
+                    commands.append(units.hand_command(self.station, self.mode, side, "fist"))
+                elif not one_arm and (rec or {}).get("manual"):
+                    commands.append(units.hand_command(self.station, self.mode, side, "auto"))
                 continue
             side_ko = "오른손" if side == "right" else "왼손"
-            problems += [f"{side_ko}: {p}" for p in self._hand_precheck(side)]
+            problems += [f"{side_ko}: {p}" for p in self._hand_precheck(side, need_glove=not one_arm)]
             if self.mode == "real" and not self._hand_driver_present(side):
                 launches.append(units.hand_driver(self.station, self.mode, side))
             launches.append(self.build(f"hand_{side}"))
+            if one_arm:
+                commands.append(units.hand_command(self.station, self.mode, side, "fist"))
         if problems:
             return {"ok": False, "error": " / ".join(problems)}
+        launches += commands
         if not launches:
-            return self._gate(arm, confirm=confirm, token=token, extra=extra + HAND_LINK_NOTE)
+            return self._gate(arm, confirm=confirm, token=token, extra=extra + note)
         launches.append(arm)
         reply, approved = self._approve(arm.key, launches, title=arm.title,
-                                        summary=arm.summary + HAND_LINK_NOTE + extra, confirm=confirm, token=token)
+                                        summary=arm.summary + note + extra, confirm=confirm, token=token)
         if reply is not None:
             return reply
         return self._job(arm.key, lambda: self._arm_with_hands_job(sides, approved))
 
     def _arm_with_hands_job(self, sides: tuple[str, ...], launches: list[Launch]) -> str:
+        commands = [launch for launch in launches[:-1] if launch.key.startswith("task_hand_")]
         for launch in launches[:-1]:
-            if launch.key.startswith("task_hand_"):  # auto: the arm decides again
-                if self._wait_exit(self._spawn_task(launch), 30) != 0:
-                    raise RuntimeError(f"{launch.title} 실패: 로그 확인")
+            if launch in commands:  # after the nodes are up: fist (one arm) / auto (all at once)
                 continue
             side = launch.key.split("_", 1)[1]
             if launch.key.startswith("ecat_"):
@@ -260,8 +269,13 @@ class Console:
                 self._spawn_task_checked(launch)
         for side in sides:
             self._wait_hand(side, starting=False, need_node=True, timeout_s=HAND_NODE_VISIBLE_S)
+        for launch in commands:
+            if self._wait_exit(self._spawn_task(launch), 30) != 0:
+                raise RuntimeError(f"{launch.title} 실패: 로그 확인")
         self._spawn_task_checked(launches[-1])
-        return "팔 시작: 손 주먹 -> 차렷 -> 홈 -> 손 펴고 기다림 (Space: 팔과 손이 따라감)"
+        if launches[-1].key in ("arm", "record"):
+            return "팔 시작: 손 주먹 -> 차렷 -> 홈 -> 손 펴고 기다림 (Space: 팔과 손이 따라감)"
+        return "팔 시작: 손 주먹 -> 차렷 -> 홈 (손은 주먹 그대로, Space: 팔만 따라감)"
 
     def _approve(self, key: str, launches: list[Launch], *, title: str, summary: str, confirm: bool,
                  token: str) -> tuple[dict | None, list[Launch]]:
@@ -397,13 +411,14 @@ class Console:
                 return self._spawn(units.station_check(self.station, str(self.settings["user"])))
         if kind == "hand":
             side, _, what = arg.partition(":")
-            if what not in ("home", "follow"):
+            if what not in ("home", "follow", "fist"):
                 return {"ok": False, "error": f"unknown hand command {what!r}"}
             return self._hand_cmd(units.check_side(side), what, confirm=confirm, token=token)
         if kind == "hand_off":
             side = units.check_side(arg)
             if side in self.station.hand_link and self.arms_on(side):
-                return {"ok": False, "error": "이 손의 팔을 먼저 정지할 것: 팔이 차렷으로 돌아갈 때 손을 주먹으로 쥐어야 한다"}
+                return {"ok": False, "error": "팔이 켜져 있어 손 노드는 못 끈다(팔이 차렷으로 갈 때 손을 주먹으로 쥐어야 함): "
+                                              "손을 닫으려면 [주먹], 끄려면 팔 [차렷] 먼저"}
             return self.stop(f"hand_{side}")  # SIGINT: the node closes the hand to the fist, exits
         if kind == "driver_off":
             side = units.check_side(arg)
@@ -418,8 +433,9 @@ class Console:
         return bool(self.sup.is_running(f"ecat_{side}") or gates.driver_running_elsewhere(self, side)
                     or (ros and ((ros.get("hands") or {}).get(side) or {}).get("driver")))
 
-    def _hand_precheck(self, side: str) -> list[str]:
-        """What stops [켜기] before anything starts (the driver may still be off: it starts first)."""
+    def _hand_precheck(self, side: str, *, need_glove: bool) -> list[str]:
+        """What stops a hand command before anything starts (the driver may still be off: it starts first).
+        The glove only for following (10.11 user: the arms and [홈] / [주먹] go without the Nova)."""
         if self.closing:
             return ["콘솔이 종료 중이다"]
         out = []
@@ -431,7 +447,7 @@ class Console:
             if ros is None:
                 out.append("ROS 상태 확인 중: 잠시 뒤 다시")
             else:
-                if not (ros.get("glove_topics") or {}).get(side):
+                if need_glove and not (ros.get("glove_topics") or {}).get(side):
                     out.append("장갑 토픽 없음: 장갑 [연결] 먼저")
                 nodes = ((ros.get("hands") or {}).get(side) or {}).get("angle_set_publisher_nodes") or []
                 foreign = [n for n in nodes if n != f"motion_acq_hand_{side}"]
@@ -444,7 +460,7 @@ class Console:
         the command. Also clears a latched FAULT (HandController.command)."""
         key = f"hand_{side}"
         with self.lock:
-            problems = self._hand_precheck(side)
+            problems = self._hand_precheck(side, need_glove=kind == "follow")
             if problems:
                 return {"ok": False, "error": " / ".join(problems)}
             launches = []
@@ -460,9 +476,10 @@ class Console:
                                             summary=f"{steps}. {command.summary}", confirm=confirm, token=token)
             if reply is not None:
                 return reply
-        return self._job(key, lambda: self._hand_cmd_job(side, approved))
+        return self._job(key, lambda: self._hand_cmd_job(side, approved, need_glove=kind == "follow"))
 
-    def _wait_hand(self, side: str, *, starting: bool, need_node: bool, timeout_s: float) -> None:
+    def _wait_hand(self, side: str, *, starting: bool, need_node: bool, timeout_s: float,
+                   need_glove: bool = False) -> None:
         deadline = time.time() + timeout_s
         while True:
             if need_node and not self.sup.is_running(f"hand_{side}"):
@@ -472,14 +489,14 @@ class Console:
                 raise RuntimeError("손 드라이버가 끝났다: 손 전원·랜선, 드라이버 로그 확인")
             ros = ros_state(self.station, self.mode)
             ros["at"] = time.time()
-            problems = gates.hand_blockers(self, side, ros, starting=starting)
+            problems = gates.hand_blockers(self, side, ros, starting=starting, need_glove=need_glove)
             if not problems:
                 return
             if time.time() > deadline:
                 raise RuntimeError(" / ".join(problems))
             time.sleep(1.0)
 
-    def _hand_cmd_job(self, side: str, launches: list[Launch]) -> str:
+    def _hand_cmd_job(self, side: str, launches: list[Launch], *, need_glove: bool = False) -> str:
         command = launches[-1]
         for launch in launches[:-1]:
             if launch.key.startswith("ecat_"):
@@ -489,7 +506,7 @@ class Console:
                 if self.mode == "real":  # (fake: the node's launch brings its own fake driver)
                     self._wait_hand(side, starting=True, need_node=False, timeout_s=5.0)
                 self._spawn_task_checked(launch)
-        self._wait_hand(side, starting=False, need_node=True, timeout_s=HAND_NODE_VISIBLE_S)
+        self._wait_hand(side, starting=False, need_node=True, timeout_s=HAND_NODE_VISIBLE_S, need_glove=need_glove)
         self._spawn_task_checked(command)
         if self._wait_exit(command.key, 30) != 0:
             raise RuntimeError(f"{command.title} 토픽 발행 실패: 로그 확인")

@@ -490,6 +490,27 @@ def test_operator_home_and_follow_work_alone_and_override_the_arm_at_home():
         rig.ctl.command("dance")
 
 
+def test_fist_holds_the_hand_closed_through_the_arm_path_and_at_home():
+    """10.11 user, option B: one arm's [홈] closes its hand and leaves it closed at home; only the
+    operator's [홈] / [따라가기] opens it. No glove needed."""
+    rig = Rig(make_controller())
+    rig.ctl.command("fist")
+    run_until(rig, None, lambda o: o.record["phase"] == "rest" and rig.ctl.at_rest(rig.t))
+    rig.ctl.set_arm_phase("path")
+    for _ in range(30):
+        rig.step(None)
+    rig.ctl.set_arm_phase("home")                             # the arm arrives home: the hand stays closed
+    for _ in range(int(6.0 / DT)):                            # no timeout, no fault while it holds
+        out = rig.step(None)
+    assert out.record["mode"] == "enabled" and out.record["phase"] == "rest" and rig.ctl.at_rest(rig.t)
+    rig.ctl.command("home")                                   # the operator opens it
+    run_until(rig, None, lambda o: o.record["phase"] == "wait_arm")
+    assert max(abs(a - b) for a, b in zip(rig.hand, HOME_R, strict=True)) <= 2
+    rig.ctl.command("fist")                                   # and closes it again, the node stays up
+    run_until(rig, None, lambda o: o.record["phase"] == "rest" and rig.ctl.at_rest(rig.t))
+    assert rig.ctl.mode is Mode.ENABLED
+
+
 def test_an_operator_command_clears_a_latched_fault():
     rig = Rig(make_controller())
     rig.ctl.command("home")

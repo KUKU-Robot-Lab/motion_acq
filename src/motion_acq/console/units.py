@@ -251,7 +251,8 @@ def arm(station: Station, mode: str, side: str, scale: float = DEFAULT_SCALE, *,
                   summary=f"{SIDE_KO[side]}: 차렷이 벗어나 있으면 먼저 0.05 rad/s 로 기준 차렷에 맞추고, "
                           "저장 경로로 home 에 간 뒤 Space 를 기다린다. Space 순간 착용자가 바라보는 방향이 로봇 앞(+x)이 된다. "
                           "따라가는 중 [홈](H)이면 home 으로 돌아가 다시 Space 를 기다린다. "
-                          "정지하면 home → 차렷으로 돌아간 뒤 모터를 끈다.",
+                          "[차렷]이면 home → 차렷으로 돌아간 뒤 모터를 끈다. 돌아가다 실패하면 그 자리에서 버티고 "
+                          "[다시 홈] / [차렷] / 팔을 받치고 [모터 끄기] 를 고른다.",
                   stop_grace_s=120.0)
 
 
@@ -348,11 +349,12 @@ def hand_driver(station: Station, mode: str, side: str) -> Launch:
                   stop_grace_s=10.0)
 
 
-HAND_COMMANDS = {"home": "홈", "follow": "따라가기", "auto": "자동(팔이 정함)"}
+HAND_COMMANDS = {"home": "홈", "follow": "따라가기", "fist": "주먹", "auto": "자동(팔이 정함)"}
 
 
 def hand_command(station: Station, mode: str, side: str, kind: str) -> Launch:
-    """[홈] (open at home, still) / [따라가기] (follow the glove) for one hand, or auto (the arm decides)."""
+    """[홈] (open at home, still) / [따라가기] (follow the glove) / [주먹] (closed, the node stays) for one
+    hand, or auto (the arm decides)."""
     side = check_side(side)
     if kind not in HAND_COMMANDS:
         raise UnitError(f"hand command must be one of {tuple(HAND_COMMANDS)}, not {kind!r}")
@@ -360,6 +362,7 @@ def hand_command(station: Station, mode: str, side: str, kind: str) -> Launch:
     side_ko = "오른손" if side == "right" else "왼손"
     summary = {"home": f"{side_ko}: home(펼침)으로 가서 그대로 멈춘다(장갑 무시).",
                "follow": f"{side_ko}: home(펼침) → 1 초 기준 자세 → 장갑을 따라간다(팔이 home 에 있어도).",
+               "fist": f"{side_ko}: 주먹으로 쥐고 그대로 멈춘다(팔이 home 에 와도 펴지 않음). 노드는 그대로.",
                "auto": f"{side_ko}: 팔이 정한다(팔이 따라갈 때 장갑을 따라감)."}[kind]
     return Launch(f"task_hand_{kind}_{side}", f"{side_ko} {HAND_COMMANDS[kind]}", ros_argv(command),
                   _ros_env(station, mode), moves_robot=_real(mode) and kind != "auto", summary=summary,
