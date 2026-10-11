@@ -301,20 +301,33 @@ def calibration_file(user: str, side: str, *, fake: bool = False) -> Path:
     return ROOT / "configs" / "hands" / "calibration" / f"{user}_{check_side(side)}.yaml"
 
 
+def hand_method() -> str:
+    """The glove -> hand method of the hand nodes (configs/hands/nova2_to_rh56f1.yaml `method`)."""
+    from motion_acq.hand.retarget import DEFAULT_RETARGET, load_hand_retarget_config
+
+    return load_hand_retarget_config(DEFAULT_RETARGET).method
+
+
+def needs_calibration_file(mode: str) -> bool:
+    """direct (Nova2Dex, 10.11 user) maps the SDK's own calibrated values: no file of ours on the real hand."""
+    return not _real(mode) or hand_method() != "direct"
+
+
 def hand(station: Station, mode: str, side: str, user: str, log_dir: Path) -> Launch:
     side = check_side(side)
     if side not in station.hands:
         raise UnitError(f"{station.name} has no {side} hand")
     real = _real(mode)
-    cal = calibration_file(user, side, fake=not real)
+    cal = calibration_file(user, side, fake=not real) if needs_calibration_file(mode) else None
     udp = f"127.0.0.1:{station.sidecars['hand_' + side]},127.0.0.1:{CONSOLE_HAND_PORTS[side]}"
     if real:
         from motion_acq.hand.nova2 import load_gloves
 
         topic = load_gloves()[side].topic
         command = (f"ros2 run motion_acq_hand hand_node --ros-args -r __node:=motion_acq_hand_{side} "
-                   f"-p side:={side} -p glove_topic:={topic} -p calibration:={cal} "
-                   f"-p udp_target:={udp} -p log_dir:={log_dir}")
+                   f"-p side:={side} -p glove_topic:={topic} "
+                   + (f"-p calibration:={cal} " if cal is not None else "")
+                   + f"-p udp_target:={udp} -p log_dir:={log_dir}")
         if side in station.hand_link:
             command += f" -p arm_link_port:={station.hand_link[side]}"
     else:
@@ -371,6 +384,25 @@ def hand_command(station: Station, mode: str, side: str, kind: str) -> Launch:
     return Launch(f"task_hand_{kind}_{side}", f"{side_ko} {HAND_COMMANDS[kind]}", ros_argv(command),
                   _ros_env(station, mode), moves_robot=_real(mode) and kind != "auto", summary=summary,
                   stop_grace_s=5.0)
+
+
+def glove_recalibrate(station: Station, mode: str, side: str) -> Launch:
+    """[장갑 보정 다시]: restart the SenseGlove SDK calibration of one glove (nova2_sdk calibration_cmd reset).
+
+    Three resets half a second apart: `--once` could go to the rosbag recorder alone (10.11), and a reset
+    is harmless to repeat (the calibration just starts over)."""
+    side = check_side(side)
+    if not _real(mode):
+        raise UnitError("fake 장갑에는 SDK 보정이 없다")
+    if side not in station.hands:
+        raise UnitError(f"{station.name} has no {side} hand")
+    command = (f"ros2 topic pub -t 3 -r 2 -w 1 /motion_acq/nova2_sdk/{side}/calibration_cmd "
+               "std_msgs/msg/String '{data: reset}'")
+    side_ko = "오른손" if side == "right" else "왼손"
+    return Launch(f"task_glove_recal_{side}", f"{side_ko} 장갑 보정 다시", ros_argv(command), _ros_env(station, mode),
+                  summary=f"{side_ko} 장갑의 SDK 보정을 처음부터 다시 한다. 음성 안내에 따라 다섯 손가락을 끝까지 "
+                          "쥐었다 펴고 엄지를 크게 돌린다. 보정하는 동안 로봇 손이 따라가고 있으면 흔들리니 "
+                          "로봇 손은 [홈] 이나 [주먹] 으로 둔다.", stop_grace_s=5.0)
 
 
 def calibrate(station: Station, mode: str, side: str, user: str, *, rezero: bool = False,

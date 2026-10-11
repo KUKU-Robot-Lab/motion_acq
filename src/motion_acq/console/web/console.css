@@ -173,3 +173,7 @@ dialog.real { border-color: var(--real); }
 #toasts { position: fixed; right: 18px; bottom: 84px; display: flex; flex-direction: column; gap: 8px; z-index: 30; max-width: 520px; }
 .toast { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel-2); box-shadow: 0 6px 18px rgba(0,0,0,.3); font-size: 13.5px; }
 .toast.bad { border-color: var(--bad); } .toast.ok { border-color: var(--ok); }
+
+/* older calibrations, folded away while the hands use the SDK's own (direct, 10.11) */
+details.legacy { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+details.legacy > summary { cursor: pointer; color: var(--dim); font-size: 0.9em; }

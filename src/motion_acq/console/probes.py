@@ -10,6 +10,7 @@ to the console's UDP ports (LatestUdp).
 from __future__ import annotations
 
 import json
+import re
 import os
 import shlex
 import socket
@@ -18,7 +19,7 @@ import threading
 import time
 from pathlib import Path
 
-from motion_acq.console.units import FAKE_DOMAIN, SIDES, Station
+from motion_acq.console.units import FAKE_DOMAIN, ROOT, SIDES, Station
 
 FAST_PERIOD_S = 2.5
 ROS_PERIOD_S = 6.0
@@ -214,6 +215,31 @@ def rt_state() -> dict:
                      if plan.rt else plan.note)}
 
 
+SDK_LOG_DIR = ROOT / "logs" / "nova2"  # scripts/nova2.sh driver_<stamp>.log
+_SDK_LINE = re.compile(r"\b(right|left) calibration: ([^\x1b\n]+)")
+
+
+def sdk_calibration_from_log(log_dir: Path = SDK_LOG_DIR) -> tuple[str | None, dict[str, str]]:
+    """(newest driver log, {side: last "<state> | <instructions>"}) of the nova2_sdk node (10.11 user).
+
+    The node logs every change of a glove's SDK calibration; the newest log is the running driver's.
+    """
+    logs = sorted(log_dir.glob("driver_*.log"))
+    if not logs:
+        return None, {}
+    path = logs[-1]
+    try:
+        with path.open("rb") as f:
+            f.seek(max(0, path.stat().st_size - 256 * 1024))
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return str(path), {}
+    out: dict[str, str] = {}
+    for side, value in _SDK_LINE.findall(text):
+        out[side] = value.strip()
+    return str(path), out
+
+
 def glove_state(station: Station) -> dict:
     if not station.hands:
         return {}
@@ -227,8 +253,11 @@ def glove_state(station: Station) -> dict:
         gloves[side] = {"serial": glove.serial, "connected": bt_connected(info), "topic": glove.topic}
     driver = [line for line in run(["pgrep", "-af", GLOVE_DRIVER_PATTERN], timeout=3).splitlines()
               if line.strip() and "pgrep" not in line]
-    return {"sensecom_started_at": sensecom, "gloves": gloves,
-            "driver_pids": [int(line.split()[0]) for line in driver]}
+    pids = [int(line.split()[0]) for line in driver]
+    sdk_log, sdk = sdk_calibration_from_log() if pids else (None, {})
+    for side in gloves:
+        gloves[side]["sdk_calibration"] = sdk.get(side)
+    return {"sensecom_started_at": sensecom, "gloves": gloves, "driver_pids": pids, "sdk_log": sdk_log}
 
 
 def external_hand_drivers() -> dict[str, list[int]]:
@@ -313,6 +342,7 @@ class Probes:
         self.mode_getter = mode_getter
         self.data: dict = {"rt": rt_state()}
         self._stop = threading.Event()
+        self._sdk_heard: dict[str, tuple[str | None, str | None]] | None = None  # side -> (driver log, state)
         self._ros_kick = threading.Event()
         for name, target in (("fast", self._fast_loop), ("ros", self._ros_loop)):
             threading.Thread(target=target, daemon=True, name=f"console-probe-{name}").start()
@@ -331,10 +361,29 @@ class Probes:
             self._guard("can_holders", can_holders)
             self._guard("head_port", lambda: head_port(self.station))
             self._guard("gloves", lambda: glove_state(self.station))
+            self._speak_sdk_calibration(self.data.get("gloves") or {})
             if self.station.hands:
                 self._guard("hand_drivers", external_hand_drivers)
             self.data["fast_at"] = time.time()
             self._stop.wait(FAST_PERIOD_S)
+
+    def _speak_sdk_calibration(self, gloves: dict) -> None:
+        """Read a new SDK calibration step aloud (10.11 user: the operator wears the gloves and the Quest).
+
+        Silent for what was already there when the console started; a new driver log starts over."""
+        from motion_acq.hand.direct import sdk_calibration_speech
+        from motion_acq.utils.speech import say
+
+        now = {side: (gloves.get("sdk_log"), (g or {}).get("sdk_calibration"))
+               for side, g in (gloves.get("gloves") or {}).items()}
+        heard, self._sdk_heard = self._sdk_heard, now
+        if heard is None or self.mode_getter() != "real":
+            return
+        for side, (log, state) in now.items():
+            before_log, before = heard.get(side, (None, None))
+            line = sdk_calibration_speech(side, before if before_log == log else None, state or "")
+            if line:
+                say(line, lang="ko")
 
     def _ros_loop(self) -> None:
         if not self.station.hands:

@@ -57,6 +57,26 @@ def sdk_calibration_speech(side: str, before: str | None, now: str) -> str | Non
     return f"{'오른손' if side == 'right' else '왼손'} {line}"
 
 
+SDK_DONE = ("all sensors moved", "calibration locked")  # the SDK has each sensor's range
+
+
+def sdk_calibration_state(text: str | None) -> dict:
+    """The console's view of one glove's SDK calibration (10.11 user: the one calibration direct uses).
+
+    ``text`` is the nova2_sdk node's "<state> | <instructions>", None when nothing was heard.
+    """
+    state = (text or "").split("|")[0].strip()
+    key = state.lower()
+    if not key:
+        return {"known": False, "done": False, "label": "상태 모름 (장갑 드라이버가 꺼져 있거나 아직 소식 없음)"}
+    if key in SDK_DONE:
+        return {"known": True, "done": True, "label": "보정 완료" + (" · 확정" if key == "calibration locked" else "")}
+    if key == "move fingers":
+        return {"known": True, "done": False,
+                "label": "보정 중: 다섯 손가락을 끝까지 쥐었다 펴고, 엄지도 크게 돌리기"}
+    return {"known": True, "done": False, "label": f"SDK: {state}"}
+
+
 class DirectError(ValueError):
     pass
 

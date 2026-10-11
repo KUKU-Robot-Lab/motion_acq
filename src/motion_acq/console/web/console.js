@@ -163,6 +163,12 @@ function nodeGlove(s, side) {
   if (!s.sensecom_installed) return { ...n, tone: "bad", state: "SenseCom 미설치", sub: "이 PC: scripts/ros_ws_setup.sh --full" };
   if (jobRunning("glove")) return { ...n, tone: "live", state: "연결 중...", sub: "" };
   const connect = btn("연결", { "data-action": "glove:connect" }, "primary");
+  if (g.connected && topic && cal && cal.sdk) {  // direct: the SDK's own calibration is the only one (10.11)
+    const recal = btn(cal.ok ? "장갑 보정 다시" : "장갑 보정", { "data-action": `glove_recal:${side}`,
+      title: "SDK 보정을 처음부터: 음성 안내에 따라 다섯 손가락을 끝까지 쥐었다 펴고 엄지를 크게 돌린다" }, cal.ok ? "ghost small" : "primary");
+    return { ...n, tone: cal.ok ? "ok" : "warn", state: cal.ok ? "연결됨 · 장갑 보정 완료" : "연결됨 · 장갑 보정 필요",
+             sub: cal.ok ? "" : cal.detail.replace("장갑 SDK 보정: ", ""), actions: recal };
+  }
   if (g.connected && topic) {
     const calOk = cal && cal.ok;
     return { ...n, tone: calOk ? "ok" : "warn", state: calOk ? "연결됨 · 보정 유효" : "연결됨 · 보정 필요",
@@ -385,6 +391,27 @@ function detailNeck(s) {
     <div class="actions">${logButton("head")}</div>`;
 }
 
+// direct (Nova2Dex, 10.11 user): the robot hand reads the SenseGlove SDK's 0..1 values, so the SDK's
+// calibration of each glove is the only one; the older calibrations stay folded away.
+function detailGloveDirect(s, g, rows, calib) {
+  const sides = Object.keys(g.gloves || {});
+  const recal = sides.map((side) => btn(`${SIDE_KO[side]}손 장갑 보정 다시`, { "data-action": `glove_recal:${side}` }, "small")).join("");
+  return `<h3>장갑 · Nova 2</h3>${facts(rows)}
+    <p class="hint"><b>보정은 하나뿐이다 (장갑 SDK 보정).</b> 장갑 드라이버를 켜면 손마다 시작되고 음성으로 안내한다:
+      다섯 손가락을 끝까지 쥐었다 펴고 엄지를 크게 돌리면 "보정 완료". 장갑을 다시 켜거나 손이 어긋나 보이면
+      [장갑 보정 다시] (로봇 손은 [홈] / [주먹] 으로 둔 채). 파일럿 이름이나 보정 파일은 필요 없다.</p>
+    <div class="actions">${recal}
+      ${btn("드라이버 정지", { "data-action": "glove_driver_stop", disabled: !(g.driver_pids || []).length }, "ghost small")}</div>
+    <details class="legacy"><summary>이전 방식 보정 (지금 설정 method: direct 에서는 쓰지 않음)</summary>
+      <p class="hint">configs/hands/nova2_to_rh56f1.yaml 의 method 를 flexion / examples 로 되돌릴 때만 쓴다.</p>
+      <div class="actions">${btn("오른손 보정", { "data-start": "calib_right" }, "small")}${btn("왼손 보정", { "data-start": "calib_left" }, "small")}
+        ${btn("오른손 편 손 맞춤", { "data-start": "rezero_right" }, "small")}${btn("왼손 편 손 맞춤", { "data-start": "rezero_left" }, "small")}
+        ${btn("오른손 손가락별 맞춤", { "data-start": "fingers_right" }, "small")}${btn("왼손 손가락별 맞춤", { "data-start": "fingers_left" }, "small")}
+        ${btn("오른손 손가락 튜닝", { "data-start": "tune_right" }, "small")}${btn("왼손 손가락 튜닝", { "data-start": "tune_left" }, "small")}
+        ${btn("Enter: 이 자세 기록", { "data-key": calib || "", "data-text": "\n", disabled: !calib }, "key small")}</div></details>
+    <div class="actions">${logButton(calib || "task_glove_up")}</div>`;
+}
+
 function detailGlove(s) {
   const g = (s.probes || {}).gloves || {};
   const ros = (s.probes || {}).ros || {};
@@ -393,11 +420,13 @@ function detailGlove(s) {
   for (const [side, glove] of Object.entries(g.gloves || {})) {
     rows.push([`${SIDE_KO[side]}손 ${glove.serial}`, `${glove.connected ? "BLE 연결" : "BLE 미연결"} · 토픽 ${(ros.glove_topics || {})[side] ? "있음" : "없음"}`]);
     const cal = (s.calibration || {})[side];
-    if (cal) rows.push([`${SIDE_KO[side]}손 보정`, cal.ok && !cal.stale ? `유효 · 손가락별 맞춤 ${cal.sweeps ? "있음" : "없음"}` : cal.detail, cal.ok && !cal.stale ? "ok" : "warn"]);
+    if (cal && cal.sdk) rows.push([`${SIDE_KO[side]}손 장갑 보정`, cal.detail.replace("장갑 SDK 보정: ", ""), cal.ok ? "ok" : "warn"]);
+    else if (cal) rows.push([`${SIDE_KO[side]}손 보정`, cal.ok && !cal.stale ? `유효 · 손가락별 맞춤 ${cal.sweeps ? "있음" : "없음"}` : cal.detail, cal.ok && !cal.stale ? "ok" : "warn"]);
   }
   rows.push(["드라이버", (g.driver_pids || []).length ? `PID ${g.driver_pids.join(", ")}` : "꺼짐"]);
   if (jobLine("glove")) rows.push(["최근", jobLine("glove"), job("glove").state === "failed" ? "bad" : ""]);
   const calib = CALIB_KEYS.find(running);
+  if (s.hand_method === "direct" && s.mode === "real") return detailGloveDirect(s, g, rows, calib);
   return `<h3>장갑 · Nova 2</h3>${facts(rows)}
     <p class="hint">파일럿: <b>${esc(s.settings.user || "없음 (맨 위 오른쪽에 이름을 넣는다)")}</b>. 처음 한 번: [오른손 보정] → 화면 안내 예시 자세(11개)마다 [Enter: 이 자세 기록] → [왼손 보정]. 보정은 파일럿마다 저장되어 다음부터 그대로 쓴다. SenseCom 을 다시 켠 뒤 손이 어긋나면 [편 손 맞춤]: 손을 펴고 Enter 한 번(2초). 한 손가락을 움직일 때 다른 로봇 손가락이 따라 움직이면 [손가락별 맞춤]: 엄지·검지·중지·약지·주먹을 하나씩, 편 손 1초 뒤 그 손가락만 6초 굽혔다 펴기(보정 뒤에, 로봇 손 노드는 따라가는 중이 아닐 때 새 값을 읽는다). [손가락 튜닝]: 창이 뜬다. 관절마다 로봇 각도(로봇이 움직일 수 있는 범위 안)를 정하고 장갑 손가락을 그 자세로 둔 채 [지금 자세로 기록] → [저장] → 로봇 손 [홈] → [따라가기].</p>
     <div class="actions">${btn("오른손 보정", { "data-start": "calib_right" }, "small")}${btn("왼손 보정", { "data-start": "calib_left" }, "small")}

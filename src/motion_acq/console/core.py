@@ -418,6 +418,12 @@ class Console:
             return self._stop_left_behind(int(arg))
         if kind == "glove_driver_stop":
             return self._stop_glove_driver()
+        if kind == "glove_recal":
+            try:
+                launch = units.glove_recalibrate(self.station, self.mode, units.check_side(arg))
+            except units.UnitError as exc:
+                return {"ok": False, "error": str(exc)}
+            return self._gate(launch, confirm=confirm, token=token)
         with self.lock:
             if kind == "quest":
                 return self._gate(units.quest_task(self.station, arg), confirm=confirm, token=token)
@@ -454,7 +460,10 @@ class Console:
             return ["콘솔이 종료 중이다"]
         out = []
         cal = self.calibration().get(side) or {}
-        if not cal.get("ok"):
+        if cal.get("sdk"):  # direct: only following needs the glove, and only a calibration seen unfinished stops it
+            if need_glove and cal.get("known") and not cal.get("ok"):
+                out.append(f"{cal.get('detail')}: 끝낸 뒤 [따라가기] (장갑 > 장갑 보정 다시)")
+        elif not cal.get("ok"):
             out.append(f"장갑 보정이 필요하다: {cal.get('detail', '?')} (장갑 > 보정)")
         if self.mode == "real":
             ros = gates.fresh_ros(self, self.probe("ros"))
@@ -773,6 +782,8 @@ class Console:
         from motion_acq.scripts.station import calibration_current, calibration_stale
 
         real = self.mode == "real"
+        if not units.needs_calibration_file(self.mode):
+            return self._sdk_calibration()
         user = str(self.settings["user"])
         if real and not user:
             return {side: {"ok": False, "detail": "보정 사용자 이름 없음"} for side in self.station.hands}
@@ -793,6 +804,18 @@ class Console:
                          if stale else f"{short}{tag}" if ok else detail.replace(str(path), short)}
         return out
 
+    def _sdk_calibration(self) -> dict:
+        """direct (Nova2Dex, 10.11 user): the SenseGlove SDK's own calibration of each glove is the only one."""
+        from motion_acq.hand.direct import sdk_calibration_state
+
+        gloves = (self.probe("gloves").get("gloves") or {})
+        out = {}
+        for side in self.station.hands:
+            state = sdk_calibration_state((gloves.get(side) or {}).get("sdk_calibration"))
+            out[side] = {"ok": state["done"], "sdk": True, "known": state["known"], "stale": False,
+                         "sweeps": False, "detail": f"장갑 SDK 보정: {state['label']}"}
+        return out
+
     def snapshot(self) -> dict:
         st = self.station
         tcp, measured = units.tcp_calibration(st)
@@ -810,6 +833,7 @@ class Console:
                         "tcp": {"path": str(tcp.relative_to(ROOT)) if tcp.is_relative_to(ROOT) else str(tcp),
                                 "measured": measured}},
             "mode": self.mode,
+            "hand_method": units.hand_method() if st.hands else None,
             "closing": self.closing,
             "time": time.time(),
             "units": {key: self._unit(key) for key in all_keys},

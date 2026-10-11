@@ -187,15 +187,18 @@ class HandRetargeter:
     def __init__(
         self,
         config: HandRetargetConfig,
-        calibration: HandCalibration,
+        calibration: HandCalibration | None,
         hand_map: Rh56f1Map,
         side: str,
         *,
         amplitude: float = 1.0,
     ) -> None:
-        if calibration.side != side:
+        if calibration is None:  # direct (Nova2Dex) maps the SDK's values: none of our calibration (10.11)
+            if config.method != "direct":
+                raise ValueError(f"method {config.method!r} needs a calibration (only direct runs without)")
+        elif calibration.side != side:
             raise ValueError(f"calibration is for the {calibration.side} hand, not {side}")
-        if set(calibration.joints) != set(config.joints):
+        elif set(calibration.joints) != set(config.joints):
             raise ValueError(f"calibration maps {sorted(calibration.joints)}, the hand has "
                              f"{sorted(config.joints)}; recalibrate")
         if not 0.0 < amplitude <= 1.0:
@@ -225,12 +228,19 @@ class HandRetargeter:
                           for j in config.joints}
         self._last_registers: list[int] | None = None
 
-    def set_calibration(self, calibration: HandCalibration) -> None:
+    def set_calibration(self, calibration: HandCalibration | None) -> None:
         """Use this calibration from now on (the reference take at [켜기] re-zeroes and re-aligns)."""
-        if calibration.side != self.side:
+        if calibration is None:
+            if self.config.method != "direct":
+                raise ValueError(f"method {self.config.method!r} needs a calibration")
+        elif calibration.side != self.side:
             raise ValueError(f"calibration is for the {calibration.side} hand, not {self.side}")
         self.calibration = calibration
         self.kinematic = None
+        self.flexion = None
+        self.joystick = None
+        if calibration is None:
+            return
         if self.config.method in ("kinematic", "flexion") and calibration.alignment is not None:
             self.kinematic = KinematicRetargeter(TipTables.load(table_path(self.side)), calibration.alignment,
                                                  self.config.kinematic)
