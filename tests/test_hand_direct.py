@@ -21,18 +21,25 @@ def sdk(thumb=0.0, index=0.0, middle=0.0, ring=0.0, pinky=0.0, yaw=0.0) -> dict[
     return {SDK_PREFIX + k: v for k, v in values.items()}
 
 
-def test_configured_method_is_direct_with_nova2dex_numbers():
+NOVA2DEX = DirectConfig(thumb_1_rad=(0.8, 2.0))  # Nova2Dex's numbers, thumb_1 from spread (0.8) to across
+
+
+def test_configured_method_is_direct_with_the_measured_numbers():
     assert CONFIGURED.method == "direct"
     c = CONFIGURED.direct
-    assert (c.finger_full, c.thumb_full, c.thumb_yaw_rad) == (0.928571, 0.733333, (0.0, -0.3))
+    assert c.finger_open["index"] == 0.27 and c.finger_full["ring"] == 0.90 and c.thumb_full == 0.70
+    assert c.thumb_yaw_rad == {"right": (0.12, -0.08), "left": (-0.07, 0.19)} and c.thumb_1_rad == (1.57, 2.0)
+    assert direct_config({"finger_full": 0.9}).finger_full == {f: 0.9 for f in ("index", "middle", "ring", "pinky")}
     with pytest.raises(DirectError, match="unknown keys"):
         direct_config({"finger_range": 1.0})
     with pytest.raises(DirectError):
-        DirectConfig(thumb_yaw_rad=(0.1, 0.1))
+        direct_config({"thumb_yaw_rad": {"right": [0.1, 0.1], "left": [0.0, 0.3]}})
+    with pytest.raises(DirectError):
+        direct_config({"finger_open": 0.9, "finger_full": 0.9})
 
 
 def test_open_hand_full_bend_and_halfway():
-    d = DirectRetargeter(DirectConfig(), LIMITS, "right")
+    d = DirectRetargeter(NOVA2DEX, LIMITS, "right")
     q = d.solve(sdk())
     assert q["thumb_1"] == pytest.approx(0.8) and q["thumb_2"] == 0.0
     assert all(q[j] == 0.0 for j in ("index_1", "middle_1", "ring_1", "pinky_1"))
@@ -47,18 +54,37 @@ def test_open_hand_full_bend_and_halfway():
 
 
 def test_values_past_the_ends_clip():
-    d = DirectRetargeter(DirectConfig(), LIMITS, "right")
+    d = DirectRetargeter(NOVA2DEX, LIMITS, "right")
     q = d.solve(sdk(thumb=1.0, index=1.0, yaw=-0.9))
     assert q["index_1"] == pytest.approx(LIMITS["index_1"][1]) and q["thumb_1"] == pytest.approx(2.0)
     q = d.solve(sdk(yaw=0.4))
     assert q["thumb_1"] == pytest.approx(0.8)
 
 
-def test_left_glove_reads_the_thumb_rotation_mirrored():
-    right = DirectRetargeter(DirectConfig(), LIMITS, "right")
-    left = DirectRetargeter(DirectConfig(), LIMITS, "left")
-    assert left.solve(sdk(yaw=0.3))["thumb_1"] == pytest.approx(right.solve(sdk(yaw=-0.3))["thumb_1"])
-    assert left.solve(sdk(yaw=-0.3))["thumb_1"] == pytest.approx(0.8)
+def test_measured_open_hand_is_straight_and_fist_is_closed():
+    """10.11 recording medians: the open hand reads 0.14-0.33, not 0, and must still send the hand straight."""
+    for side, open_, fist, across in (("right", (0.30, 0.27, 0.33, 0.17, 0.12), (0.60, 0.84, 0.88, 0.90, -0.07),
+                                       (0.59, 0.18, 0.31, 0.15, -0.08)),
+                                      ("left", (0.20, 0.23, 0.28, 0.14, -0.07), (0.65, 0.80, 0.88, 0.90, 0.22),
+                                       (0.55, 0.17, 0.21, 0.09, 0.19))):
+        d = DirectRetargeter(CONFIGURED.direct, LIMITS, side)
+        t, i, m, r, x = open_
+        q = d.solve(sdk(t, i, m, r, r, x))
+        assert q["thumb_1"] == pytest.approx(1.57) and max(q[j] for j in ("thumb_2", "index_1", "middle_1", "ring_1")) < 0.01
+        t, i, m, r, x = fist
+        q = d.solve(sdk(t, i, m, r, r, x))
+        assert min(q[j] for j in ("index_1", "middle_1", "ring_1", "pinky_1")) > 1.4
+        t, i, m, r, x = across
+        q = d.solve(sdk(t, i, m, r, r, x))
+        assert q["thumb_1"] == pytest.approx(2.0) and q["index_1"] < 0.05
+
+
+def test_each_glove_has_its_own_thumb_rotation_ends():
+    right = DirectRetargeter(CONFIGURED.direct, LIMITS, "right")
+    left = DirectRetargeter(CONFIGURED.direct, LIMITS, "left")
+    assert right.solve(sdk(yaw=-0.08))["thumb_1"] == pytest.approx(2.0)
+    assert left.solve(sdk(yaw=0.19))["thumb_1"] == pytest.approx(2.0)
+    assert left.solve(sdk(yaw=-0.3))["thumb_1"] == pytest.approx(1.57)  # past beside (spread): stays home
 
 
 def test_missing_sdk_values_say_which_node_to_start():
@@ -74,11 +100,13 @@ def test_missing_sdk_values_say_which_node_to_start():
 @pytest.mark.parametrize("pose", ["flat", "fist", "index", "thumb_bend", "thumb_opposed"])
 def test_fake_glove_sdk_values_map_back_to_its_robot_pose(side, pose):
     angles = POSE_ANGLES[pose]
-    q = DirectRetargeter(DirectConfig(), LIMITS, side).solve(
-        {SDK_PREFIX + k: v for k, v in synthetic_sdk(angles, side).items()})
-    for j in ("thumb_2", "index_1", "middle_1", "ring_1", "pinky_1"):
-        assert q[j] == pytest.approx(min(angles[f"q_{j}"], LIMITS[j][1]), abs=1e-6)  # synthetic ends are 1e-4 past
-    assert q["thumb_1"] == pytest.approx(min(max(angles["q_thumb_1"], 0.8), 2.0), abs=1e-6)
+    for config in (NOVA2DEX, CONFIGURED.direct):
+        q = DirectRetargeter(config, LIMITS, side).solve(
+            {SDK_PREFIX + k: v for k, v in synthetic_sdk(angles, side, config).items()})
+        for j in ("thumb_2", "index_1", "middle_1", "ring_1", "pinky_1"):
+            assert q[j] == pytest.approx(min(angles[f"q_{j}"], LIMITS[j][1]), abs=1e-6)  # synthetic ends 1e-4 past
+        lo, hi = config.thumb_1_rad
+        assert q["thumb_1"] == pytest.approx(min(max(angles["q_thumb_1"], lo), hi), abs=1e-6)
 
 
 def make_direct(side: str = "right") -> HandController:
@@ -92,11 +120,11 @@ def test_controller_follows_the_sdk_without_a_reference_take():
     rig.ctl.request_enable(True)
     phases = []
     for _ in range(150):
-        out = rig.step(sdk())
+        out = rig.step(sdk(0.30, 0.27, 0.33, 0.17, 0.17, 0.12))  # the measured open hand
         phases.append(out.record["phase"])
     assert "reference" not in phases and phases[-1] == "follow"
     for _ in range(150):
-        out = rig.step(sdk(thumb=0.733333, index=0.928571, middle=0.928571, ring=0.928571, pinky=0.928571, yaw=-0.3))
+        out = rig.step(sdk(thumb=0.70, index=0.9, middle=0.9, ring=0.9, pinky=0.9, yaw=-0.08))
     assert out.record["method"] == "direct"
     q = out.record["q_command_rad"]
     assert q["index_1"] > 1.4 and q["ring_1"] > 1.4 and q["thumb_2"] > 0.4 and q["thumb_1"] > 1.9

@@ -51,6 +51,9 @@ class FakeGlove(Node):
             raise SystemExit(f"mode cycle|pose and pose in {sorted(POSE_ANGLES)}")
         self.pub = self.create_publisher(SenseGloveState, topic, glove_qos())
         # the nova2_sdk node's topic too (the hand node's direct method, 10.11)
+        from motion_acq.hand.retarget import load_hand_retarget_config
+
+        self.direct = load_hand_retarget_config().direct  # values the configured direct map reads back
         self.sdk_pub = self.create_publisher(JointState, f"/motion_acq/nova2_sdk/{self.side}", qos_profile_sensor_data)
         self.create_subscription(String, f"/motion_acq/fake_glove/{self.side}/pose", self._on_pose, 10)
         self.t0 = time.monotonic()
@@ -95,7 +98,7 @@ class FakeGlove(Node):
         msg.finger_tip_position = [KinematicsVect3D(x=x, y=y, z=z) for x, y, z in tips]
         msg.imu_orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
         self.pub.publish(msg)
-        sdk = synthetic_sdk(angles, self.side)
+        sdk = synthetic_sdk(angles, self.side, self.direct)
         self.sdk_pub.publish(JointState(header=msg.header, name=list(sdk), position=[float(v) for v in sdk.values()]))
 
 

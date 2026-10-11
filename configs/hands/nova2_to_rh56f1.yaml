@@ -33,10 +33,22 @@
 #     read straight by the motion_acq_nova2 nova2_sdk node (started with the glove driver); no calibration
 #     of ours (the SDK learns the ranges while the fingers move). motion_acq.hand.direct; the section below.
 method: direct
-# finger_full / thumb_full: the SDK's normalized flexion read as a full bend (Nova2Dex 0.928571 / 0.733333).
-# thumb_yaw_rad: the SDK thumb first-joint X angle at thumb spread / across the palm, right glove (left mirrored).
-# thumb_1_rad: robot thumb_1 at those two (the open example 0.8, thumb_opposed 2.0).
-direct: {finger_full: 0.928571, thumb_full: 0.733333, thumb_yaw_rad: [0.0, -0.3], thumb_1_rad: [0.8, 2.0]}
+# direct numbers from the 10.11 recording (arm4090 logs/nova2_sdk/sdk_20261011_204233, both hands, SDK state
+# "All Sensors Moved"; medians per pose, right / left):
+#   normalized flexion, open hand -> fist: index 0.27/0.23 -> 0.84/0.80, middle 0.33/0.28 -> 0.88/0.88,
+#   ring (= pinky, no pinky sensor) 0.17/0.14 -> 0.90/0.90, thumb 0.30/0.20 -> 0.71/0.69 (bent across);
+#   one finger bent alone moves the others 0.05-0.15 (index-influences-others off).
+#   thumb_0_x: beside the index 0.12/-0.07, across the palm -0.08/0.19, spread 0.16/-0.16, the thumb tip
+#   bent alone 0.02/-0.04 (the right glove turns half way on a bend). The spread is too close to beside on
+#   the right to tell apart, so thumb_1 goes from home (beside, 1.57) to across (thumb_opposed, 2.0) only.
+# Nova2Dex's numbers: open 0, finger_full 0.928571, thumb_full 0.733333, thumb_yaw 0 .. -0.3 rad (right).
+direct:
+  finger_open: {index: 0.27, middle: 0.33, ring: 0.18, pinky: 0.18}
+  finger_full: {index: 0.82, middle: 0.88, ring: 0.90, pinky: 0.90}
+  thumb_open: 0.30
+  thumb_full: 0.70
+  thumb_yaw_rad: {right: [0.12, -0.08], left: [-0.07, 0.19]}
+  thumb_1_rad: [1.57, 2.0]
 # Reference at [켜기] (10.06 user): when the robot hand reaches home (fingers straight, thumb
 # beside the index), the operator holds that same pose still for `seconds`; the take
 # re-zeroes the saved map and re-aligns the glove hand model, then the hand follows the glove.
