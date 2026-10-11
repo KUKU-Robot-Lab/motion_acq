@@ -13,7 +13,9 @@ const UNIT_KO = { quest_view: "영상 서버", mock_quest: "가짜 Quest", head:
   arm_right: "로봇 오른팔", arm_left: "로봇 왼팔",
   hand_right: "로봇 오른손", hand_left: "로봇 왼손", calib_right: "오른손 보정", calib_left: "왼손 보정",
   rezero_right: "오른손 편 손 맞춤", rezero_left: "왼손 편 손 맞춤",
+  fingers_right: "오른손 손가락별 맞춤", fingers_left: "왼손 손가락별 맞춤",
   ecat_right: "로봇 오른손 드라이버", ecat_left: "로봇 왼손 드라이버" };
+const CALIB_KEYS = ["calib_right", "calib_left", "rezero_right", "rezero_left", "fingers_right", "fingers_left"];
 const unitName = (k) => UNIT_KO[k] || k.replace(/^task_/, "작업 ");
 const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const fmt = (v, d = 1) => (typeof v === "number" && isFinite(v) ? v.toFixed(d) : "-");
@@ -390,15 +392,16 @@ function detailGlove(s) {
   for (const [side, glove] of Object.entries(g.gloves || {})) {
     rows.push([`${SIDE_KO[side]}손 ${glove.serial}`, `${glove.connected ? "BLE 연결" : "BLE 미연결"} · 토픽 ${(ros.glove_topics || {})[side] ? "있음" : "없음"}`]);
     const cal = (s.calibration || {})[side];
-    if (cal) rows.push([`${SIDE_KO[side]}손 보정`, cal.ok && !cal.stale ? "유효" : cal.detail, cal.ok && !cal.stale ? "ok" : "warn"]);
+    if (cal) rows.push([`${SIDE_KO[side]}손 보정`, cal.ok && !cal.stale ? `유효 · 손가락별 맞춤 ${cal.sweeps ? "있음" : "없음"}` : cal.detail, cal.ok && !cal.stale ? "ok" : "warn"]);
   }
   rows.push(["드라이버", (g.driver_pids || []).length ? `PID ${g.driver_pids.join(", ")}` : "꺼짐"]);
   if (jobLine("glove")) rows.push(["최근", jobLine("glove"), job("glove").state === "failed" ? "bad" : ""]);
-  const calib = ["calib_right", "calib_left", "rezero_right", "rezero_left"].find(running);
+  const calib = CALIB_KEYS.find(running);
   return `<h3>장갑 · Nova 2</h3>${facts(rows)}
-    <p class="hint">파일럿: <b>${esc(s.settings.user || "없음 (맨 위 오른쪽에 이름을 넣는다)")}</b>. 처음 한 번: [오른손 보정] → 화면 안내 예시 자세(11개)마다 [Enter: 이 자세 기록] → [왼손 보정]. 보정은 파일럿마다 저장되어 다음부터 그대로 쓴다. SenseCom 을 다시 켠 뒤 손이 어긋나면 [편 손 맞춤]: 손을 펴고 Enter 한 번(2초).</p>
+    <p class="hint">파일럿: <b>${esc(s.settings.user || "없음 (맨 위 오른쪽에 이름을 넣는다)")}</b>. 처음 한 번: [오른손 보정] → 화면 안내 예시 자세(11개)마다 [Enter: 이 자세 기록] → [왼손 보정]. 보정은 파일럿마다 저장되어 다음부터 그대로 쓴다. SenseCom 을 다시 켠 뒤 손이 어긋나면 [편 손 맞춤]: 손을 펴고 Enter 한 번(2초). 한 손가락을 움직일 때 다른 로봇 손가락이 따라 움직이면 [손가락별 맞춤]: 엄지·검지·중지·약지·주먹을 하나씩, 편 손 1초 뒤 그 손가락만 6초 굽혔다 펴기(보정 뒤에, 로봇 손 노드는 따라가는 중이 아닐 때 새 값을 읽는다).</p>
     <div class="actions">${btn("오른손 보정", { "data-start": "calib_right" }, "small")}${btn("왼손 보정", { "data-start": "calib_left" }, "small")}
       ${btn("오른손 편 손 맞춤", { "data-start": "rezero_right" }, "small")}${btn("왼손 편 손 맞춤", { "data-start": "rezero_left" }, "small")}
+      ${btn("오른손 손가락별 맞춤", { "data-start": "fingers_right" }, "small")}${btn("왼손 손가락별 맞춤", { "data-start": "fingers_left" }, "small")}
       ${btn("Enter: 이 자세 기록", { "data-key": calib || "", "data-text": "\n", disabled: !calib }, "key small")}
       ${btn("드라이버 정지", { "data-action": "glove_driver_stop", disabled: !(g.driver_pids || []).length }, "ghost small")}</div>
     <div class="actions">${logButton(calib || "task_glove_up")}</div>`;
@@ -467,7 +470,7 @@ function renderDetail(s) {
   const box = $("#detail");
   const html = DETAILS[selected](s);
   let tailKey = DETAIL_TAIL[selected];
-  if (tailKey === "calib") tailKey = ["calib_right", "calib_left", "rezero_right", "rezero_left"].find(running) || "task_glove_up";
+  if (tailKey === "calib") tailKey = CALIB_KEYS.find(running) || "task_glove_up";
   if (/^arm_/.test(tailKey) && !running(tailKey) && (running("arm") || unit(tailKey).rc == null)) tailKey = "arm";
   if (box.dataset.html !== html && !box.contains(document.activeElement)) {
     box.innerHTML = html + `<pre class="tail" id="detail-tail"></pre>`;
@@ -523,7 +526,7 @@ function renderAlerts(s) {
         <div class="actions">${recoveryButtons(key)}</div></div>`);
       continue;
     }
-    items.push(`<div class="alert ${(key.startsWith("calib") || key.startsWith("rezero")) ? "warn" : ""}"><p><b>${esc(unitName(key))}</b> 이 입력을 기다린다: <code>${esc(u.prompt)}</code></p>
+    items.push(`<div class="alert ${CALIB_KEYS.includes(key) ? "warn" : ""}"><p><b>${esc(unitName(key))}</b> 이 입력을 기다린다: <code>${esc(u.prompt)}</code></p>
       ${yn ? `<button type="button" class="btn" data-send="${esc(key)}" data-text="y&#10;">y</button><button type="button" class="btn" data-send="${esc(key)}" data-text="n&#10;">n</button>`
            : `<button type="button" class="btn danger" data-send="${esc(key)}" data-text="&#10;">Enter 보내기</button>`}</div>`);
   }

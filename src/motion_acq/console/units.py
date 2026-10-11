@@ -371,17 +371,26 @@ def hand_command(station: Station, mode: str, side: str, kind: str) -> Launch:
                   stop_grace_s=5.0)
 
 
-def calibrate(station: Station, mode: str, side: str, user: str, *, rezero: bool = False) -> Launch:
-    """Full calibration (every example pose) or the 2 s open-hand re-zero of a saved one."""
+def calibrate(station: Station, mode: str, side: str, user: str, *, rezero: bool = False,
+              fingers: bool = False) -> Launch:
+    """Full calibration (every example pose), the 2 s open-hand re-zero of a saved one, or the
+    one-finger-at-a-time sweeps (per-finger ranges and crosstalk, 10.11)."""
     side = check_side(side)
     real = _real(mode)
     out = calibration_file(user, side, fake=not real)  # validates the owner name
     command = f"ros2 run motion_acq_hand calibrate --side {side} --user {user if real else 'fake'} --out {out}"
     if rezero:
         command += " --rezero"
+    if fingers:
+        command += " --fingers"
     if not real:
         command += " --fake --yes"
     side_ko = "오른손" if side == "right" else "왼손"
+    if fingers:
+        return Launch(f"fingers_{side}", f"{side_ko} 손가락별 맞춤", ros_argv(command), _ros_env(station, mode),
+                      pty=True, stop_grace_s=3.0,
+                      summary="엄지·검지·중지·약지·주먹을 하나씩: 편 손 1초, 그 손가락만 6초 굽혔다 펴기. "
+                              "로봇 손가락이 그 손가락만으로 0~1 을 움직이고, 장갑의 손가락 사이 간섭을 뺀다.")
     if rezero:
         return Launch(f"rezero_{side}", f"{side_ko} 편 손 맞춤", ros_argv(command), _ros_env(station, mode), pty=True,
                       summary="손을 펴고 Enter: 저장된 보정을 오늘 장갑에 맞춘다 (2초).", stop_grace_s=3.0)

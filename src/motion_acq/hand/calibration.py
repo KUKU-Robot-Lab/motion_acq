@@ -10,6 +10,7 @@ open hand for two seconds and shifts the inputs, without redoing the examples.
 
 from __future__ import annotations
 
+import dataclasses
 import statistics
 import time
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ import yaml
 
 from motion_acq.hand.example_map import ConflictError, ExampleMap, ExampleMapError, fit_groups, input_kind
 from motion_acq.hand.kinematic import Alignment, TipTables, fit_alignment, points_from_signals, table_path
+from motion_acq.hand.sweeps import FingerSweeps, SweepError
 
 SCHEMA = "motion_acq/hand_calibration/v3"  # v3: one map per joint group, thumb tip position input
 OLD_SCHEMAS = ("motion_acq/hand_calibration/v1", "motion_acq/hand_calibration/v2")
@@ -41,6 +43,7 @@ class HandCalibration:
     rezeroed: str | None = None
     glove: str = "nova2"
     alignment: Alignment | None = None  # glove hand model -> robot hand (kinematic retargeting), from the open hand
+    sweeps: FingerSweeps | None = None  # [손가락별 맞춤] (10.11): per-finger ranges and glove crosstalk
 
     def predict(self, signals: Mapping[str, float]) -> dict[str, float]:
         out: dict[str, float] = {}
@@ -80,6 +83,7 @@ class HandCalibration:
             "medians": {p: {k: float(v) for k, v in m.items()} for p, m in self.medians.items()},
             "models": {g: m.to_dict() for g, m in self.models.items()},
             "kinematic_alignment": self.alignment.to_dict() if self.alignment is not None else None,
+            "finger_sweeps": self.sweeps.to_dict() if self.sweeps is not None else None,
         }
 
     def save(self, path: Path) -> None:
@@ -112,8 +116,17 @@ class HandCalibration:
                 alignment = Alignment.from_dict(raw["kinematic_alignment"])
             except (KeyError, TypeError, ValueError) as exc:
                 raise CalibrationError(f"{path}: {exc}") from exc
+        sweeps = None
+        if raw.get("finger_sweeps"):
+            try:
+                sweeps = FingerSweeps.from_dict(raw["finger_sweeps"])
+            except SweepError as exc:
+                raise CalibrationError(f"{path}: {exc}") from exc
         return cls(str(raw["side"]), str(raw.get("user", "")), models, medians, str(raw.get("created", "")),
-                   raw.get("rezeroed"), alignment=alignment)
+                   raw.get("rezeroed"), alignment=alignment, sweeps=sweeps)
+
+    def with_sweeps(self, sweeps: FingerSweeps | None) -> HandCalibration:
+        return dataclasses.replace(self, sweeps=sweeps)
 
 
 def rezero(calibration: HandCalibration, open_samples: Sequence[Mapping[str, float]],
@@ -131,7 +144,8 @@ def rezero(calibration: HandCalibration, open_samples: Sequence[Mapping[str, flo
               for g, m in calibration.models.items()}
     alignment = align_open_hand(calibration.side, open_samples, thumb_q) or calibration.alignment
     return HandCalibration(calibration.side, calibration.user, models, calibration.medians,
-                           calibration.created, time.strftime("%Y-%m-%dT%H:%M:%S"), calibration.glove, alignment)
+                           calibration.created, time.strftime("%Y-%m-%dT%H:%M:%S"), calibration.glove, alignment,
+                           calibration.sweeps)
 
 
 def thumb_of(target: Mapping[str, float] | None) -> tuple[float, float] | None:

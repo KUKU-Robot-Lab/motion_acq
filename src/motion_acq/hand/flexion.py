@@ -26,6 +26,10 @@ without bound. The [켜기] reference take (the operator holds the robot's home:
 shifted since the calibration, e.g. a SenseCom restart); a reading further up is a bent hand, not a
 shift (10.11 takes: 0.6-1.3 rad above the open hand of the same session, which read like the
 calibration), and leaves `open` as it is.
+
+With [손가락별 맞춤] sweeps in the calibration (sweeps.py, 10.11) the reading of each joint is its own
+glove value minus the other fingers' crosstalk, and `open` / `closed` start from the sweeps instead of
+the example poses; the rest is the same.
 """
 
 from __future__ import annotations
@@ -33,6 +37,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import statistics
 from typing import Mapping, Sequence
+
+from motion_acq.hand.sweeps import INPUTS as SWEEP_INPUTS, SOURCES, FingerSweeps, source_values
 
 # robot joint -> glove inputs summed for it
 FLEX_INPUTS: dict[str, tuple[str, ...]] = {
@@ -99,12 +105,17 @@ class FlexionRetargeter:
     """Glove joint angles -> the bend of the RH56F1 fingers and thumb_2 (rad)."""
 
     def __init__(self, medians: Mapping[str, Mapping[str, float]], closed_rad: Mapping[str, float],
-                 config: FlexionConfig = FlexionConfig()) -> None:
+                 config: FlexionConfig = FlexionConfig(), sweeps: FingerSweeps | None = None) -> None:
         self.config = config
+        self.sweeps = sweeps
         self.closed_rad = {j: float(closed_rad[j]) for j in FLEX_INPUTS}
         self.closed: dict[str, float] = {}
         self._open0: dict[str, float] = {}
-        for j in FLEX_INPUTS:
+        self.rest: dict[str, tuple[float, ...]] = {}
+        if sweeps is not None:
+            self.closed = {j: float(sweeps.closed[j]) for j in FLEX_INPUTS}
+            self._open0 = {j: float(sweeps.open[j]) for j in FLEX_INPUTS}
+        for j in FLEX_INPUTS if sweeps is None else ():
             bent = [v for p in CLOSED_POSES[j] if (v := reading(j, medians.get(p, {}))) is not None]
             straight = [v for p in OPEN_POSES if (v := reading(j, medians.get(p, {}))) is not None]
             if not bent or not straight:
@@ -119,7 +130,16 @@ class FlexionRetargeter:
     def reset(self) -> None:
         """Back to the calibration's open hand (a new session)."""
         self.open = {j: max(v, self.closed[j] - self._max_span(j)) for j, v in self._open0.items()}
+        self.rest = dict(self.sweeps.rest) if self.sweeps is not None else {}
+        if self.sweeps is not None:
+            self.closed = {j: float(self.sweeps.closed[j]) for j in FLEX_INPUTS}
         self._smooth = {}
+
+    def reading(self, joint: str, signals: Mapping[str, float]) -> float | None:
+        """The joint's glove reading (with sweeps: minus the other fingers' crosstalk)."""
+        if self.sweeps is None:
+            return reading(joint, signals)
+        return self.sweeps.corrected(joint, signals, self.rest)
 
     def _max_span(self, j: str) -> float:
         c = self.config
@@ -132,8 +152,10 @@ class FlexionRetargeter:
     def take_reference(self, samples: Sequence[Mapping[str, float]]) -> list[str]:
         """The operator's straight hand (the [켜기] reference take): the joints whose `open` it set."""
         c, taken = self.config, []
+        if self.sweeps is not None:
+            self._take_rest(samples)
         for j in FLEX_INPUTS:
-            values = [v for s in samples if (v := reading(j, s)) is not None]
+            values = [v for s in samples if (v := self.reading(j, s)) is not None]
             if not values:
                 continue
             r = statistics.median(values)
@@ -144,7 +166,28 @@ class FlexionRetargeter:
         self._smooth = {}
         return taken
 
+    def _take_rest(self, samples: Sequence[Mapping[str, float]]) -> None:
+        """The reference hand is the crosstalk baseline: the thumb's always (its leak is linear, the open
+        end absorbs the shift), a finger's when it reads like the sweeps' open hand (a bent finger is not)."""
+        assert self.sweeps is not None
+        for src in SOURCES:
+            values = [v for s in samples if (v := source_values(src, s)) is not None]
+            if not values:
+                continue
+            now = tuple(statistics.median(v[i] for v in values) for i in range(len(values[0])))
+            if src == "thumb":
+                # the thumb's leak is linear: a new baseline shifts the leaking joints' readings, both ends
+                for j in FLEX_INPUTS:
+                    w = self.sweeps.leak.get(j, {}).get("thumb")
+                    if w is not None:
+                        self.closed[j] += float(sum(k * (a - b) for k, a, b in zip(w, now, self.rest["thumb"])))
+                self.rest[src] = now
+            elif now[0] <= self.sweeps.rest[src][0] + self.config.finger_reference_tol:
+                self.rest[src] = now
+
     def ready(self, signals: Mapping[str, float]) -> bool:
+        if self.sweeps is not None:
+            return all(n in signals for n in SWEEP_INPUTS)
         return all(reading(j, signals) is not None for j in FLEX_INPUTS)
 
     def closure(self, joint: str, x: float) -> float:
@@ -158,7 +201,7 @@ class FlexionRetargeter:
         out = {}
         a = self.config.open_alpha
         for j in FLEX_INPUTS:
-            x = reading(j, signals)
+            x = self.reading(j, signals)
             if x is None:
                 raise KeyError(f"flexion: no {FLEX_INPUTS[j]} in the glove signals (check ready())")
             prev = self._smooth.get(j)
@@ -175,4 +218,5 @@ class FlexionRetargeter:
         """Log fields: flex_open_<joint>, flex_closed_<joint>."""
         out = {f"flex_open_{j}": v for j, v in self.open.items()}
         out.update({f"flex_closed_{j}": v for j, v in self.closed.items()})
+        out["flex_sweeps"] = 1.0 if self.sweeps is not None else 0.0
         return out

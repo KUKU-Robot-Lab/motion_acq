@@ -2,6 +2,7 @@
 
     ros2 run motion_acq_hand calibrate --side right --user op1            # full: every example pose
     ros2 run motion_acq_hand calibrate --side right --user op1 --rezero   # 2 s open hand, keeps the map
+    ros2 run motion_acq_hand calibrate --side right --user op1 --fingers  # one finger at a time (10.11)
     ros2 run motion_acq_hand calibrate --side right --user fake --fake --yes   # fake glove
 
 Full: for each example pose of configs/hands/nova2_to_rh56f1.yaml (Korean prompt) the
@@ -12,6 +13,11 @@ saved to configs/hands/calibration/<user>_<side>.yaml, which every later session
 
 --rezero (after a SenseCom restart or a glove power cycle, when the hand does not open or
 close fully): one open-hand pose shifts the saved map's inputs.
+
+--fingers ([손가락별 맞춤], 10.11): thumb, index, middle, ring+pinky, then the fist, one at a time: the
+open hand still for a second, then that finger bent and straightened a few times. Each robot finger
+then goes 0..1 with that finger alone and the glove's crosstalk between fingers is removed
+(motion_acq.hand.sweeps); stored in the saved calibration (finger_sweeps), which it needs first.
 
 While recording, the glove strap squeezes at feedback.strap_hold (the same as in use, so
 the glove sits on the palm the same way). Enters typed while a pose records are dropped.
@@ -46,6 +52,11 @@ from motion_acq.hand.feedback import HAPTICS_BEAT_S, OFF, haptics_topic_for, hea
 from motion_acq.hand.kinematic import glove_points
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state, tip_signals
 from motion_acq.hand.retarget import DEFAULT_RETARGET, load_hand_retarget_config
+from motion_acq.hand.sweeps import MIN_MOVE, SOURCE_KO, SWEEPS, SweepError, fit_sweeps, report, travel, unsteady
+
+# fake glove poses a sweep alternates between (after the open hand)
+FAKE_SWEEP_POSES = {"thumb": ("thumb_bend", "thumb_opposed"), "index": ("index",), "middle": ("middle",),
+                    "ring": ("ring",), "fist": ("fist",)}
 
 
 class Recorder(Node):
@@ -100,6 +111,63 @@ def record_pose(node: Recorder, seconds: float) -> list[dict[str, float]]:
     return samples
 
 
+def record_sweep(node: Recorder, seconds: float, fake_poses: tuple[str, ...] | None) -> list[dict[str, float]]:
+    """The moving part of a sweep; a fake glove steps through flat and the sweep's poses each 0.5 s."""
+    node.samples = []
+    end, step = time.monotonic() + seconds, 0
+    while time.monotonic() < end:
+        if fake_poses is not None:
+            cycle = ("flat",) + fake_poses
+            node.pose_pub.publish(String(data=cycle[step % len(cycle)]))
+            step += 1
+        spin_for(node, min(0.5, max(end - time.monotonic(), 0.0)))
+    samples, node.samples = node.samples, None
+    if len(samples) < 20:
+        raise CalibrationError(f"{seconds} 초에 장갑 샘플 {len(samples)} 개뿐: 장갑 드라이버가 도는지 확인")
+    return samples
+
+
+def finger_sweeps(node: Recorder, side: str, ask, say, *, fake: bool, rest_s: float, move_s: float,
+                  max_tries: int = 3):
+    """[손가락별 맞춤]: the five sweeps, each retried when the open hand moved or the finger hardly did."""
+    side_ko = "오른손" if side == "right" else "왼손"
+    recordings = {}
+    for i, kind in enumerate(SWEEPS, 1):
+        for attempt in range(1, max_tries + 1):
+            ask(f"[{side_ko} 손가락별 {i}/{len(SWEEPS)}] {SWEEPS[kind]}. '시작' 이 나오면 {move_s:.0f}초 동안 "
+                "천천히 3번. 손을 편 채 Enter 를 누르세요 ")
+            say(f"  편 손 기록 중: 그대로 멈춰 있으세요 ({rest_s:.0f}초)")
+            if fake:
+                node.pose_pub.publish(String(data="flat"))
+                spin_for(node, 0.3)
+            try:
+                rest = record_pose(node, rest_s)
+                restless = unsteady(rest)
+                if restless:
+                    names = ", ".join(f"{n} {v:.2f}" for n, v in restless.items())
+                    say(f"  편 손이 움직였습니다 ({names}): 다시 합니다 ({attempt}/{max_tries})")
+                    continue
+                say(f"  시작: {SOURCE_KO[kind]} 천천히 3번 굽혔다 펴기")
+                moving = record_sweep(node, move_s, FAKE_SWEEP_POSES[kind] if fake else None)
+                moved = travel(kind, (rest, moving))
+            except (CalibrationError, SweepError) as exc:
+                say(f"  기록 실패 ({exc}): 다시 합니다 ({attempt}/{max_tries})")
+                continue
+            if moved < MIN_MOVE[kind]:
+                say(f"  {SOURCE_KO[kind]}이 거의 움직이지 않았습니다 ({moved:.2f} < {MIN_MOVE[kind]}): "
+                    f"다시 합니다 ({attempt}/{max_tries})")
+                continue
+            say(f"  기록됨 ({len(moving)} 샘플, 움직임 {moved:.2f})")
+            recordings[kind] = (rest, moving)
+            break
+        else:
+            raise CalibrationError(f"{SOURCE_KO[kind]} 를 {max_tries}번 해도 기록하지 못했습니다")
+    try:
+        return fit_sweeps(recordings, recorded=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    except SweepError as exc:
+        raise CalibrationError(str(exc)) from exc
+
+
 def alignment_line(calibration: HandCalibration) -> str:
     a = calibration.alignment
     if a is None:
@@ -128,6 +196,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--seconds", type=float, default=2.0)
     ap.add_argument("--rezero", action="store_true", help="only the open hand: shift the saved map's inputs")
+    ap.add_argument("--fingers", action="store_true",
+                    help="one finger at a time: per-finger ranges and crosstalk (needs a saved calibration)")
+    ap.add_argument("--sweep-seconds", type=float, default=6.0, help="--fingers: moving part of each sweep")
     ap.add_argument("--fake", action="store_true", help="drive the fake glove to each pose")
     ap.add_argument("--yes", action="store_true", help="no prompts (fake runs)")
     args = ap.parse_args(argv)
@@ -157,6 +228,14 @@ def main(argv: list[str] | None = None) -> None:
                 spin_for(node, 0.5)
             return record_pose(node, args.seconds)
 
+        if args.fingers:
+            saved = HandCalibration.load(out, side=side)
+            sweeps = finger_sweeps(node, side, ask, say, fake=args.fake, rest_s=1.0, move_s=args.sweep_seconds)
+            saved.with_sweeps(sweeps).save(out)
+            print(f"손가락별 맞춤 저장됨: {out}")
+            for line in report(sweeps):
+                print(line)
+            return
         if args.rezero:
             saved = HandCalibration.load(out, side=side)
             ask(f"[편 손 맞춤] {config.examples[OPEN_POSE].prompt}. 자세를 잡고 멈춘 뒤 Enter 를 누르세요 ")
@@ -172,6 +251,7 @@ def main(argv: list[str] | None = None) -> None:
                                   examples=examples, ask=ask, record=record, say=say)
         calibration.save(out)
         print(f"보정 저장됨: {out}")
+        print("  손가락별 맞춤은 새 보정에 없다: 필요하면 [손가락별 맞춤]을 다시 한다")
         print(f"  예시 자세 {len(examples)}개, 예시에서의 최대 오차 {fit_error(calibration, examples):.3f} rad")
         print(alignment_line(calibration))
     except CalibrationError as exc:

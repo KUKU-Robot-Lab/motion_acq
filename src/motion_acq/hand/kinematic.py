@@ -181,10 +181,12 @@ class KinematicRetargeter:
         return int(np.argmin(cost))
 
     def solve(self, points: Mapping[str, np.ndarray], thumb_bend: float | None = None,
-              fixed: Mapping[str, float] | None = None) -> dict[str, float]:
+              fixed: Mapping[str, float] | None = None, pinch_vectors: bool = True) -> dict[str, float]:
         """thumb_bend: the operator's thumb_2 (rad) from the glove's thumb joint, if known.
         fixed: joints set elsewhere (flexion.py: the fingers and thumb_2); only the rest is solved
-        (thumb_1 at that thumb_2, the pinch vectors from those fingers' tips)."""
+        (thumb_1 at that thumb_2, the pinch vectors from those fingers' tips).
+        pinch_vectors False: the thumb from its own tip only (10.11 user: each robot finger from that
+        operator finger alone, like a joystick; the pinch term rotated the thumb when a finger moved)."""
         c = self.c
         fixed = dict(fixed or {})
         tgt = {f: self.a.apply(points[tip_prefix(f)]) for f in ("thumb",) + FINGERS}
@@ -194,7 +196,7 @@ class KinematicRetargeter:
         # thumb: its own tip plus the pinch vectors of the fingers it nears
         cost = np.sum((self.t.thumb_tips - tgt["thumb"]) ** 2, axis=1)
         pinch = {}
-        for f in FINGERS:
+        for f in FINGERS if pinch_vectors else ():
             d = float(np.linalg.norm(tgt[f] - tgt["thumb"]))
             w = c.pinch_weight * min(max((c.near_m - d) / (c.near_m - c.touch_m), 0.0), 1.0)
             if w <= 0.0:

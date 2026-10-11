@@ -181,6 +181,8 @@ class Console:
             return units.calibrate(st, mode, key[6:], str(s["user"]))
         if key.startswith("rezero_"):
             return units.calibrate(st, mode, key[7:], str(s["user"]), rezero=True)
+        if key.startswith("fingers_"):
+            return units.calibrate(st, mode, key[8:], str(s["user"]), fingers=True)
         raise UnitError(f"unknown unit {key!r}")
 
     def blockers(self, key: str) -> list[str]:
@@ -754,7 +756,7 @@ class Console:
         keys += (["head"] if self.station.has_head else []) + ["arm", "record"]
         keys += [f"arm_{side}" for side in ("right", "left") if side in self.station.can_ports]
         for side in self.station.hands:
-            keys += [f"hand_{side}", f"calib_{side}", f"rezero_{side}"] + ([f"ecat_{side}"] if self.mode == "real" else [])
+            keys += [f"hand_{side}", f"calib_{side}", f"rezero_{side}", f"fingers_{side}"] + ([f"ecat_{side}"] if self.mode == "real" else [])
         return keys
 
     def _unit(self, key: str) -> dict:
@@ -779,9 +781,14 @@ class Console:
             ok, detail = calibration_current(path, sensecom)
             short = str(path.relative_to(ROOT))
             stale = ok and calibration_stale(path, sensecom)
-            out[side] = {"ok": ok, "stale": stale,
-                         "detail": f"{short} (SenseCom 을 다시 켠 뒤: 손이 어긋나면 [편 손 맞춤] 2초)"
-                         if stale else short if ok else detail.replace(str(path), short)}
+            try:
+                sweeps = ok and "\nfinger_sweeps:\n" in path.read_text(encoding="utf-8")
+            except OSError:
+                sweeps = False
+            tag = " · 손가락별 맞춤 있음" if sweeps else " · 손가락별 맞춤 없음" if ok else ""
+            out[side] = {"ok": ok, "stale": stale, "sweeps": sweeps,
+                         "detail": f"{short}{tag} (SenseCom 을 다시 켠 뒤: 손이 어긋나면 [편 손 맞춤] 2초)"
+                         if stale else f"{short}{tag}" if ok else detail.replace(str(path), short)}
         return out
 
     def snapshot(self) -> dict:

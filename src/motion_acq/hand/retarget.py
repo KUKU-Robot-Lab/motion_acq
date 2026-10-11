@@ -230,7 +230,7 @@ class HandRetargeter:
         if self.config.method == "flexion":
             self.flexion = FlexionRetargeter(calibration.medians,
                                              {j: self.config.limits_rad[j][1] for j in FLEX_INPUTS},
-                                             self.config.flexion)
+                                             self.config.flexion, calibration.sweeps)
 
     def take_reference(self, samples: Sequence[Mapping[str, float]]) -> list[str]:
         """The [켜기] reference take (straight hand) for the flexion map; the joints it set."""
@@ -276,7 +276,8 @@ class HandRetargeter:
         if self.flexion is not None and self.flexion.ready(signals):
             raw = self.flexion.solve(signals)
             if points is not None and self.kinematic is not None:
-                raw["thumb_1"] = self.kinematic.solve(points, fixed=raw)["thumb_1"]
+                # thumb_1 from the operator's thumb tip alone (10.11 user: one finger drives one finger)
+                raw["thumb_1"] = self.kinematic.solve(points, fixed=raw, pinch_vectors=False)["thumb_1"]
             else:  # no hand model data / alignment: the example map's thumb rotation
                 raw["thumb_1"] = self.calibration.predict(signals)["thumb_1"]
             self.missing_inputs, self.method_used = [], "flexion"

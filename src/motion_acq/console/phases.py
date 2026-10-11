@@ -79,6 +79,10 @@ QUEST_VIEW_RULES: tuple[Rule, ...] = (
 
 CALIB_RULES: tuple[Rule, ...] = (
     ("편 손 맞춤 저장됨", "ok", "편 손 맞춤 저장됨"),
+    ("손가락별 맞춤 저장됨", "ok", "손가락별 맞춤 저장됨"),
+    ("거의 움직이지 않았습니다", "warn", "손가락이 덜 움직임: 다시"),
+    ("편 손이 움직였습니다", "warn", "편 손이 움직임: 다시"),
+    ("시작:", "live", "그 손가락만 굽혔다 펴기"),
     ("보정 저장됨", "ok", "보정 저장됨"),
     ("움직였습니다", "warn", "움직임: 같은 자세 다시"),
     ("비슷하게 읽히는", "warn", "장갑에서 구별 안 되는 자세: 그 자세들 다시"),
@@ -88,7 +92,8 @@ CALIB_RULES: tuple[Rule, ...] = (
 
 RULES = {"arm": ARM_RULES, "arm_right": ARM_RULES, "arm_left": ARM_RULES, "record": RECORD_RULES, "quest_view": QUEST_VIEW_RULES,
          "calib_right": CALIB_RULES, "calib_left": CALIB_RULES,
-         "rezero_right": CALIB_RULES, "rezero_left": CALIB_RULES}
+         "rezero_right": CALIB_RULES, "rezero_left": CALIB_RULES,
+         "fingers_right": CALIB_RULES, "fingers_left": CALIB_RULES}
 
 PROMPT = re.compile(r"press enter|enter 를 누르세요|\[y/n\]|\[Y/n\]|\[y/N\]", re.IGNORECASE)
 POSES_IN = re.compile(r"poses in (\d+) \(last ([^)]*) ago\), tracking clients (\d+), camera frames (\d+)")

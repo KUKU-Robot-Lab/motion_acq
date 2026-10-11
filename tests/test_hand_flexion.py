@@ -166,3 +166,14 @@ def test_thumb_2_fixed_keeps_the_solved_thumb_on_that_row():
     q = kin.solve(pts, fixed={"thumb_2": 0.1, "index_1": 0.5})
     assert q["thumb_2"] == pytest.approx(0.1, abs=0.003) and q["index_1"] == pytest.approx(0.5, abs=0.01)
     assert np.isfinite(q["thumb_1"])
+
+
+def test_a_finger_moving_toward_the_thumb_does_not_turn_the_robot_thumb():
+    """10.11 user (joystick): the thumb from the operator's thumb alone; the pinch term turned it."""
+    cal = rezero(make_calibration("left"), [with_model(POSE_ANGLES["open"])] * 10)
+    rt = HandRetargeter(CONFIG, cal, HAND_MAP, "left")
+    rt.start(None, 0.0)
+    thumb = rt.target(with_model(synthetic_angles({}, 0.4, 0.6)))[1]["thumb_1"]
+    for curl in (0.3, 0.6, 0.9):
+        q = rt.target(with_model(synthetic_angles({"index": curl}, 0.4, 0.6)))[1]
+        assert q["thumb_1"] == pytest.approx(thumb, abs=1e-6)

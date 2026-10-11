@@ -64,8 +64,8 @@ def blockers(console, key: str) -> list[str]:
             out += follow_blockers(console, source)
         if key in ARM_KEYS:
             out += _arm_blockers(console, console.arm_sides(key))
-            calibrating = [k for k in ("calib_right", "calib_left", "rezero_right", "rezero_left")
-                           if console.sup.is_running(k)]
+            calibrating = [k for k in ("calib_right", "calib_left", "rezero_right", "rezero_left",
+                                       "fingers_right", "fingers_left") if console.sup.is_running(k)]
             if calibrating:
                 out.append(f"장갑 보정 중({', '.join(calibrating)}): 끝난 뒤 팔 시작")
         if key == "head":
@@ -74,12 +74,12 @@ def blockers(console, key: str) -> list[str]:
             out += hand_blockers(console, key[5:], console.probe("ros"), starting=True)
         if key.startswith("ecat_"):
             out += driver_blockers(console, key[5:])
-        if key.startswith(("calib_", "rezero_")):
+        if key.startswith(("calib_", "rezero_", "fingers_")):
             side = key.split("_", 1)[1]
             ros = fresh_ros(console, console.probe("ros"))
             if ros is None or not (ros.get("glove_topics") or {}).get(side):
                 out.append("장갑 토픽 없음: 장갑 연결과 드라이버 먼저")
-            if key.startswith("rezero_") and not (console.calibration().get(side) or {}).get("ok"):
+            if key.startswith(("rezero_", "fingers_")) and not (console.calibration().get(side) or {}).get("ok"):
                 out.append("저장된 보정이 없다: 먼저 [보정]")
     elif key.startswith("hand_") and not units.calibration_file("", key[5:], fake=True).exists():
         out.append(f"fake 보정 파일 없음: 먼저 [{key[5:]} 보정] 또는 scripts/fake_hand_check.sh {key[5:]}")
