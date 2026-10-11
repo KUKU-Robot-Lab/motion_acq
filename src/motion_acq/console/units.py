@@ -399,6 +399,24 @@ def calibrate(station: Station, mode: str, side: str, user: str, *, rezero: bool
                   stop_grace_s=3.0)
 
 
+def tune(station: Station, mode: str, side: str, user: str) -> Launch:
+    """[손가락 튜닝] (10.11 user): the joystick tuning window (motion_acq_hand tune) on the operator's desktop."""
+    from motion_acq.console.launcher import desktop_env
+
+    side = check_side(side)
+    real = _real(mode)
+    path = calibration_file(user, side, fake=not real)
+    command = f"ros2 run motion_acq_hand tune --side {side} --user {user if real else 'fake'} --calibration {path}"
+    if not real:
+        command += " --glove-serial 0"
+    desktop = desktop_env()
+    env = {**_ros_env(station, mode), **{k: desktop[k] for k in ("DISPLAY", "XAUTHORITY") if k in desktop}}
+    side_ko = "오른손" if side == "right" else "왼손"
+    return Launch(f"tune_{side}", f"{side_ko} 손가락 튜닝", ros_argv(command), env, stop_grace_s=3.0,
+                  summary="창에서 관절마다 로봇 각도를 정하고 장갑 손가락 자세를 기록한다 (조이스틱 맵). "
+                          "[저장] 뒤 로봇 손 [홈] → [따라가기] 에서 쓴다.")
+
+
 # -- short tasks ---------------------------------------------------------------------------------------
 
 QUEST_TASKS = {"unworn": "헤드셋 벗고 쓰기 (근접 센서 끔)", "worn": "근접 센서 원래대로", "status": "Quest 상태", "app": "HandUMI 앱 모드", "view": "헤드셋 영상 열기 + VR",

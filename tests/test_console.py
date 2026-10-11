@@ -107,6 +107,21 @@ def test_calibration_owner_is_validated(user):
         units.calibration_file(user, "right")
 
 
+def test_tune_window_opens_on_the_desktop_with_the_operators_calibration(monkeypatch):
+    """[손가락 튜닝] (10.11 user): the joystick tuning window, on the real glove's domain, never moves the robot."""
+    monkeypatch.setenv("DISPLAY", ":1")
+    launch = units.tune(ARM4090, "real", "right", "op1")
+    cmd = launch.argv[-1]
+    assert launch.key == "tune_right" and not launch.moves_robot and not launch.pty
+    assert "ros2 run motion_acq_hand tune --side right --user op1 --calibration" in cmd
+    assert str(units.calibration_file("op1", "right")) in cmd and "--glove-serial" not in cmd
+    assert launch.env["ROS_DOMAIN_ID"] == "126" and launch.env["DISPLAY"] == ":1"
+    fake = units.tune(ARM4090, "fake", "left", "")
+    assert "--glove-serial 0" in fake.argv[-1] and fake.env["ROS_LOCALHOST_ONLY"] == "1"
+    with pytest.raises(units.UnitError):
+        units.tune(ARM4090, "real", "right", "x;rm")
+
+
 def test_record_requires_only_running_streams(tmp_path):
     assert units.record_streams(ARM4090, {"head", "arm"}) == {"head": 47101}
     assert units.record_streams(ARM4090, set()) == {}

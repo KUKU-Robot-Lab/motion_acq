@@ -183,6 +183,8 @@ class Console:
             return units.calibrate(st, mode, key[7:], str(s["user"]), rezero=True)
         if key.startswith("fingers_"):
             return units.calibrate(st, mode, key[8:], str(s["user"]), fingers=True)
+        if key.startswith("tune_"):
+            return units.tune(st, mode, key[5:], str(s["user"]))
         raise UnitError(f"unknown unit {key!r}")
 
     def blockers(self, key: str) -> list[str]:
@@ -756,7 +758,7 @@ class Console:
         keys += (["head"] if self.station.has_head else []) + ["arm", "record"]
         keys += [f"arm_{side}" for side in ("right", "left") if side in self.station.can_ports]
         for side in self.station.hands:
-            keys += [f"hand_{side}", f"calib_{side}", f"rezero_{side}", f"fingers_{side}"] + ([f"ecat_{side}"] if self.mode == "real" else [])
+            keys += [f"hand_{side}", f"calib_{side}", f"rezero_{side}", f"fingers_{side}", f"tune_{side}"] + ([f"ecat_{side}"] if self.mode == "real" else [])
         return keys
 
     def _unit(self, key: str) -> dict:

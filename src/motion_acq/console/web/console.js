@@ -14,6 +14,7 @@ const UNIT_KO = { quest_view: "영상 서버", mock_quest: "가짜 Quest", head:
   hand_right: "로봇 오른손", hand_left: "로봇 왼손", calib_right: "오른손 보정", calib_left: "왼손 보정",
   rezero_right: "오른손 편 손 맞춤", rezero_left: "왼손 편 손 맞춤",
   fingers_right: "오른손 손가락별 맞춤", fingers_left: "왼손 손가락별 맞춤",
+  tune_right: "오른손 손가락 튜닝", tune_left: "왼손 손가락 튜닝",
   ecat_right: "로봇 오른손 드라이버", ecat_left: "로봇 왼손 드라이버" };
 const CALIB_KEYS = ["calib_right", "calib_left", "rezero_right", "rezero_left", "fingers_right", "fingers_left"];
 const unitName = (k) => UNIT_KO[k] || k.replace(/^task_/, "작업 ");
@@ -398,10 +399,11 @@ function detailGlove(s) {
   if (jobLine("glove")) rows.push(["최근", jobLine("glove"), job("glove").state === "failed" ? "bad" : ""]);
   const calib = CALIB_KEYS.find(running);
   return `<h3>장갑 · Nova 2</h3>${facts(rows)}
-    <p class="hint">파일럿: <b>${esc(s.settings.user || "없음 (맨 위 오른쪽에 이름을 넣는다)")}</b>. 처음 한 번: [오른손 보정] → 화면 안내 예시 자세(11개)마다 [Enter: 이 자세 기록] → [왼손 보정]. 보정은 파일럿마다 저장되어 다음부터 그대로 쓴다. SenseCom 을 다시 켠 뒤 손이 어긋나면 [편 손 맞춤]: 손을 펴고 Enter 한 번(2초). 한 손가락을 움직일 때 다른 로봇 손가락이 따라 움직이면 [손가락별 맞춤]: 엄지·검지·중지·약지·주먹을 하나씩, 편 손 1초 뒤 그 손가락만 6초 굽혔다 펴기(보정 뒤에, 로봇 손 노드는 따라가는 중이 아닐 때 새 값을 읽는다).</p>
+    <p class="hint">파일럿: <b>${esc(s.settings.user || "없음 (맨 위 오른쪽에 이름을 넣는다)")}</b>. 처음 한 번: [오른손 보정] → 화면 안내 예시 자세(11개)마다 [Enter: 이 자세 기록] → [왼손 보정]. 보정은 파일럿마다 저장되어 다음부터 그대로 쓴다. SenseCom 을 다시 켠 뒤 손이 어긋나면 [편 손 맞춤]: 손을 펴고 Enter 한 번(2초). 한 손가락을 움직일 때 다른 로봇 손가락이 따라 움직이면 [손가락별 맞춤]: 엄지·검지·중지·약지·주먹을 하나씩, 편 손 1초 뒤 그 손가락만 6초 굽혔다 펴기(보정 뒤에, 로봇 손 노드는 따라가는 중이 아닐 때 새 값을 읽는다). [손가락 튜닝]: 창이 뜬다. 관절마다 로봇 각도(로봇이 움직일 수 있는 범위 안)를 정하고 장갑 손가락을 그 자세로 둔 채 [지금 자세로 기록] → [저장] → 로봇 손 [홈] → [따라가기].</p>
     <div class="actions">${btn("오른손 보정", { "data-start": "calib_right" }, "small")}${btn("왼손 보정", { "data-start": "calib_left" }, "small")}
       ${btn("오른손 편 손 맞춤", { "data-start": "rezero_right" }, "small")}${btn("왼손 편 손 맞춤", { "data-start": "rezero_left" }, "small")}
       ${btn("오른손 손가락별 맞춤", { "data-start": "fingers_right" }, "small")}${btn("왼손 손가락별 맞춤", { "data-start": "fingers_left" }, "small")}
+      ${btn("오른손 손가락 튜닝", { "data-start": "tune_right" }, "small")}${btn("왼손 손가락 튜닝", { "data-start": "tune_left" }, "small")}
       ${btn("Enter: 이 자세 기록", { "data-key": calib || "", "data-text": "\n", disabled: !calib }, "key small")}
       ${btn("드라이버 정지", { "data-action": "glove_driver_stop", disabled: !(g.driver_pids || []).length }, "ghost small")}</div>
     <div class="actions">${logButton(calib || "task_glove_up")}</div>`;
