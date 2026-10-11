@@ -126,8 +126,9 @@ axes (forward / left / up) while the robot stays still; [방향 맞음] allows i
   the hands open and wait. All at once ([전체 시작], auto) they follow the gloves when the arms follow
   (hold the open hand still for the 1 s reference). One by one (10.11): check each arm and hand alone with
   its own [홈] / [따라가기] first; a hand's [홈] / [따라가기] overrides its arm at home or following (the
-  arm's path still holds the fist) and also clears a latched FAULT. [끄기] on a hand is refused while its
-  arm runs ([주먹] closes it and keeps the node); a hand [끄기] alone ends at the fist too.
+  arm's path still holds the fist) and also clears a latched FAULT. A hand [끄기] works on its own,
+  arm on or off (10.11): the hand ends at the fist and the node exits; an arm's [차렷] then asks for that
+  hand's [주먹] first (the rest path needs the fist confirmed by the node). 모두 정지 is never refused.
   The arms do not need the Quest (10.11): [홈] / [차렷] run without it; only [따라가기] (Space) is
   refused until the Quest poses come in (and the WebXR direction check is done), and the Quest may be
   connected while an arm waits at home (not while one follows).

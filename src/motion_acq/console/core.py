@@ -326,6 +326,14 @@ class Console:
     def stop(self, key: str) -> dict:
         if not self.sup.is_running(key):
             return {"ok": False, "error": f"{key} 는 실행 중이 아니다"}
+        if key in ARM_UNITS:
+            # the stored rest path needs the hand at the fist, confirmed by its node (hand_link.py):
+            # without the node the arm would refuse its path and hold at home
+            off = [s for s in self._arm_hand_sides(key) if not self.sup.is_running(f"hand_{s}")]
+            if off:
+                names = ", ".join(f"로봇 {'오른' if s == 'right' else '왼'}손" for s in off)
+                return {"ok": False, "error": f"{names} 노드가 꺼져 있다: 차렷 경로는 손이 주먹이어야 하므로 "
+                                              f"{names} [주먹]을 먼저 누를 것 (모두 정지는 그대로 동작)"}
         if not self.sup.stop(key):
             return {"ok": False, "error": "이미 정지 중: 안전 자세로 가는 동안 기다릴 것"}
         self.intent("stop", key=key)
@@ -419,11 +427,9 @@ class Console:
                 return {"ok": False, "error": f"unknown hand command {what!r}"}
             return self._hand_cmd(units.check_side(side), what, confirm=confirm, token=token)
         if kind == "hand_off":
-            side = units.check_side(arg)
-            if side in self.station.hand_link and self.arms_on(side):
-                return {"ok": False, "error": "팔이 켜져 있어 손 노드는 못 끈다(팔이 차렷으로 갈 때 손을 주먹으로 쥐어야 함): "
-                                              "손을 닫으려면 [주먹], 끄려면 팔 [차렷] 먼저"}
-            return self.stop(f"hand_{side}")  # SIGINT: the node closes the hand to the fist, exits
+            # 10.11 user: each hand turns off on its own, arm on or off. SIGINT: the node closes the hand to
+            # the fist and exits; the arm keeps its pose. Its [차렷] then waits for the hand ([주먹] / [홈]).
+            return self.stop(f"hand_{units.check_side(arg)}")
         if kind == "driver_off":
             side = units.check_side(arg)
             if self.sup.is_running(f"hand_{side}"):

@@ -550,11 +550,21 @@ def test_hand_off_waits_only_for_its_own_arm(console, monkeypatch):
     monkeypatch.setattr(console.sup, "is_running", lambda key: key in running)
     stopped = []
     monkeypatch.setattr(console, "stop", lambda key: stopped.append(key) or {"ok": True})
-    assert not console.action("hand_off:right")["ok"]          # the right arm runs: it needs the fist
-    assert console.action("hand_off:left")["ok"] and stopped == ["hand_left"]
-    running.add("arm")
-    console.update_settings({"arm_side": "both"})
-    assert not console.action("hand_off:left")["ok"]
+    # 10.11 user: each hand turns off on its own, arm on or off
+    assert console.action("hand_off:right")["ok"] and console.action("hand_off:left")["ok"]
+    assert stopped == ["hand_right", "hand_left"]
+
+
+def test_arm_rest_waits_for_its_hand_node(console, monkeypatch):
+    """The rest path needs the hand at the fist, confirmed by its node: [차렷] asks for [주먹] first."""
+    console.set_mode("real")
+    running = {"arm_right", "hand_left"}
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key in running)
+    monkeypatch.setattr(console.sup, "stop", lambda key: True)
+    reply = console.stop("arm_right")
+    assert not reply["ok"] and "[주먹]" in reply["error"] and "오른손" in reply["error"]
+    running.add("hand_right")
+    assert console.stop("arm_right")["ok"]
 
 
 def test_one_arm_units_run_together_but_not_with_everything_at_once(console, monkeypatch):
@@ -809,7 +819,7 @@ def test_one_arm_home_closes_its_hand_without_the_glove(console, monkeypatch):
     assert any("장갑" in b for b in gates.hand_blockers(console, "left", ros, starting=True, need_glove=True))
 
 
-def test_hand_fist_is_a_command_and_hand_off_says_what_to_do_instead(console, monkeypatch):
+def test_hand_fist_is_a_command_and_hand_off_works_with_the_arm_on(console, monkeypatch):
     console.set_mode("real")
     monkeypatch.setattr(console, "_hand_precheck", lambda side, need_glove: [] if not need_glove else ["glove"])
     monkeypatch.setattr(console, "_hand_driver_present", lambda side: True)
@@ -817,5 +827,6 @@ def test_hand_fist_is_a_command_and_hand_off_says_what_to_do_instead(console, mo
     reply = console.action("hand:right:fist")
     assert reply["need_confirm"] and "{data: fist}" in reply["command"]
     assert console.action("hand:right:follow") == {"ok": False, "error": "glove"}
-    off = console.action("hand_off:right")
-    assert not off["ok"] and "[주먹]" in off["error"] and "[차렷]" in off["error"]
+    stopped = []
+    monkeypatch.setattr(console, "stop", lambda key: stopped.append(key) or {"ok": True})
+    assert console.action("hand_off:right")["ok"] and stopped == ["hand_right"]

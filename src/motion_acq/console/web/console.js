@@ -249,7 +249,7 @@ function nodeHand(s, side) {
   const sub = job(key).state === "failed" ? job(key).text : rec?.refusal || rec?.reference || how;
   return { ...n, tone: st[0], state: st[1], sub,
            actions: home + follow + fist +
-                    btn("끄기", { "data-action": `hand_off:${side}`, title: "주먹으로 쥔 뒤 노드를 내린다 (팔이 꺼져 있을 때)" }, "danger small") };
+                    btn("끄기", { "data-action": `hand_off:${side}`, title: "주먹으로 쥔 뒤 노드를 내린다 (팔과 무관; 팔 [차렷] 전에 다시 [주먹])" }, "danger small") };
 }
 
 function nodeRecord(s) {
