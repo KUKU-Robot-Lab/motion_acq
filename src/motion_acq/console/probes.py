@@ -184,21 +184,30 @@ def quest_port_owner() -> dict | None:
 
 
 def quest_state() -> dict:
+    """The Quest over USB or Wi-Fi (10.12, motion_acq.quest_view.link): ready, link, forwards, awake."""
+    from motion_acq.quest_view import link
+
     adb = adb_path()
     if not Path(adb).exists() and "/" in adb:
         return {"adb": False, "text": "adb 없음"}
-    states = parse_adb_devices(run([adb, "devices"], timeout=4))
-    out: dict = {"adb": True, "devices": states}
-    if len(states) != 1 or states[0] != "device":
-        out["text"] = ("Quest 가 USB 에 없다" if not states else
-                       "헤드셋 안에서 USB 디버깅 허용 필요" if states[0] == "unauthorized" else
-                       "adb 장치가 둘 이상" if len(states) > 1 else f"adb: {states[0]}")
+    device = link.current()
+    wifi = link.saved_wifi()
+    out: dict = {"adb": True, "devices": [] if device is None else [device.state],
+                 "ready": device is not None and device.state == "device",
+                 "link": None if device is None else ("wifi" if device.wifi else "usb"), "wifi_saved": wifi}
+    if not out["ready"]:
+        out["text"] = ("Quest 가 USB·Wi-Fi 에 없다" if device is None else
+                       "헤드셋 안에서 USB 디버깅 허용 필요" if device.state == "unauthorized" else
+                       f"adb: {device.state}")
         return out
+    assert device is not None
+    env = {"ANDROID_SERIAL": device.serial}
+    out["serial"] = device.serial
     out["forward"] = QUEST_TCP in run([adb, "forward", "--list"], timeout=4)
-    out["reverse"] = VIEW_REVERSE in run([adb, "reverse", "--list"], timeout=4)
-    power = run([adb, "shell", "dumpsys power | grep -m1 mWakefulness="], timeout=4)
+    out["reverse"] = VIEW_REVERSE in run([adb, "reverse", "--list"], timeout=4, env=env)
+    power = run([adb, "shell", "dumpsys power | grep -m1 mWakefulness="], timeout=4, env=env)
     out["awake"] = None if not power else "Awake" in power
-    out["text"] = "연결됨"
+    out["text"] = "연결됨 (Wi-Fi)" if device.wifi else "연결됨 (USB)"
     return out
 
 

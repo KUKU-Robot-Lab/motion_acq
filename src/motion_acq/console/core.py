@@ -799,7 +799,9 @@ class Console:
                 problems.append(gates.external_quest(self))
             if problems:
                 raise RuntimeError(" / ".join(problems))
-            run([adb_path(), "forward", "--remove", "tcp:65432"], timeout=5)
+            from motion_acq.quest_view.link import adb_env
+
+            run([adb_path(), "forward", "--remove", "tcp:65432"], timeout=5, env=adb_env())
             result = self._spawn(units.quest_view(self.station, self.mode))
             if not result.get("ok"):
                 raise RuntimeError(result.get("error", "quest-view"))

@@ -12,6 +12,13 @@
 #   scripts/quest_usb.sh app       # back to the HandUMI app (forward + launch)
 #   scripts/quest_usb.sh unworn    # keep the headset awake off the head (proximity sensor off), wake it
 #   scripts/quest_usb.sh worn      # proximity sensor back to normal (also after a Quest reboot)
+#   scripts/quest_usb.sh wifi      # (cable in, once per Quest boot) the same link over Wi-Fi; then the
+#                                  # cable may come out. wifi-off: back to the cable.
+#
+# Wi-Fi (10.12 user): adb over TCP 5555 to the headset's Wi-Fi address, remembered in
+# ~/.config/macq/quest_wifi; every command then talks to that device (cable in or not).
+# The headset and this PC must be on the same network. More latency / jitter than USB, a
+# dropped link stops the arms (tracking lost), and the headset runs on its battery.
 #
 # Not worn (10.05 user: arms only, controllers on the hands): the controllers are still
 # tracked by the headset cameras, so the headset stays on, awake (unworn) and placed so
@@ -36,22 +43,84 @@ die() { echo "error: $*" >&2; exit 1; }
 
 [[ -x "$ADB" ]] || die "adb not found (expected $HOME/opt/platform-tools/adb)."
 
+WIFI_FILE="${MACQ_QUEST_WIFI_FILE:-$HOME/.config/macq/quest_wifi}"
+WIFI_PORT=5555
+
+devices() { "$ADB" devices | awk 'NR > 1 && NF >= 2 {print $1, $2}'; }
+
+pick_serial() {
+  # the remembered Wi-Fi device (dialled again when adb lost it), else USB (as motion_acq.quest_view.link)
+  local list saved
+  list="$(devices)"
+  saved="$(cat "$WIFI_FILE" 2>/dev/null || true)"
+  if [[ -n "$saved" ]] && ! grep -qx "$saved device" <<< "$list"; then
+    "$ADB" connect "$saved" >/dev/null 2>&1 || true
+    list="$(devices)"
+  fi
+  if [[ -n "$saved" ]] && grep -qx "$saved device" <<< "$list"; then echo "$saved"; return; fi
+  awk '$2 == "device" && $1 !~ /:/ {print $1; exit}' <<< "$list" | grep . && return
+  awk '$2 == "device" {print $1; exit}' <<< "$list" | grep . && return
+  awk 'NR == 1 {print $1}' <<< "$list"
+}
+
 one_device() {
-  local states
-  states="$("$ADB" devices | awk 'NR > 1 && NF >= 2 {print $2}')"
-  [[ -n "$states" ]] || die "no Quest on USB. Plug it in and accept 'Allow USB debugging' in the headset."
-  [[ "$(wc -l <<< "$states")" -eq 1 ]] || die "more than one adb device; unplug the others."
-  case "$states" in
+  local serial state saved
+  serial="$(pick_serial)"
+  saved="$(cat "$WIFI_FILE" 2>/dev/null || true)"
+  [[ -n "$serial" ]] || die "no Quest on USB${saved:+ or Wi-Fi ($saved)}. Plug it in and accept 'Allow USB debugging' in the headset${saved:+ (after a Quest reboot: cable in, then $0 wifi again)}."
+  state="$(devices | awk -v s="$serial" '$1 == s {print $2}')"
+  case "$state" in
     device) ;;
     unauthorized) die "Quest is unauthorized: accept 'Allow USB debugging' inside the headset." ;;
     no*) die "no USB permission for the Quest: a udev rule for vendor 2833 (plugdev) is needed." ;;
-    *) die "unexpected adb state: $states" ;;
+    *) die "unexpected adb state: $state ($serial)" ;;
   esac
+  export ANDROID_SERIAL="$serial"
+}
+
+cmd_wifi() {
+  local usb ip target had_reverse=0 had_forward=0 i
+  usb="$(devices | awk '$2 == "device" && $1 !~ /:/ {print $1; exit}')"
+  [[ -n "$usb" ]] || die "the switch to Wi-Fi needs the cable once: plug the Quest in (USB debugging allowed), then $0 wifi"
+  ip="$("$ADB" -s "$usb" shell ip -f inet addr show wlan0 | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')"
+  [[ -n "$ip" ]] || die "the Quest has no Wi-Fi address: join the same Wi-Fi as this PC in the headset"
+  target="$ip:$WIFI_PORT"
+  # adbd restarts in TCP mode and drops the links of the cable: set them again on the Wi-Fi device
+  "$ADB" -s "$usb" reverse --list | grep -q "tcp:$VIEW_PORT" && had_reverse=1
+  "$ADB" forward --list | grep -q "^$usb tcp:$TCP_PORT" && had_forward=1
+  "$ADB" -s "$usb" tcpip "$WIFI_PORT" >/dev/null
+  for i in 1 2 3 4 5 6 7 8; do
+    sleep 1
+    "$ADB" connect "$target" 2>&1 | grep -q "connected to" && break
+  done
+  devices | grep -qx "$target device" || die "could not reach $target over Wi-Fi (same network as this PC? $(ip -4 -o addr show scope global | awk '{print $4}' | tr '\n' ' '))"
+  mkdir -p "$(dirname "$WIFI_FILE")"
+  echo "$target" > "$WIFI_FILE"
+  export ANDROID_SERIAL="$target"
+  if (( had_reverse )); then "$ADB" reverse "tcp:$VIEW_PORT" "tcp:$VIEW_PORT" >/dev/null; echo "page link (reverse $VIEW_PORT) moved to Wi-Fi"; fi
+  if (( had_forward )); then "$ADB" forward "tcp:$TCP_PORT" "tcp:$TCP_PORT" >/dev/null; echo "app link (forward $TCP_PORT) moved to Wi-Fi"; fi
+  echo "Wi-Fi link: $target. The cable may come out now; the headset page reconnects by itself."
+  echo "After a Quest reboot: cable in, then $0 wifi again."
+}
+
+cmd_wifi_off() {
+  local saved usb
+  saved="$(cat "$WIFI_FILE" 2>/dev/null || true)"
+  rm -f "$WIFI_FILE"
+  [[ -n "$saved" ]] && "$ADB" disconnect "$saved" >/dev/null 2>&1 || true
+  usb="$(devices | awk '$2 == "device" && $1 !~ /:/ {print $1; exit}')"
+  if [[ -n "$usb" ]]; then
+    "$ADB" -s "$usb" usb >/dev/null || true  # adbd back to USB only (restarts: reopen the page)
+    echo "back to the cable ($usb): reopen the page ($0 page) or the app ($0 app)"
+  else
+    echo "Wi-Fi link forgotten; plug the cable in"
+  fi
 }
 
 cmd_status() {
   "$ADB" devices -l
   one_device
+  echo "link: $ANDROID_SERIAL ($([[ "$ANDROID_SERIAL" == *:* ]] && echo Wi-Fi || echo USB))"
   if "$ADB" shell pm list packages "$PACKAGE" | grep -q "$PACKAGE"; then
     echo "app: $PACKAGE installed"
   else
@@ -151,5 +220,7 @@ case "${1:-status}" in
   app) cmd_app ;;
   unworn) cmd_unworn ;;
   worn) cmd_worn ;;
-  *) die "usage: $0 {status|install|forward|launch|view|page|vr|app|unworn|worn}" ;;
+  wifi) cmd_wifi ;;
+  wifi-off) cmd_wifi_off ;;
+  *) die "usage: $0 {status|install|forward|launch|view|page|vr|app|unworn|worn|wifi|wifi-off}" ;;
 esac

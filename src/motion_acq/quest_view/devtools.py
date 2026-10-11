@@ -29,8 +29,10 @@ def adb_path() -> str:
 
 
 def forward(local_port: int) -> None:
+    from motion_acq.quest_view.link import adb_env
+
     subprocess.run([adb_path(), "forward", f"tcp:{local_port}", DEVTOOLS_SOCKET],
-                   check=True, capture_output=True, text=True)
+                   check=True, capture_output=True, text=True, env=adb_env())
 
 
 def find_page(local_port: int, view_port: int, timeout_s: float) -> str:

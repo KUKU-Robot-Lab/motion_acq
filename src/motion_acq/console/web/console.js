@@ -383,7 +383,7 @@ function detailQuest(s) {
   const q = (s.probes || {}).quest || {};
   const qv = s.quest_view;
   const owner = (s.probes || {}).quest_port;
-  const rows = [["USB", q.text || "확인 중", (q.devices || []).length === 1 && q.devices[0] === "device" ? "ok" : "bad"],
+  const rows = [["연결", (q.text || "확인 중") + (q.link === "wifi" && q.serial ? ` ${q.serial}` : ""), q.ready ? "ok" : "bad"],
     ["헤드셋", q.awake === undefined || q.awake === null ? "-" : q.awake ? "깨어 있음" : "잠듦 (쓰면 깬다)", q.awake ? "ok" : "warn"],
     ["자세 입력", ({ app: "HandUMI 앱", view: "헤드셋 영상(WebXR)", mock: "가짜 Quest", external: "콘솔 밖 프로그램" })[s.quest_source] || "없음"],
     ["영상 서버", running("quest_view") ? "실행 중" : "꺼짐", running("quest_view") ? "live" : ""]];
@@ -393,7 +393,10 @@ function detailQuest(s) {
   const extra = real()
     ? btn("VR 다시 시작", { "data-action": "quest:start" }) + btn("페이지 다시 열기", { "data-action": "quest:connect" }) +
       btn("영상 끊기", { "data-stop": "quest_view" }, "ghost") + btn("HandUMI 앱 모드", { "data-action": "quest:app" }, "ghost") +
-      btn("헤드셋 벗고 쓰기", { "data-action": "quest:unworn" }, "ghost") + btn("근접 센서 원래대로", { "data-action": "quest:worn" }, "ghost")
+      btn("헤드셋 벗고 쓰기", { "data-action": "quest:unworn" }, "ghost") + btn("근접 센서 원래대로", { "data-action": "quest:worn" }, "ghost") +
+      // 10.12 user: no cable while moving; the switch needs the cable once per Quest boot
+      (q.link === "wifi" ? btn("다시 USB 선으로", { "data-action": "quest:wifi-off" }, "ghost")
+                         : btn("Wi-Fi 로 전환", { "data-action": "quest:wifi", title: "선을 꽂은 채 누르기: 그 뒤 선을 빼도 된다 (Quest 를 껐다 켜면 다시)" }, "ghost"))
     : btn("가짜 Quest 정지", { "data-stop": "mock_quest" }, "ghost") + btn("테스트 영상 정지", { "data-stop": "quest_view" }, "ghost");
   return `<h3>머리 · Quest 3</h3>${facts(rows)}<div class="actions">${extra}</div>
     <div class="sect">방향 확인 (헤드셋 영상으로 팔을 움직이기 전, 한 번)</div>${directionHtml(s)}
