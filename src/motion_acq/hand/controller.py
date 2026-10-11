@@ -296,6 +296,8 @@ class HandController:
         """t None: the phase clock starts at the next tick (request_enable has no time)."""
         self.phase = phase
         self._phase_t0 = t
+        if phase is not Phase.FOLLOW:
+            self.grip_guard.release_touch()  # the next follow starts without old touch points
 
     @property
     def busy(self) -> bool:
@@ -366,6 +368,9 @@ class HandController:
                      and not self.glove_frozen(t))
             measured = self._measured_rad() if self._measured_fresh(t) else None
             ceilings = self.grip_guard.ceilings(measured, t)
+            # contact cap: a touching joint goes at most contact_cap_rad past where it touched (10.11)
+            for j, top in self.grip_guard.contact_ceilings(measured, t).items():
+                ceilings[j] = min(top, ceilings.get(j, top))
             # admittance: the operator's target minus the force term (admittance.py), every tick
             offsets = self.admittance.update(t, self.grip_guard.relative_force(t), self.grip_guard.tips_now(t))
             for j, top in self.admittance.ceilings(t, measured, self.retargeter.command()).items():
@@ -532,6 +537,8 @@ class HandController:
             "grip_guard": dict(self.grip_guard.engaged) if following and self.grip_guard.engaged else None,
             "current_ma": self.grip_guard.current_now(t),
             "contact_slow": sorted(self.grip_guard.in_contact) or None,
+            "contact_touch_rad": ({j: round(q, 4) for j, q in self.grip_guard.touch.items()}
+                                  if following and self.grip_guard.touch else None),
             "admittance": self.admittance.record() if following else None,
             "driver_admittance_reg": self._driver_adm,
             "speed": out.speed,

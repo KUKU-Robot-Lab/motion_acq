@@ -21,6 +21,16 @@ Two additions from the literature (rl_ws/repo/teleop_refs, 10.06):
   it. A joint whose tip, force or current shows contact gets contact_speed until it lets go.
 * Force bias (GR00T-WholeBodyControl Inspire bridge; our index reads ~96 g at rest): force
   thresholds are relative to the joint's reading at rest, learnt while the hand is home and open.
+
+Contact cap (10.11 arm4090 left cup grasp, user option A): the operator holds no real cup, so the
+glove target ran ~245 registers past where the pinky touched; at contact speed and under the
+driver's admittance rate limit the finger then crept on for ~1.4 s after the operator stopped,
+up to ~800 g, opened a little and closed again ("it keeps moving on its own"). Now a joint that
+touches remembers where (measured at the first sign of contact) and is commanded at most
+contact_cap_rad past it while the contact lasts: the grip settles near k x cap (driver
+admittance k ~3.6 g/register) and stops when the operator stops. Released contact_cap_release_s
+after the contact signs are gone (the object left, or the operator opened). thumb_1 is position
+only (no admittance, inverted force sign): not capped.
 """
 
 from __future__ import annotations
@@ -29,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 JOINTS = ("thumb_1", "thumb_2", "index_1", "middle_1", "ring_1", "pinky_1")
+CAP_JOINTS = ("thumb_2", "index_1", "middle_1", "ring_1", "pinky_1")  # the driver admittance joints
 TIP_JOINTS = {"thumb": ("thumb_1", "thumb_2"), "index": ("index_1",), "middle": ("middle_1",),
               "ring": ("ring_1",), "pinky": ("pinky_1",)}
 
@@ -52,6 +63,9 @@ class GripGuardConfig:
     contact_current_ma: float = 450.0  # 10.06 free motion <= 320 mA
     contact_tip_n: float = 0.2
     bias_samples: float = 50.0  # rest readings needed before the bias is used
+    # contact cap: in contact, command at most this far past where the joint touched (0 = off)
+    contact_cap_rad: float = 0.0
+    contact_cap_release_s: float = 0.3  # contact signs gone this long: the cap is released
 
     def __post_init__(self) -> None:
         if not 0 < self.force_off_g < self.force_on_g < self.force_hard_g:
@@ -64,6 +78,8 @@ class GripGuardConfig:
             raise ValueError("grip_guard: contact_speed in (0, 4000], contact thresholds > 0")
         if self.contact_force_g >= self.force_on_g or self.contact_current_ma >= self.current_on_ma:
             raise ValueError("grip_guard: contact (slow down) must come before the hold levels")
+        if self.contact_cap_rad < 0 or self.contact_cap_release_s < 0:
+            raise ValueError("grip_guard: contact_cap_rad and contact_cap_release_s must be >= 0")
 
 
 def grip_guard_config(raw: Mapping | None) -> GripGuardConfig:
@@ -91,6 +107,8 @@ class GripGuard:
     in_contact: set[str] = field(default_factory=set)  # joints at contact speed
     _rest: dict[str, list[float]] = field(default_factory=dict)
     bias: dict[str, float] = field(default_factory=dict)
+    touch: dict[str, float] = field(default_factory=dict)  # joint -> measured rad where it touched
+    _untouched_since: dict[str, float] = field(default_factory=dict)
 
     def on_force(self, names: Sequence[str], values: Sequence[float], t: float) -> None:
         self.force = (joint_values(names, values), t)
@@ -117,6 +135,32 @@ class GripGuard:
     def reset(self) -> None:
         self.engaged = {}
         self.in_contact = set()
+        self.release_touch()
+
+    def release_touch(self) -> None:
+        """Forget the touch points (the hand stopped following: home, rest, disable)."""
+        self.touch = {}
+        self._untouched_since = {}
+
+    def contact_ceilings(self, measured_rad: Mapping[str, float] | None, t: float) -> dict[str, float]:
+        """{joint: touch + contact_cap_rad} for the joints in contact (in_contact, from speeds()) and
+        those that left it less than contact_cap_release_s ago. The touch point is the measured
+        angle at the first sign of contact."""
+        c = self.config
+        if not c.enabled or c.contact_cap_rad <= 0:
+            self.touch, self._untouched_since = {}, {}
+            return {}
+        for j in CAP_JOINTS:
+            if j in self.in_contact:
+                self._untouched_since.pop(j, None)
+                if j not in self.touch and measured_rad and j in measured_rad:
+                    self.touch[j] = float(measured_rad[j])
+            elif j in self.touch:
+                since = self._untouched_since.setdefault(j, t)
+                if t - since >= c.contact_cap_release_s:
+                    del self.touch[j]
+                    del self._untouched_since[j]
+        return {j: q + c.contact_cap_rad for j, q in self.touch.items()}
 
     def tips_now(self, t: float) -> dict[str, float]:
         return self._fresh(self.tips, t)

@@ -201,6 +201,13 @@ grip_guard:
   contact_current_ma: 450.0
   contact_tip_n: 0.2
   bias_samples: 50.0   # force readings at rest (home, during the reference take) before the bias is used
+  # Contact cap (10.11 arm4090 user, option A): a touching joint is commanded at most this far past
+  # where it touched, so it stops when the operator stops (no real cup in the operator's hand: the
+  # glove ran ~245 registers past the pinky's touch and the finger crept on for 1.4 s up to ~800 g).
+  # Grip ~ driver admittance k (3.6 g/register) x cap: 0.07 rad ~ 38 registers ~ 140-200 g. To be
+  # tuned on the cup. thumb_1 (position only) is not capped.
+  contact_cap_rad: 0.07
+  contact_cap_release_s: 0.3
 
 # RH56F1 sensors -> Nova 2 haptics (motion_acq.hand.feedback; 10.05 user: the
 # glove limits the operator to what the hand can do and shows contact). Only

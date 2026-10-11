@@ -165,3 +165,42 @@ def test_controller_sends_contact_speed_at_once_and_driver_speed_after():
     speeds = [o.speed for o in rig.sent[-30:] if o.speed is not None]
     assert speeds[-1] == [2000] * 6
     assert out.record["contact_slow"] is None
+
+
+# -- contact cap (10.11 arm4090 left cup: the finger crept on for 1.4 s after the operator stopped) --
+
+def test_contact_cap_holds_a_touching_joint_near_where_it_touched():
+    g = guard_with(force=(0, 0, 0, 150, 0, 0), contact_cap_rad=0.07, contact_cap_release_s=0.3)
+    g.speeds(1.0, 2000)  # index in contact
+    assert g.contact_ceilings(MEASURED, 1.0) == {"index_1": pytest.approx(0.87)}
+    later = {**MEASURED, "index_1": 0.85}  # it moved on: the touch point stays where it touched
+    assert g.contact_ceilings(later, 1.1) == {"index_1": pytest.approx(0.87)}
+
+
+def test_contact_cap_waits_before_releasing_and_skips_thumb_rotation():
+    g = guard_with(force=(0, 0, 0, 150, 0, 150), contact_cap_rad=0.07, contact_cap_release_s=0.3)
+    g.speeds(1.0, 2000)
+    assert set(g.contact_ceilings(MEASURED, 1.0)) == {"index_1"}  # thumb_1: position only
+    g.on_force(NAMES, (0, 0, 0, 0, 0, 0), 1.1)
+    g.speeds(1.1, 2000)
+    assert "index_1" in g.contact_ceilings(MEASURED, 1.1)  # a dip: kept
+    g.on_force(NAMES, (0, 0, 0, 0, 0, 0), 1.45)
+    g.speeds(1.45, 2000)
+    assert g.contact_ceilings(MEASURED, 1.45) == {}  # gone for 0.35 s: released
+    assert guard_with(force=(0, 0, 0, 150, 0, 0)).contact_ceilings(MEASURED, 1.0) == {}  # default off
+
+
+def test_controller_contact_cap_stops_the_finger_soon_after_the_touch():
+    """The glove asks for a fist; the index touches (150 g, under the 950 g hold): it is commanded no
+    further than cap past where it touched, instead of creeping on to the fist."""
+    rig = Rig(make_controller())
+    cfg = rig.ctl.grip_guard.config
+    assert cfg.contact_cap_rad > 0  # the station config turns it on
+    _, outs = follow_fist_on_a_cup(rig, 150)
+    last = outs[-1]
+    touch = last.record["contact_touch_rad"]["index_1"]
+    assert last.record["q_command_rad"]["index_1"] <= touch + cfg.contact_cap_rad + 1e-3  # touch rounded in the record
+    assert last.record["q_command_rad"]["middle_1"] > touch + cfg.contact_cap_rad  # not touching: fist
+    rig.ctl.command("home")
+    out = rig.step(POSE_ANGLES["fist"])
+    assert out.record["contact_touch_rad"] is None
