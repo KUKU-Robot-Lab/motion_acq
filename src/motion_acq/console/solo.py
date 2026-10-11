@@ -25,10 +25,15 @@ TICK_S = 0.1
 # record phases (console.phases RECORD_RULES) the run waits for / watches
 RECORD_READY = ("준비: Space 로 에피소드 시작", "에피소드 준비: Space 로 시작")
 RECORD_RECORDING = "녹화 중: Space 로 저장"
+RECORD_NO_CONTROLLERS = "컨트롤러 트래킹 기다림"  # the recorder holds until both controllers are tracked
+NO_CONTROLLERS_AFTER_S = 3.0  # a brief gap is normal right after home
+NO_CONTROLLERS_EVERY_S = 15.0
 
+PREPARING = "로봇을 준비합니다. 잠시 기다리세요"
+NO_CONTROLLERS = "컨트롤러가 보이지 않습니다. 양손 컨트롤러를 켜고 헤드셋 앞에 들어 주세요"
 INTRO = "10초 뒤 시작합니다. 헤드셋을 쓰고 컨트롤러를 잡으세요"
 LOOK = "로봇 정면을 보고 가만히 계세요"
-PHRASES = (INTRO, LOOK, "3", "2", "1", "시작", "10초 남았습니다", "5", "4",
+PHRASES = (PREPARING, NO_CONTROLLERS, INTRO, LOOK, "3", "2", "1", "시작", "10초 남았습니다", "5", "4",
            "종료. 홈으로 돌아갑니다", "저장했습니다", "문제가 생겨 멈춥니다. 홈으로 돌아갑니다",
            "정면을 다시 맞춥니다")
 
@@ -51,8 +56,13 @@ class SoloIO:
 
 
 def wait_ready(io: SoloIO, timeout_s: float = READY_TIMEOUT_S) -> None:
-    """Until the recorder waits at home for Space (it may still be starting: hands, rest -> home)."""
+    """Until the recorder waits at home for Space (it may still be starting: hands, rest -> home).
+    Spoken, since the operator already wears the headset (10.12: a silent 2 min wait for controllers
+    that were not tracked): once at the start, and again while the controllers are not seen."""
     deadline = io.now() + timeout_s
+    announced = False
+    no_controllers_since: float | None = None
+    warned_at: float | None = None
     while (phase := io.record_phase()) not in RECORD_READY:
         if phase is None:
             raise SoloAbort("녹화가 꺼졌습니다: 녹화 칸의 로그 확인")
@@ -60,7 +70,20 @@ def wait_ready(io: SoloIO, timeout_s: float = READY_TIMEOUT_S) -> None:
             raise SoloAbort(f"녹화가 {timeout_s:.0f} 초 안에 준비되지 않았습니다 (지금: {phase or '?'})")
         if io.stop_requested():
             raise SoloAbort("중지")
-        io.status("준비 중", None)
+        if not announced:
+            io.say(PREPARING)
+            announced = True
+        if phase == RECORD_NO_CONTROLLERS:
+            now = io.now()
+            no_controllers_since = now if no_controllers_since is None else no_controllers_since
+            due = now - no_controllers_since >= NO_CONTROLLERS_AFTER_S
+            if due and (warned_at is None or now - warned_at >= NO_CONTROLLERS_EVERY_S):
+                io.say(NO_CONTROLLERS)
+                warned_at = now
+            io.status("컨트롤러 안 보임", None)
+        else:
+            no_controllers_since = None
+            io.status("준비 중", None)
         io.sleep(TICK_S)
 
 

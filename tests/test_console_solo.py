@@ -131,6 +131,24 @@ def test_a_following_neck_is_not_toggled_into_a_lock():
     assert rig.sent == []
 
 
+def test_wait_ready_says_it_is_preparing_and_asks_for_untracked_controllers():
+    rig = Rig()
+    timeline = [(0.0, "home 으로 복귀 중"), (5.0, solo.RECORD_NO_CONTROLLERS), (40.0, READY)]
+    rig.record_phase = lambda: [p for t, p in timeline if rig.t >= t][-1]
+    solo.wait_ready(rig.io())
+    heard = rig.said
+    assert heard[0] == (0.0, solo.PREPARING)
+    warns = [t for t, text in heard if text == solo.NO_CONTROLLERS]
+    assert warns and warns[0] == pytest.approx(8.0, abs=0.2)  # not on a brief gap
+    assert len(warns) == 3  # every 15 s until tracked: 8, 23, 38
+
+
+def test_wait_ready_is_silent_when_already_ready():
+    rig = Rig()
+    solo.wait_ready(rig.io())
+    assert rig.said == []
+
+
 def test_wait_ready_gives_up_on_a_recorder_that_exited():
     rig = Rig()
     rig.phase = None
