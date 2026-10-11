@@ -830,3 +830,15 @@ def test_hand_fist_is_a_command_and_hand_off_works_with_the_arm_on(console, monk
     stopped = []
     monkeypatch.setattr(console, "stop", lambda key: stopped.append(key) or {"ok": True})
     assert console.action("hand_off:right")["ok"] and stopped == ["hand_right"]
+
+
+def test_glove_topic_needs_a_publisher_not_just_the_name(monkeypatch):
+    """10.11 arm4090: the left glove driver died; the hand node's subscription still listed the topic."""
+    from motion_acq.console import probes
+
+    out = ("@@list\n/senseglove/glove00782/rh/senseglove_states\n/senseglove/glove00795/lh/senseglove_states\n"
+           "@@glove_right\nType: x\nPublisher count: 1\nSubscription count: 1\n"
+           "@@glove_left\nType: x\nPublisher count: 0\nSubscription count: 1\n")
+    monkeypatch.setattr(probes, "run", lambda argv, timeout, env: out)
+    ros = probes.ros_state(units.Station.load("arm4090"), "real")
+    assert ros["glove_topics"] == {"right": True, "left": False}

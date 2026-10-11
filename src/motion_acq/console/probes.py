@@ -270,6 +270,13 @@ def ros_state(station: Station, mode: str) -> dict:
     else:
         domain, env = FAKE_DOMAIN, {"ROS_DOMAIN_ID": FAKE_DOMAIN, "ROS_LOCALHOST_ONLY": "1"}
     script = "echo @@list; ros2 topic list"
+    glove_topics = {}
+    if station.hands:
+        from motion_acq.hand.nova2 import load_gloves
+
+        glove_topics = {side: glove.topic for side, glove in load_gloves().items() if side in SIDES}
+    for side, topic in glove_topics.items():
+        script += f"; echo @@glove_{side}; ros2 topic info {shlex.quote(topic)}"
     for side in station.hands:
         for topic in ("angle_actual", *COMMAND_TOPICS):
             script += f"; echo @@{side}_{topic}; ros2 topic info -v /hand_{side}/{topic}"
@@ -290,11 +297,10 @@ def ros_state(station: Station, mode: str) -> dict:
                        "angle_set_publisher_nodes": cmd_nodes,
                        "angle_set_subscribers": cmd_subs,
                        "ecat_status": f"/hand_{side}/ecat_status" in topics}
-    gloves = {}
-    if station.hands:
-        from motion_acq.hand.nova2 import load_gloves
-
-        gloves = {side: glove.topic in topics for side, glove in load_gloves().items() if side in SIDES}
+    # a publisher, not just the name: the hand node's subscription lists the topic even when the glove's
+    # ros2_control_node died (10.11 arm4090: "Glove with serial '795' not found", left glove silent)
+    gloves = {side: (parse_topic_info(sections.get(f"glove_{side}", ""))[0] or 0) > 0
+              for side in glove_topics}
     return {"domain": domain, "hands": hands, "glove_topics": gloves,
             "took_s": round(time.monotonic() - started, 1), "at": time.time()}
 

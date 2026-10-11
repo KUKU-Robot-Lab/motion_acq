@@ -243,6 +243,9 @@ function nodeHand(s, side) {
   else if (rec?.mode === "enabled" && rec.phase === "wait_arm")
     st = manual === "home" ? ["ok", "home 에서 멈춤"] : ["ok", "home 대기: 팔이 따라가면 같이 따라감"];
   else if (rec?.mode === "enabled" && rec.phase === "rest" && manual === "fist") st = ["ok", "주먹으로 멈춤"];
+  else if (rec?.mode === "enabled" && rec.phase === "follow" && (rec.glove_age_s == null || rec.glove_frozen))
+    // 10.11: the left glove driver had died; the hand sat in follow and held still
+    st = ["warn", `장갑 데이터 없음: 손이 멈춰 있다 (장갑 [연결] 다시)`];
   else if (rec?.mode === "enabled") st = HAND_PHASE[rec.phase] || ["live", rec.phase || "켜짐"];
   st = unitState(key, st);
   const how = manual === "home" ? "수동: 홈" : manual === "follow" ? "수동: 따라가기" : manual === "fist" ? "수동: 주먹" : "자동: 팔과 같이";
