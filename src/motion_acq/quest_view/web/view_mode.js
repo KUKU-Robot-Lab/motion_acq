@@ -10,8 +10,10 @@ const SESSION_MODES = ["immersive-ar", "immersive-vr"];
 
 // One XR frame: draw the head camera screen, and the clear colour behind it.
 // Transparent clear in immersive-ar = the room through the Quest cameras.
-function frameLook(mode, hasImage) {
-  const camera = hasImage || mode !== "immersive-ar";
+// view (server): "passthrough" (10.12 user: watch the robot directly, the camera is only
+// recorded) or "camera" (the head camera picture covers the view once it has frames).
+function frameLook(mode, hasImage, view = "camera") {
+  const camera = (hasImage && view === "camera") || mode !== "immersive-ar";
   return { camera, clear: camera ? [0.02, 0.03, 0.05, 1.0] : [0.0, 0.0, 0.0, 0.0] };
 }
 

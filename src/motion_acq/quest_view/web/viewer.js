@@ -14,6 +14,7 @@ let imageSeq = 0;
 let headStatus = null;
 let headAge = null;
 let frontStatus = null;  // the robot's front kept by the server (10.11)
+let viewMode = "passthrough";  // the server's headset view (10.12)
 
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
@@ -25,7 +26,8 @@ function connect() {
       const msg = JSON.parse(ev.data);
       if (msg.type === "status") {
         headStatus = msg.head; headAge = msg.head_age_s; frontStatus = msg.front || null;
-        if (msg.camera_on === false && latestImage) {  // the camera closed: no stale picture
+        if (msg.view) viewMode = msg.view;
+        if ((msg.camera_on === false || viewMode !== "camera") && latestImage) {  // the camera closed: no stale picture
           latestImage.close(); latestImage = null; imageSeq += 1;
         }
         if (!xrSession) {  // page preview: keep the status visible even without camera frames
@@ -273,7 +275,7 @@ function onXRFrame(time, frame) {
   // head camera head-locked 1.2 m ahead, status strip under it. Without camera frames
   // (neck not started) passthrough: only the status strip over the room.
   if (!viewer) return;
-  const look = frameLook(xrMode, latestImage !== null);
+  const look = frameLook(xrMode, latestImage !== null, viewMode);
   const layer = session.renderState.baseLayer;
   gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
   gl.clearColor(...look.clear);

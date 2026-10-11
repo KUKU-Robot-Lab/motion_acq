@@ -59,6 +59,10 @@ FRAME_MAGIC = b"MQVF"
 STATUS_PERIOD_S = 0.1
 NO_POSE_WARN_S = 10.0
 HEAD_FRESH_S = 2.0  # head records younger than this keep the camera open
+# What the headset shows while the camera runs (10.12 user): "passthrough" = the room through the Quest
+# cameras (the operator watches the robot directly, true depth), "camera" = the head camera picture.
+# The recorder gets the camera frames either way.
+VIEWS = ("passthrough", "camera")
 
 
 @dataclass
@@ -71,6 +75,7 @@ class Shared:
     frame_shape: tuple[int, int, int] = (0, 0, 0)
     frame_ns: int = 0
     camera_on: bool = False
+    view: str = "passthrough"  # VIEWS
     head: dict | None = None
     frames_in: int = 0
     last_pose_at: float = 0.0
@@ -332,7 +337,26 @@ def build_app(shared: Shared, poses: PoseBroadcast, *, video_fps: float) -> web.
         log.info("front %s: %s", "set" if ok else "refused", text)
         return web.json_response({"ok": ok, "text": text, **shared.front.status()})
 
+    async def view_get(_request):
+        return web.json_response({"view": shared.view})
+
+    async def view_post(request):
+        # switch the headset view without a restart; local only, like /front
+        if request.remote not in ("127.0.0.1", "::1"):
+            return web.json_response({"ok": False, "text": "local only"}, status=403)
+        try:
+            view = str((await request.json()).get("view"))
+        except ValueError:
+            view = ""
+        if view not in VIEWS:
+            return web.json_response({"ok": False, "text": f"view must be one of {VIEWS}"}, status=400)
+        shared.view = view
+        log.info("headset view: %s", view)
+        return web.json_response({"ok": True, "view": view})
+
     app.router.add_get("/", index)
+    app.router.add_get("/view", view_get)
+    app.router.add_post("/view", view_post)
     app.router.add_get("/front", front_get)
     app.router.add_post("/front", front_post)
     app.router.add_get("/ws", websocket)
@@ -348,8 +372,8 @@ async def _push(ws: web.WebSocketResponse, shared: Shared, video_fps: float) -> 
     while not ws.closed:
         with shared.lock:
             jpeg, seq = shared.jpeg, shared.jpeg_seq
-        if jpeg is not None and seq != sent_seq:
-            await ws.send_bytes(jpeg)
+        if jpeg is not None and seq != sent_seq and shared.view == "camera":
+            await ws.send_bytes(jpeg)  # passthrough: no video over the headset Wi-Fi at all
             sent_seq = seq
         now = time.monotonic()
         if now >= next_status:
@@ -357,12 +381,13 @@ async def _push(ws: web.WebSocketResponse, shared: Shared, video_fps: float) -> 
             head = shared.head
             age = None if head is None else now - head.get("received_at", 0.0)
             await ws.send_str(json.dumps({"type": "status", "head": head, "head_age_s": age,
-                                          "camera_on": shared.camera_on, "front": shared.front.status()}))
+                                          "camera_on": shared.camera_on, "view": shared.view,
+                                          "front": shared.front.status()}))
         await asyncio.sleep(period)
 
 
 async def serve(args: argparse.Namespace) -> None:
-    shared = Shared()
+    shared = Shared(view=args.view)
     stop = threading.Event()
     frames = FrameServer(shared)
 
@@ -436,6 +461,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--test-pattern", action="store_true", help="moving pattern instead of the camera (fake)")
     p.add_argument("--camera-on", choices=("demand", "always"), default="demand",
                    help="demand: only while the neck runs or a recorder reads (default)")
+    p.add_argument("--view", choices=VIEWS, default="passthrough",
+                   help="headset view while the camera runs: the room (default, 10.12) or the head camera")
     p.add_argument("--no-pose-server", action="store_true",
                    help="no TCP 65432 / sync (the mock sender serves poses; fake recording with video)")
     return p.parse_args(argv)
