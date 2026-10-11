@@ -46,6 +46,7 @@ from motion_acq.tracking.transforms import (
 )
 
 log = logging.getLogger("motion_acq.tracking.meta_quest")
+CONNECT_LOG_EVERY_S = 30.0  # "Connecting TCP" while no Quest answers: once, then every 30 s
 
 # UDP sync wire formats.
 _PING = struct.Struct("<BQ")  # (msg_type=1, t1_pc_ns)
@@ -284,6 +285,7 @@ class MetaQuestReceiver:
         self._running = False
         self._connected = False
         self._thread: threading.Thread | None = None
+        self._connect_logged_at = -float("inf")
 
         self._latest: QuestFrame | None = None
         self._frames: deque[QuestFrame] = deque(maxlen=512)
@@ -424,13 +426,19 @@ class MetaQuestReceiver:
             log.warning("quest_ip is not set; cannot connect.")
             return None
         try:
-            log.info("Connecting TCP %s:%d ...", self.config.quest_ip, self.config.tcp_port)
+            # 10.11: a robot arm may wait at home for minutes without a Quest; one line every
+            # CONNECT_LOG_EVERY_S keeps its log readable (the console reads the arm's phase from it)
+            now = time.monotonic()
+            if now - self._connect_logged_at >= CONNECT_LOG_EVERY_S:
+                self._connect_logged_at = now
+                log.info("Connecting TCP %s:%d ...", self.config.quest_ip, self.config.tcp_port)
             sock = socket.create_connection(
                 (self.config.quest_ip, self.config.tcp_port), timeout=2.0
             )
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             sock.settimeout(0.5)
             log.info("Quest connected.")
+            self._connect_logged_at = -float("inf")  # a later drop logs its first retry at once
             return sock
         except OSError as exc:
             log.debug("Connect failed: %s", exc)

@@ -18,7 +18,10 @@ from motion_acq.console import units
 CONFLICTS = {"arm": ("record", "arm_right", "arm_left"), "record": ("arm", "arm_right", "arm_left"),
              "arm_right": ("arm", "record"), "arm_left": ("arm", "record")}
 ARM_KEYS = tuple(CONFLICTS)
-QUEST_PRODUCERS = ("head", *ARM_KEYS)
+# 10.11 user: the robot arms are independent of the Quest. An arm comes home and goes back to rest
+# without one; only following (Space) needs Quest poses (follow_blockers). Head and record need it.
+QUEST_PRODUCERS = ("head", "record")
+FOLLOW_KEYS = ("arm", "arm_right", "arm_left")
 FAST_STALE_S = 10.0
 ROS_STALE_S = 20.0
 
@@ -55,10 +58,12 @@ def blockers(console, key: str) -> list[str]:
     if key in QUEST_PRODUCERS and source is None:
         out.append("Quest 자세 입력 없음: HandUMI 앱 모드" + (" 또는 가짜 Quest" if console.mode == "fake" else ""))
     if console.mode == "real":
-        if key in QUEST_PRODUCERS:
+        if key in QUEST_PRODUCERS or key in ARM_KEYS:
             out += _fast_probe_problems(console)
+        if key == "record":
+            out += follow_blockers(console, source)
         if key in ARM_KEYS:
-            out += _arm_blockers(console, source, console.arm_sides(key))
+            out += _arm_blockers(console, console.arm_sides(key))
             calibrating = [k for k in ("calib_right", "calib_left", "rezero_right", "rezero_left")
                            if console.sup.is_running(k)]
             if calibrating:
@@ -88,12 +93,21 @@ def _fast_probe_problems(console) -> list[str]:
     return []
 
 
-def _arm_blockers(console, source: str | None, sides: tuple[str, ...]) -> list[str]:
+def follow_blockers(console, source: str | None) -> list[str]:
+    """What stops an arm from following the controllers (Space): the Quest poses and the direction check.
+    Home and rest need none of it (10.11 user)."""
     out = []
+    if source is None:
+        out.append("Quest 자세 입력 없음: 머리(Quest) [연결] 먼저 (팔 [홈]/[차렷]은 Quest 없이 된다)")
     if source == "view" and not console.settings.get("webxr_arm_ok"):
         out.append("헤드셋 영상(WebXR)으로 팔을 처음 움직이기 전에 머리(Quest) > 방향 확인을 마칠 것(로봇은 안 움직인다)")
     if source == "external":
         out.append(external_quest(console) + ": 그 프로그램을 끄고 HandUMI 앱 모드로")
+    return out
+
+
+def _arm_blockers(console, sides: tuple[str, ...]) -> list[str]:
+    out = []
     can = console.probe("can")
     if "error" in can:
         out.append(f"CAN 상태 확인 실패: {can['error']}")

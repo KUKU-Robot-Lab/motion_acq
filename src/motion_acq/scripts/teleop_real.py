@@ -454,8 +454,8 @@ def _run_real() -> None:
                         "right": float(widths.right_normalized),
                     }
                 )
-                if args.space_start:
-                    space_listener.consume_space()
+                if args.space_start and space_listener.consume_space():
+                    _space_without_quest()
                 loop_timer.sleep(loop_start)
                 continue
             sample = tracking_snapshot.sample
@@ -483,8 +483,8 @@ def _run_real() -> None:
                         "right": float(widths.right_normalized),
                     }
                 )
-                if args.space_start:
-                    space_listener.consume_space()
+                if args.space_start and space_listener.consume_space():
+                    _space_without_quest()
                 loop_timer.sleep(loop_start)
                 continue
 
@@ -840,6 +840,13 @@ def _run_real() -> None:
                         camera_worker.close()
                     if camera_views is not None:
                         camera_views.close()
+
+
+def _space_without_quest() -> None:
+    """10.11 user: the arms come home and go back to rest without a Quest; only following needs it."""
+    real_log.warning(
+        "Space without Quest pose: the arm stays at home (connect the Quest, then Space again)."
+    )
 
 
 def _hand_phase(real_env, phase: str, sides) -> None:

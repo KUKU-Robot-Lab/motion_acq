@@ -218,7 +218,10 @@ def test_external_quest_source_blocks_the_real_arm(console, monkeypatch):
                    "can": {"right": {"up": True, "fd": True}}})
     monkeypatch.setattr(console, "probe_raw", lambda name: data.get(name))
     assert gates.quest_source(console) == "external"
-    assert any("PID 99" in b for b in console.blockers("arm"))
+    assert not any("PID 99" in b for b in console.blockers("arm"))  # 10.11: home / rest need no Quest
+    assert any("PID 99" in b for b in console.blockers("record"))
+    reply = console.send_key("arm", " ")  # following does
+    assert not reply["ok"] and "PID 99" in reply["error"]
 
 
 def test_publisher_nodes_from_topic_info():
@@ -258,9 +261,34 @@ def console(tmp_path):
     return Console(ARM4090, "fake", log_root=tmp_path, probes=False, listen=False)
 
 
-def test_arm_needs_a_quest_source(console):
-    result = console.start("arm")
+def test_record_needs_a_quest_source(console):
+    result = console.start("record")
     assert not result["ok"] and "Quest" in result["error"]
+
+
+def test_arm_starts_without_the_quest_and_only_space_needs_it(console, monkeypatch):
+    """10.11 user: the arms are independent of the Quest: [홈] / [차렷] without it, [따라가기] with it."""
+    console.set_mode("real")
+    data = _fresh({"can": {"right": {"port": "can0", "up": True, "fd": True}, "left": {"port": "can1", "up": True, "fd": True}},
+                   "quest": {"forward": False}})  # no HandUMI app, no headset view
+    monkeypatch.setattr(console, "probe_raw", lambda name: data.get(name))
+    assert console.blockers("arm_right") == [] and console.blockers("arm_left") == []
+    sent = []
+    monkeypatch.setattr(console.sup, "send_key", lambda key, text: sent.append((key, text)))
+    reply = console.send_key("arm_right", " ")
+    assert not reply["ok"] and "Quest" in reply["error"] and sent == []
+    assert console.send_key("arm_right", "h")["ok"] and sent == [("arm_right", "h")]
+
+
+def test_the_quest_may_connect_while_an_arm_waits_at_home(console, monkeypatch):
+    """10.11 user: arms first, then the Quest: only a following arm blocks switching the Quest source."""
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key == "arm_left")
+    tail = ["Real openarm_rh56f1 is at home. Open a HandUMI gripper to start that arm."]
+    monkeypatch.setattr(console.sup, "log_tail", lambda key, n: tail)
+    console._quest_users_check()
+    tail.append("Space pressed; starting left.")
+    with pytest.raises(RuntimeError, match="arm_left"):
+        console._quest_users_check()
 
 
 def test_real_motion_needs_the_operator_confirmation(console, monkeypatch):
@@ -473,12 +501,13 @@ def test_webxr_arm_needs_the_direction_check(console, monkeypatch):
     data = _fresh({"can": {"right": {"port": "can0", "up": True, "fd": True}}})
     monkeypatch.setattr(console, "probe_raw", lambda name: data.get(name))
     monkeypatch.setattr(console.sup, "is_running", lambda key: key == "quest_view")
-    assert any("방향 확인" in b for b in console.blockers("arm"))
+    monkeypatch.setattr(console.sup, "send_key", lambda key, text: None)
+    assert "방향 확인" in console.send_key("arm", " ")["error"]  # 10.11: checked at Space, not at start
     monkeypatch.setattr(console.direction, "stop", lambda: None)
     assert console.action("direction:ok")["ok"] and console.settings["webxr_arm_ok"]
-    assert console.blockers("arm") == []
+    assert console.send_key("arm", " ")["ok"]
     console.action("direction:reset")
-    assert any("방향 확인" in b for b in console.blockers("arm"))
+    assert "방향 확인" in console.send_key("arm", " ")["error"]
 
 
 def test_hand_home_asks_once_for_driver_node_and_command(console, monkeypatch):

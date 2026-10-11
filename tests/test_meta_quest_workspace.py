@@ -94,3 +94,28 @@ def test_heading_of_a_steep_rolled_head_is_its_yaw():
         assert math.degrees(heading_yaw(handumi_quat(30.0, pitch, 20.0))) == pytest.approx(30.0, abs=1e-6)
     for pitch in (90.0, -90.0):  # straight down / up, no roll: the head top gives the heading
         assert math.degrees(heading_yaw(handumi_quat(30.0, pitch, 0.0))) == pytest.approx(30.0, abs=1e-6)
+
+
+def test_connect_retries_log_once_then_every_30_s(monkeypatch, caplog):
+    """10.11 user: an arm waits at home without a Quest; one retry line a second buried its phase."""
+    import logging
+    import socket
+
+    from motion_acq.tracking import meta_quest
+
+    clock = [100.0]
+    monkeypatch.setattr(meta_quest.time, "monotonic", lambda: clock[0])
+
+    def refuse(*_args, **_kwargs):
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    receiver = meta_quest.MetaQuestReceiver(meta_quest.MetaQuestConfig(quest_ip="127.0.0.1"))
+    with caplog.at_level(logging.INFO, logger="motion_acq.tracking.meta_quest"):
+        for _ in range(29):
+            assert receiver._try_connect() is None
+            clock[0] += 1.0
+        assert sum("Connecting TCP" in r.message for r in caplog.records) == 1
+        clock[0] += 1.0
+        receiver._try_connect()
+        assert sum("Connecting TCP" in r.message for r in caplog.records) == 2

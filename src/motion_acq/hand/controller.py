@@ -37,7 +37,7 @@ A FAULT does not move the hand (its feedback cannot be trusted).
 
 Reference (10.06 user: take the current pose as the reference before linking the glove):
 at home the operator holds the reference pose (configs reference.pose, the robot's home:
-fingers straight, thumb beside the index) still for reference_s; that take re-zeroes the
+fingers straight, thumb and index in a C) still for reference_s; that take re-zeroes the
 operator's saved map and re-aligns the glove hand model (calibration.rezero), then the
 hand follows. Not still within reference_timeout_s: it follows the saved calibration and
 says so.

@@ -197,14 +197,14 @@ function nodeArm(s, side) {
     return { ...n, tone: st ? st[0] : failed ? "bad" : (can.up && can.fd || !real() ? "ok" : "warn"),
              state: st ? st[1] : "꺼짐 (차렷)", sub: failed || canText,
              actions: btn("홈", { "data-start": key, disabled: busy, title: busy ? "전체(팔·녹화)가 실행 중" :
-               "차렷 → 저장 경로 → home. 손은 주먹 그대로(장갑 필요 없음). 이 팔만 움직인다" }, "primary") };
+               "차렷 → 저장 경로 → home. 손은 주먹 그대로(장갑·Quest 필요 없음). 이 팔만 움직인다" }, "primary") };
   }
   const st = unitState(key) || ["live", "실행 중"];
   if (recovering(key))
     return { ...n, tone: "bad", state: (unit(key).phase || [, "멈춤"])[1], sub: "팔은 그 자리에서 버티는 중 (정지 중이어도 고를 수 있다)",
              actions: recoveryButtons(key) };
   return { ...n, tone: st[0], state: st[1], sub: canText,
-           actions: btn("따라가기", { "data-key": key, "data-text": " ", title: "Space: 이 팔이 컨트롤러를 따라간다" }, "key") +
+           actions: btn("따라가기", { "data-key": key, "data-text": " ", title: "Space: 이 팔이 컨트롤러를 따라간다 (Quest 연결 필요)" }, "key") +
                     btn("홈", { "data-key": key, "data-text": "h", title: "H: 따라가던 팔이 home 으로 돌아가 Space 를 기다린다" }, "key") +
                     btn("차렷", { "data-stop": key, title: "home → 차렷(저장 경로, 손은 주먹) → 모터 끔" }, "danger small") };
 }
@@ -218,7 +218,7 @@ function driverText(s, side) {
   return h.driver ? "드라이버 있음" : "드라이버는 [켜기] 때 같이 켠다";
 }
 
-const HAND_PHASE = { to_home: ["live", "home(펼침)으로 이동"], reference: ["warn", "기준 자세: 손가락 펴고 엄지는 검지 옆, 1초 멈춤"],
+const HAND_PHASE = { to_home: ["live", "home(펼침)으로 이동"], reference: ["warn", "기준 자세: 로봇 손 home 과 같은 모양(엄지·검지 C자), 1초 멈춤"],
   follow: ["live", "장갑 따라가는 중"], rest: ["ok", "주먹 (팔이 경로를 도는 중)"], return_home: ["live", "주먹으로 닫는 중"] };
 
 function nodeHand(s, side) {
@@ -439,7 +439,7 @@ function detailHand(s, side) {
   const driverOff = real() && running(`ecat_${side}`) && !running(key)
     ? btn("드라이버 내리기", { "data-action": `driver_off:${side}` }, "ghost small") : "";
   return `<h3>로봇 ${SIDE_KO[side]}손 · RH56F1</h3>${facts(rows)}
-    <p class="hint">[홈]: 드라이버·노드(없으면) → home(펼침)에서 멈춤. [따라가기]: home → 1초 기준 자세(손가락 펴고 엄지는 검지 옆) → 장갑을 따라감, 팔이 home 에 있어도. 둘 다 FAULT 도 풀고 다시 켠다. [끄기]: 주먹으로 쥔 뒤 노드를 내린다(드라이버는 남는다). 팔이 경로를 도는 동안은 언제나 주먹. 전체 시작은 손을 자동(팔이 따라가면 같이)으로 되돌린다. 장갑 보정이 먼저 있어야 한다.</p>
+    <p class="hint">[홈]: 드라이버·노드(없으면) → home(펼침)에서 멈춤. [따라가기]: home → 1초 기준 자세(로봇 손 home 과 같은 모양: 엄지·검지 C자) → 장갑을 따라감, 팔이 home 에 있어도. 둘 다 FAULT 도 풀고 다시 켠다. [끄기]: 주먹으로 쥔 뒤 노드를 내린다(드라이버는 남는다). 팔이 경로를 도는 동안은 언제나 주먹. 전체 시작은 손을 자동(팔이 따라가면 같이)으로 되돌린다. 장갑 보정이 먼저 있어야 한다.</p>
     <div class="actions">${logButton(key)}${real() ? logButton(`ecat_${side}`).replace("전체 로그", "드라이버 로그") : ""}${driverOff}</div>`;
 }
 

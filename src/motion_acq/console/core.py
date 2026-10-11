@@ -346,6 +346,10 @@ class Console:
         line = text.endswith("\n") and len(text) <= 81 and all(c in string.printable for c in text)
         if text not in ALLOWED_KEYS and not line:
             return {"ok": False, "error": "보낼 수 없는 키"}
+        if text == " " and key in gates.FOLLOW_KEYS and self.mode == "real":
+            problems = gates.follow_blockers(self, gates.quest_source(self))
+            if problems:  # the arm stays at home; it would only log the ignored Space
+                return {"ok": False, "error": "따라가기 불가: " + " / ".join(problems)}
         try:
             self.sup.send_key(key, text)
         except RuntimeError as exc:
@@ -548,8 +552,16 @@ class Console:
         return -1 if child is None else int(child.proc.returncode or 0)
 
     def _quest_users_check(self) -> None:
-        if any(self.sup.is_running(k) for k in gates.QUEST_PRODUCERS):
-            raise RuntimeError("머리/팔/녹화가 Quest 를 쓰는 중: 먼저 정지")
+        """Switching the Quest source (app <-> headset view) cuts the poses: not under a following arm.
+        An arm waiting at home does not use them (10.11 user: arms first, the Quest later)."""
+        users = [k for k in gates.QUEST_PRODUCERS if self.sup.is_running(k)]
+        users += [k for k in gates.FOLLOW_KEYS if self.sup.is_running(k) and self._arm_following(k)]
+        if users:
+            raise RuntimeError(f"Quest 를 쓰는 중({', '.join(users)}): 머리/녹화는 정지, 팔은 [홈] 먼저")
+
+    def _arm_following(self, key: str) -> bool:
+        ph = phases.phase(key, self.sup.log_tail(key, 120))
+        return ph is not None and ph[1] in phases.ARM_FOLLOWING
 
     def _quest_app(self) -> str:
         """HandUMI app: quest-view (or the mock) must let go of local port 65432 first."""

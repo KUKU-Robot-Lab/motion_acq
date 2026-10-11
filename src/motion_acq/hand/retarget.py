@@ -57,7 +57,7 @@ class HandRetargetConfig:
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
     method: str = "examples"  # "kinematic": fingertip retargeting when the calibration has an alignment
     # reference at [켜기] (10.06 user): once the hand is home, the operator holds this example pose
-    # (the robot's home: fingers straight, thumb beside the index) still for reference_s; that take
+    # (the robot hand's home shape: fingers straight, thumb and index in a C, 10.11 user) still for reference_s; that take
     # re-zeroes the map and re-aligns the hand model before following. 0 s: off.
     reference_pose: str = "flat"
     reference_s: float = 1.0

@@ -11,13 +11,14 @@ import re
 Rule = tuple[str, str, str]
 
 ARM_RULES: tuple[Rule, ...] = (
-    ("Starting tracking", "live", "Quest 트래킹 연결 중"),
+    ("Starting tracking", "live", "준비 중 (Quest 는 없어도 된다)"),
     ("Connecting OpenArm", "live", "OpenArm 연결 중"),
     ("aligning to rest", "live", "차렷 자세로 맞추는 중"),
     ("following the stored path", "live", "저장 경로로 이동 중"),
     ("is at home", "ok", "home 대기: Space 로 따라가기 시작"),
     ("Space pressed; starting", "live", "따라가는 중"),
     ("Space ignored", "warn", "아직 home 으로 가는 중: 도착한 뒤 Space"),
+    ("Space without Quest pose", "warn", "home 대기, Quest 자세 없음: 머리(Quest) [연결] 후 [따라가기]"),
     ("no arm is following", "ok", "home 대기: Space 로 따라가기 시작"),
     ("H pressed;", "live", "home 으로 돌아가는 중: 도착하면 Space 로 다시 따라가기"),
     ("arm anchored", "live", "따라가는 중"),
@@ -39,6 +40,10 @@ ARM_RULES: tuple[Rule, ...] = (
     ("neither rest", "bad", "차렷도 home 도 아니라 시작 안 함: 팔을 차렷에 맞출 것(모터는 안 켜졌다)"),
     ("Refusing to start", "bad", "시작 거부 (자세히 보기)"),
 )
+
+# the arm phases in which it follows the controllers (it uses the Quest poses)
+ARM_FOLLOWING = frozenset(text for needle, _tone, text in ARM_RULES
+                          if needle in ("Space pressed; starting", "arm anchored", "Tracking lost", "Tracking recovered"))
 
 RECORD_RULES: tuple[Rule, ...] = (
     ("Starting tracking", "live", "Quest 트래킹 연결 중"),
