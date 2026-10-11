@@ -313,7 +313,12 @@ def build_app(shared: Shared, poses: PoseBroadcast, *, video_fps: float) -> web.
                     except ValueError:
                         continue
                     if isinstance(message, dict) and message.get("type") == "pose":
-                        shared.front.observe(message)
+                        before = shared.front.session
+                        dropped = shared.front.observe(message)
+                        if shared.front.session != before:  # 10.12: why fronts went away was not logged
+                            log.info("VR session %s (%s)", shared.front.session, message.get("session_cause"))
+                        if dropped:
+                            log.warning("front dropped: %s", dropped)
                         frame = handumi_frame(message)
                         frame["front"] = shared.front.wire()  # key always present: quest-view needs a front
                         poses.send(frame)

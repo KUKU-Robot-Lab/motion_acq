@@ -103,6 +103,7 @@ let lastTime = null;
 // 10.11: one id per XR session and per recenter (the reference space moves at both); the server
 // drops the robot's front when it changes
 let xrSessionId = null;
+let xrSessionCause = null;  // 10.12: "start" or "reset", so the PC logs why the front went away
 const newSessionId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 // Read-only state for the PC (scripts/quest_usb.sh vr --status over the browser devtools).
@@ -169,9 +170,9 @@ window.macqStartVr = async function () {
       enterBtn.disabled = false;
     });
     xrSession = session; xrMode = mode; refSpace = space;
-    xrSessionId = newSessionId();
+    xrSessionId = newSessionId(); xrSessionCause = "start";
     if (typeof space.addEventListener === "function") {  // XRReferenceSpace "reset": a Quest recenter
-      space.addEventListener("reset", () => { xrSessionId = newSessionId(); });
+      space.addEventListener("reset", () => { xrSessionId = newSessionId(); xrSessionCause = "reset"; });
     }
     uploadedSeq = -1;  // new session: upload the current picture again
     window.macqView.mode = mode;
@@ -258,7 +259,7 @@ function onXRFrame(time, frame) {
 
   // poses back to the PC, every frame
   const msg = { type: "pose", dt: lastTime === null ? 0 : (time - lastTime) / 1000, hmd: viewer ? poseOf(viewer) : null,
-                left: null, right: null, session: xrSessionId };
+                left: null, right: null, session: xrSessionId, session_cause: xrSessionCause };
   lastTime = time;
   for (const src of session.inputSources) {
     if (!src.gripSpace || (src.handedness !== "left" && src.handedness !== "right")) continue;

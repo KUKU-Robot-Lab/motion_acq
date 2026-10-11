@@ -92,6 +92,24 @@ def test_a_new_vr_session_or_recenter_drops_the_front():
     assert "풀렸" in keeper.status()["dropped"]
 
 
+@pytest.mark.parametrize("session, cause, words", [
+    ("s2", "reset", "기준 위치"),  # Meta button recenter, outside the boundary, tracking lost
+    ("s2", "start", "다시 시작"),
+    (None, None, "끝나"),
+])
+def test_the_drop_says_why(session, cause, words):
+    clock = Clock()
+    keeper = FrontKeeper(clock)
+    feed(keeper, clock, 1.5)
+    assert keeper.set()[0]
+    assert keeper.observe(page("s1")) is None  # same session: kept, nothing to log
+    message = {**page(session), "session_cause": cause}
+    dropped = keeper.observe(message)
+    assert dropped is not None and words in dropped
+    assert keeper.status()["dropped"] == dropped
+    assert keeper.observe(message) is None  # dropped once
+
+
 def test_the_wire_front_is_the_headset_pose_in_unity_terms():
     clock = Clock()
     keeper = FrontKeeper(clock)

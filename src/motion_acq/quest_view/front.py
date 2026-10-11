@@ -41,6 +41,19 @@ def look_deg(q: Any) -> tuple[float, float]:
     return math.degrees(math.atan2(-fx, -fz)), math.degrees(math.atan2(fy, math.hypot(fx, fz)))
 
 
+def _drop_reason(session: str | None, cause: Any) -> str:
+    """Korean text for a dropped front. cause is the page's session_cause (10.12):
+    "reset" = the reference space reset event (Meta button recenter, leaving the
+    boundary, tracking lost), "start" = a new VR session."""
+    if session is None:
+        return "VR 이 끝나 정면이 풀렸습니다"
+    if cause == "reset":
+        return "Quest 기준 위치가 다시 잡혀(재중심 · 경계 밖 · 트래킹 끊김) 정면이 풀렸습니다"
+    if cause == "start":
+        return "VR 이 다시 시작되어 정면이 풀렸습니다"
+    return "VR 이 다시 시작되었거나 Quest 가 재중심되어 정면이 풀렸습니다"
+
+
 def _wrap(angle: float) -> float:
     return (angle + 180.0) % 360.0 - 180.0
 
@@ -69,28 +82,32 @@ class FrontKeeper:
         self.dropped: str | None = None  # why the last front went away (for the console)
         self._recent: deque[tuple[float, tuple, tuple]] = deque()
 
-    def observe(self, message: dict) -> None:
-        """One page pose message ({"session", "hmd": {"p", "q"}})."""
+    def observe(self, message: dict) -> str | None:
+        """One page pose message ({"session", "session_cause", "hmd": {"p", "q"}}).
+
+        Returns why the front was dropped by this message (for the log), else None."""
         now = self.clock()
         session = message.get("session")
         session = str(session) if isinstance(session, str) and session else None
         if session != self.session:
             self._recent.clear()
             self.session = session
+        dropped = None
         if self.front is not None and session != self.front.session:
             self.front = None
-            self.dropped = "VR 이 다시 시작되었거나 Quest 가 재중심되어 정면이 풀렸습니다"
+            dropped = self.dropped = _drop_reason(session, message.get("session_cause"))
         hmd = message.get("hmd")
         if isinstance(hmd, dict):
             try:
                 p = tuple(float(v) for v in hmd["p"])
                 q = tuple(float(v) for v in hmd["q"])
             except (KeyError, TypeError, ValueError):
-                return
+                return dropped
             if len(p) == 3 and len(q) == 4 and all(map(math.isfinite, (*p, *q))):
                 self._recent.append((now, p, q))
         while self._recent and now - self._recent[0][0] > STILL_S:
             self._recent.popleft()
+        return dropped
 
     def set(self) -> tuple[bool, str]:
         """Keep the headset pose of now as the front. (ok, Korean text for the operator)."""
