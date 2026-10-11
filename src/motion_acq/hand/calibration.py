@@ -20,6 +20,7 @@ from typing import Callable, Mapping, Sequence
 import numpy as np
 import yaml
 
+from motion_acq.hand.joystick import JoystickError, JoystickMap
 from motion_acq.hand.example_map import ConflictError, ExampleMap, ExampleMapError, fit_groups, input_kind
 from motion_acq.hand.kinematic import Alignment, TipTables, fit_alignment, points_from_signals, table_path
 from motion_acq.hand.sweeps import FingerSweeps, SweepError
@@ -44,6 +45,7 @@ class HandCalibration:
     glove: str = "nova2"
     alignment: Alignment | None = None  # glove hand model -> robot hand (kinematic retargeting), from the open hand
     sweeps: FingerSweeps | None = None  # [손가락별 맞춤] (10.11): per-finger ranges and glove crosstalk
+    joystick: JoystickMap | None = None  # the tuning window's per-joint map (10.11, joystick.py)
 
     def predict(self, signals: Mapping[str, float]) -> dict[str, float]:
         out: dict[str, float] = {}
@@ -84,6 +86,7 @@ class HandCalibration:
             "models": {g: m.to_dict() for g, m in self.models.items()},
             "kinematic_alignment": self.alignment.to_dict() if self.alignment is not None else None,
             "finger_sweeps": self.sweeps.to_dict() if self.sweeps is not None else None,
+            "joystick": self.joystick.to_dict() if self.joystick is not None else None,
         }
 
     def save(self, path: Path) -> None:
@@ -122,11 +125,20 @@ class HandCalibration:
                 sweeps = FingerSweeps.from_dict(raw["finger_sweeps"])
             except SweepError as exc:
                 raise CalibrationError(f"{path}: {exc}") from exc
+        joystick = None
+        if raw.get("joystick"):
+            try:
+                joystick = JoystickMap.from_dict(raw["joystick"])
+            except JoystickError as exc:
+                raise CalibrationError(f"{path}: {exc}") from exc
         return cls(str(raw["side"]), str(raw.get("user", "")), models, medians, str(raw.get("created", "")),
-                   raw.get("rezeroed"), alignment=alignment, sweeps=sweeps)
+                   raw.get("rezeroed"), alignment=alignment, sweeps=sweeps, joystick=joystick)
 
     def with_sweeps(self, sweeps: FingerSweeps | None) -> HandCalibration:
         return dataclasses.replace(self, sweeps=sweeps)
+
+    def with_joystick(self, joystick: JoystickMap | None) -> HandCalibration:
+        return dataclasses.replace(self, joystick=joystick)
 
 
 def rezero(calibration: HandCalibration, open_samples: Sequence[Mapping[str, float]],
@@ -145,7 +157,7 @@ def rezero(calibration: HandCalibration, open_samples: Sequence[Mapping[str, flo
     alignment = align_open_hand(calibration.side, open_samples, thumb_q) or calibration.alignment
     return HandCalibration(calibration.side, calibration.user, models, calibration.medians,
                            calibration.created, time.strftime("%Y-%m-%dT%H:%M:%S"), calibration.glove, alignment,
-                           calibration.sweeps)
+                           calibration.sweeps, calibration.joystick)
 
 
 def thumb_of(target: Mapping[str, float] | None) -> tuple[float, float] | None:

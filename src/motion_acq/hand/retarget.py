@@ -20,6 +20,7 @@ from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.admittance import AdmittanceConfig, admittance_config
 from motion_acq.hand.feedback import FeedbackConfig, feedback_config
 from motion_acq.hand.flexion import FLEX_INPUTS, FlexionConfig, FlexionRetargeter, flexion_config
+from motion_acq.hand.joystick import JoystickRetargeter
 from motion_acq.hand.grip_guard import GripGuardConfig, grip_guard_config
 from motion_acq.hand.kinematic import KinematicConfig, KinematicRetargeter, TipTables, points_from_signals, table_path
 from motion_acq.hand.rh56f1 import Rh56f1Map
@@ -209,6 +210,7 @@ class HandRetargeter:
         self.method_used: str | None = None
         self.kinematic = None
         self.flexion: FlexionRetargeter | None = None
+        self.joystick: JoystickRetargeter | None = None
         self.set_calibration(calibration)
         self._last_t: float | None = None
         self._filters = {j: OneEuroFilter(config.min_cutoff_hz, config.beta, config.d_cutoff_hz)
@@ -231,10 +233,17 @@ class HandRetargeter:
             self.flexion = FlexionRetargeter(calibration.medians,
                                              {j: self.config.limits_rad[j][1] for j in FLEX_INPUTS},
                                              self.config.flexion, calibration.sweeps)
+        # the tuning window's joystick map (10.11 user) wins for the joints it has, whatever the method
+        self.joystick = None
+        if calibration.joystick is not None and calibration.joystick.joints:
+            self.joystick = JoystickRetargeter(calibration.joystick, self.config.home_rad, calibration.sweeps)
 
     def take_reference(self, samples: Sequence[Mapping[str, float]]) -> list[str]:
         """The [켜기] reference take (straight hand) for the flexion map; the joints it set."""
-        return self.flexion.take_reference(samples) if self.flexion is not None else []
+        taken = self.flexion.take_reference(samples) if self.flexion is not None else []
+        if self.joystick is not None:
+            taken = list(dict.fromkeys(taken + self.joystick.take_reference(samples)))
+        return taken
 
     def command(self) -> dict[str, float]:
         return {j: lim.position for j, lim in self._limiters.items()}
@@ -250,6 +259,8 @@ class HandRetargeter:
         self._last_t = t_s
         if self.flexion is not None:
             self.flexion.reset()
+        if self.joystick is not None:
+            self.joystick.reset()
         self._last_registers = self.hand_map.to_registers(self.command(), side=self.side)
         self.state = HandState.RUNNING
 
@@ -289,6 +300,9 @@ class HandRetargeter:
         else:  # examples map: the method itself, or no hand model data / alignment this tick
             raw = self.calibration.predict(signals)
             self.missing_inputs, self.method_used = self.calibration.missing_inputs(signals), "examples"
+        if self.joystick is not None and self.joystick.ready(signals):
+            raw = {**raw, **self.joystick.solve(signals)}
+            self.method_used = "joystick" if set(self.joystick.joints) >= set(raw) else f"{self.method_used}+joystick"
         home = self.config.home_rad
         out = {}
         for j, (lo, hi) in self.config.limits_rad.items():
@@ -332,11 +346,13 @@ class HandRetargeter:
             q_cmd[j] = self._limiters[j](smoothed, dt)
         q_cmd = self._cap(q_cmd, ceilings)
         self._last_registers = self.hand_map.to_registers(q_cmd, side=self.side)
-        names = self.calibration.inputs if self.method_used == "examples" else [
+        names = self.calibration.inputs if self.method_used.startswith("examples") else [
             n for n in signals if n.startswith(("knuckle_", "tip_"))]
-        if self.method_used == "flexion":
+        if self.method_used.startswith("flexion"):
             names = list(dict.fromkeys(n for ins in FLEX_INPUTS.values() for n in ins)) + names
         inputs = {n: float(signals[n]) for n in names if n in signals}
-        if self.method_used == "flexion" and self.flexion is not None:
+        if self.method_used.startswith("flexion") and self.flexion is not None:
             inputs.update(self.flexion.ranges())
+        if self.joystick is not None and "joystick" in self.method_used:
+            inputs.update(self.joystick.log_fields(signals))
         return HandStep(HandState.RUNNING, inputs, raw, q_target, q_cmd, self._last_registers)

@@ -26,6 +26,7 @@ setup(
             "fake_glove = motion_acq_hand.fake_glove_node:main",
             "fake_rh56f1 = motion_acq_hand.fake_rh56f1_node:main",
             "calibrate = motion_acq_hand.calibrate:main",
+            "tune = motion_acq_hand.tune:main",
         ],
     },
 )
