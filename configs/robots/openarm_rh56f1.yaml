@@ -26,6 +26,17 @@ default_home_pose: rh56f1_aglt
 controller_tcp_calibrations:
   # Quest 3 controllers in the Nova 2 glove mounts; calibrate in that state.
   meta: configs/calibration/controller_tcp/meta_openarm_rh56f1.yaml
+# Teleop: the hand target turns at most this far from home (deg, robot world
+# axes x forward, y left, z up; pos = about +axis, neg = about -axis).
+# 10.11: whole-arm IK at the home TCP reaches left x +111/-57, y +105/-39,
+# z +66/-60 (right mirrored); caps are 0.75 of that. Up to knee x cap a turn
+# is 1:1, beyond it saturates. In the first left trace the hand turned 100 deg
+# about z; replaying it with these caps: IK error p95 4.3 -> 0.8 cm, shoulder
+# swing 64 -> 30 deg.
+teleop_rotation_limits:
+  knee: 0.6
+  left: {pos_deg: [85, 80, 50], neg_deg: [40, 30, 45]}
+  right: {pos_deg: [40, 80, 45], neg_deg: [85, 30, 50]}
 ik_weights:
   pos: 100.0
   ori: 10.0

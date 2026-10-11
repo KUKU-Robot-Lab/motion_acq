@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -142,6 +143,49 @@ class RobotConfig:
     real: RobotRealConfig
     real_options: dict[str, Any]
     manipulation_lock_joints: tuple[str, ...] = ()
+    # Teleop: per arm, the soft cap on how far the hand target may turn from
+    # home (teleop_rotation_limits in the robot YAML). Empty = no cap.
+    teleop_rotation_limits: dict[str, RotationLimit] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RotationLimit:
+    """Largest turn from home about +/- each robot-world axis (x, y, z), radians.
+
+    Up to ``knee`` of the cap a turn passes 1:1; beyond, it saturates smoothly.
+    """
+
+    pos_rad: tuple[float, float, float]
+    neg_rad: tuple[float, float, float]
+    knee: float
+
+
+def _rotation_limits(raw: Any) -> dict[str, RotationLimit]:
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise TypeError("teleop_rotation_limits must be a mapping.")
+    unknown = set(raw) - {"knee", "left", "right"}
+    if unknown:
+        raise ValueError(f"teleop_rotation_limits: unknown keys {sorted(unknown)}.")
+    knee = float(raw.get("knee", 0.6))
+    if not 0.0 < knee < 1.0:
+        raise ValueError("teleop_rotation_limits.knee must be in (0, 1).")
+    limits: dict[str, RotationLimit] = {}
+    for side in ("left", "right"):
+        if side not in raw:
+            continue
+        entry = raw[side] or {}
+        caps = []
+        for key in ("pos_deg", "neg_deg"):
+            values = [float(v) for v in (entry.get(key) or [])]
+            if len(values) != 3 or not all(0.0 < v <= 180.0 for v in values):
+                raise ValueError(
+                    f"teleop_rotation_limits.{side}.{key} needs three angles in (0, 180] deg."
+                )
+            caps.append(tuple(math.radians(v) for v in values))
+        limits[side] = RotationLimit(pos_rad=caps[0], neg_rad=caps[1], knee=knee)
+    return limits
 
 
 @dataclass(frozen=True)
@@ -438,6 +482,7 @@ def load_robot_config(name: str) -> RobotConfig:
         ),
         replay_ik_weights=replay_ik_weights,
         replay_gripper_mode=replay_gripper_mode,
+        teleop_rotation_limits=_rotation_limits(data.get("teleop_rotation_limits")),
         real=RobotRealConfig(
             backend=(None if real.get("backend") is None else str(real["backend"])),
             command_rate_hz=float(real.get("command_rate_hz", 100.0)),

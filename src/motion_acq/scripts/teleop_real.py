@@ -349,6 +349,11 @@ def _run_real() -> None:
             controller_tcp_calibration=str(args.controller_tcp_calibration),
             fps=float(args.fps), ik_solver=args.ik_solver,
             max_reach=None if controller.max_reach is None else float(controller.max_reach),
+            rotation_limits_deg={
+                s: {"pos": [round(math.degrees(v), 1) for v in lim.pos_rad],
+                    "neg": [round(math.degrees(v), 1) for v in lim.neg_rad], "knee": lim.knee}
+                for s, lim in controller.rotation_limits.items()
+            },
             home_q=[round(float(v), 5) for v in home_q],
             home_tcp={s: [round(float(v), 5) for v in controller.home_pose7[s]] for s in enabled_sides},
             joint_names={s: [runtime.joint_names[i] for i in idx] for s, idx in trace.arm_indices.items()},

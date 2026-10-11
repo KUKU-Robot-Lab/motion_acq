@@ -11,6 +11,7 @@ import math
 import numpy as np
 
 from motion_acq.retargeting.handumi_to_robot import (
+    limit_target_rotation,
     local_frame_adapter,
     local_relative_robot_target_pose7,
 )
@@ -80,6 +81,10 @@ class TeleopController:
         # True: each arm takes robot forward from the headset heading at its anchor
         self.heading_from_hmd = bool(heading_from_hmd)
         self.max_reach = runtime.config.ik_weights.max_reach
+        # 10.11 user (arm tuning): the hand turns far more than the arm can
+        # follow (a 100 deg hand turn at home left 59 deg / 6 cm of IK error and
+        # swung the shoulder 60 deg), so big turns are softened per axis.
+        self.rotation_limits = dict(runtime.config.teleop_rotation_limits)
         self.side_indices = {side: runtime.arm_joint_indices(side) for side in SIDES}
         left_home, right_home = self.solver.fk_pose7(self.home_q)
         self.home_pose7 = {"left": left_home, "right": right_home}
@@ -217,6 +222,12 @@ class TeleopController:
                 translation_scale=self.translation_scale,
                 max_reach=self.max_reach,
             )
+            limit = self.rotation_limits.get(side)
+            if limit is not None:
+                pose7 = limit_target_rotation(
+                    pose7, self.anchor_ref[side], np.asarray(limit.pos_rad),
+                    np.asarray(limit.neg_rad), limit.knee,
+                )
             targets[side] = self._pose_target(pose7)
             target_pose7[side] = pose7
 

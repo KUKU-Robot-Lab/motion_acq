@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -327,6 +328,71 @@ def adapt_relative_pose(
     out[:3] *= float(translation_scale)
     out[3:7] = quaternion_xyzw_normalize(out[3:7])
     return out.astype(np.float32)
+
+
+def soften_rotation(
+    rotvec: np.ndarray,
+    pos_rad: np.ndarray,
+    neg_rad: np.ndarray,
+    knee: float,
+) -> np.ndarray:
+    """Shorten a turn (rotation vector) so it saturates at a direction-dependent cap.
+
+    ``pos_rad``/``neg_rad`` are the largest turns about +/- each axis; a turn
+    about a mixed axis gets the ellipsoid radius in that direction. Up to
+    ``knee`` of the cap the turn passes 1:1, beyond it approaches the cap
+    smoothly (tanh), so the robot keeps turning a little more as the hand does
+    but never asks for a turn the arm cannot make (10.11 user, arm tuning).
+    """
+    v = np.asarray(rotvec, dtype=np.float64)
+    angle = float(np.linalg.norm(v))
+    if angle < 1e-9:
+        return v.astype(np.float32)
+    unit = v / angle
+    caps = np.where(unit >= 0.0, np.asarray(pos_rad, float), np.asarray(neg_rad, float))
+    cap = 1.0 / math.sqrt(float(np.sum(unit**2 / caps**2)))
+    linear = knee * cap
+    if angle <= linear:
+        return v.astype(np.float32)
+    room = cap - linear
+    return (unit * (linear + room * math.tanh((angle - linear) / room))).astype(np.float32)
+
+
+def limit_target_rotation(
+    target_pose7: np.ndarray,
+    home_pose7: np.ndarray,
+    pos_rad: np.ndarray,
+    neg_rad: np.ndarray,
+    knee: float,
+) -> np.ndarray:
+    """``target_pose7`` with its turn from ``home_pose7`` (robot world) softened."""
+    target = np.asarray(target_pose7, dtype=np.float32)
+    home_rot = quaternion_xyzw_to_matrix(np.asarray(home_pose7)[3:7]).astype(np.float64)
+    turn = quaternion_xyzw_to_matrix(target[3:7]).astype(np.float64) @ home_rot.T
+    soft = soften_rotation(_matrix_to_rotvec(turn), pos_rad, neg_rad, knee)
+    out = target.copy()
+    out[3:7] = matrix_to_quaternion_xyzw(_rotvec_to_matrix(soft) @ home_rot)
+    return out
+
+
+def _matrix_to_rotvec(rot: np.ndarray) -> np.ndarray:
+    quat = matrix_to_quaternion_xyzw(rot).astype(np.float64)
+    if quat[3] < 0.0:
+        quat = -quat
+    sin_half = float(np.linalg.norm(quat[:3]))
+    if sin_half < 1e-12:
+        return np.zeros(3)
+    return quat[:3] / sin_half * (2.0 * math.atan2(sin_half, quat[3]))
+
+
+def _rotvec_to_matrix(rotvec: np.ndarray) -> np.ndarray:
+    v = np.asarray(rotvec, dtype=np.float64)
+    angle = float(np.linalg.norm(v))
+    if angle < 1e-12:
+        return np.eye(3)
+    k = v / angle
+    kx = np.array([[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]])
+    return np.eye(3) + math.sin(angle) * kx + (1.0 - math.cos(angle)) * (kx @ kx)
 
 
 def one_step_local_relative(poses7: np.ndarray) -> np.ndarray:
