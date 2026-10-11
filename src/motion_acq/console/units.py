@@ -360,7 +360,9 @@ def hand_command(station: Station, mode: str, side: str, kind: str) -> Launch:
     side = check_side(side)
     if kind not in HAND_COMMANDS:
         raise UnitError(f"hand command must be one of {tuple(HAND_COMMANDS)}, not {kind!r}")
-    command = f"ros2 topic pub --once /motion_acq/hand_{side}/command std_msgs/msg/String '{{data: {kind}}}'"
+    # 10.11: not `ros2 topic pub --once` (the rosbag recorder could take the only message): waits for the
+    # hand node and resends until its status shows the command
+    command = f"ros2 run motion_acq_hand hand_command --side {side} {kind}"
     side_ko = "오른손" if side == "right" else "왼손"
     summary = {"home": f"{side_ko}: home(펼침)으로 가서 그대로 멈춘다(장갑 무시).",
                "follow": f"{side_ko}: home(펼침) → 1 초 기준 자세 → 장갑을 따라간다(팔이 home 에 있어도).",
