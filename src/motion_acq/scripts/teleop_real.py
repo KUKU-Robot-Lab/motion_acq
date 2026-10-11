@@ -84,6 +84,7 @@ from motion_acq.teleop.session import TeleopSession
 from motion_acq.teleop.standby import GripperHomeStandby
 from motion_acq.teleop.tracking import LatestTrackingSampler, TrackingRecoveryPolicy
 from motion_acq.teleop.trace import TeleopTrace
+from motion_acq.teleop.common import announce_front_missing
 from motion_acq.utils.speech import log_say
 from motion_acq.visualize import LiveCameraViews
 
@@ -740,6 +741,7 @@ def _run_real() -> None:
                 continue
             anchored_sides = teleop_frame.anchored_sides
             anchored_this_frame = bool(anchored_sides)
+            announce_front_missing(start_sides, anchored_sides, inputs.front_missing, play_sounds=play_sounds)
             if anchored_sides:  # the RH56F1 hands of these arms follow the gloves from now (hand_link)
                 _hand_phase(real_env, "teleop", anchored_sides)
             for side in anchored_sides:

@@ -612,6 +612,13 @@ class MetaQuestTrackingProvider:
         hmd_pose = self.workspace.apply(hmd_device)
         left = pose_to_pose7(left_controller)
         right = pose_to_pose7(right_controller)
+        front_required = "front" in frame.raw  # quest-view sends the key, None until it is set
+        front = frame.raw.get("front")
+        front_pose = device_front_pose = None
+        if isinstance(front, dict) and streaming:
+            front_device = unity_pose_to_handumi(_vec3(front.get("position")), _quat(front.get("rotation")))
+            device_front_pose = pose_to_pose7(front_device)
+            front_pose = pose_to_pose7(self.workspace.apply(front_device))
         left_tcp, right_tcp = apply_tcp_calibration_pose7(left, right, self.calibration)
         return ControllerPairSample(
             device=self.device,
@@ -641,6 +648,9 @@ class MetaQuestTrackingProvider:
             connected=connected,
             streaming=streaming,
             sequence=int(frame.receive_sequence),
+            front_required=front_required,
+            front_pose=front_pose,
+            device_front_pose=device_front_pose,
         )
 
 

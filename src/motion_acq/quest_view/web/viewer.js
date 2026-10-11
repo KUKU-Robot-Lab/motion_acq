@@ -13,6 +13,7 @@ let latestImage = null; // ImageBitmap
 let imageSeq = 0;
 let headStatus = null;
 let headAge = null;
+let frontStatus = null;  // the robot's front kept by the server (10.11)
 
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
@@ -23,7 +24,7 @@ function connect() {
     if (typeof ev.data === "string") {
       const msg = JSON.parse(ev.data);
       if (msg.type === "status") {
-        headStatus = msg.head; headAge = msg.head_age_s;
+        headStatus = msg.head; headAge = msg.head_age_s; frontStatus = msg.front || null;
         if (msg.camera_on === false && latestImage) {  // the camera closed: no stale picture
           latestImage.close(); latestImage = null; imageSeq += 1;
         }
@@ -51,6 +52,13 @@ connect();
 function fmt(v) { return (v === null || v === undefined) ? "-" : (v >= 0 ? "+" : "") + v.toFixed(1); }
 
 function statusLines() {
+  const lines = headLines();
+  // 10.11: no arm or neck starts before the operator set the robot's front
+  if (frontStatus && !frontStatus.set) return ["정면 미설정: 로봇 정면을 보고 콘솔 [정면 맞추기]", lines[1]];
+  return lines;
+}
+
+function headLines() {
   const h = headStatus;
   if (!h || headAge === null || headAge > 1.0) return ["목을 시작하면 영상이 나온다 (상황판: 목 [시작])", ""];
   const pan = h.meas_pan_deg === null ? null : h.meas_pan_deg - h.home_pan_deg;
@@ -90,6 +98,10 @@ const overlay = document.createElement("canvas");
 overlay.width = 1024; overlay.height = 160;
 const overlayCtx = overlay.getContext("2d");
 let lastTime = null;
+// 10.11: one id per XR session and per recenter (the reference space moves at both); the server
+// drops the robot's front when it changes
+let xrSessionId = null;
+const newSessionId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 // Read-only state for the PC (scripts/quest_usb.sh vr --status over the browser devtools).
 window.macqView = { xrSupported: null, xrActive: false, mode: null, posesSent: 0, lastError: null };
@@ -150,11 +162,15 @@ window.macqStartVr = async function () {
     catch (e) { space = await session.requestReferenceSpace("local"); }
     session.addEventListener("end", () => {
       if (xrSession === session) {
-        xrSession = null; xrMode = null; window.macqView.xrActive = false; window.macqView.mode = null;
+        xrSession = null; xrMode = null; xrSessionId = null; window.macqView.xrActive = false; window.macqView.mode = null;
       }
       enterBtn.disabled = false;
     });
     xrSession = session; xrMode = mode; refSpace = space;
+    xrSessionId = newSessionId();
+    if (typeof space.addEventListener === "function") {  // XRReferenceSpace "reset": a Quest recenter
+      space.addEventListener("reset", () => { xrSessionId = newSessionId(); });
+    }
     uploadedSeq = -1;  // new session: upload the current picture again
     window.macqView.mode = mode;
     window.macqView.xrActive = true;
@@ -240,7 +256,7 @@ function onXRFrame(time, frame) {
 
   // poses back to the PC, every frame
   const msg = { type: "pose", dt: lastTime === null ? 0 : (time - lastTime) / 1000, hmd: viewer ? poseOf(viewer) : null,
-                left: null, right: null };
+                left: null, right: null, session: xrSessionId };
   lastTime = time;
   for (const src of session.inputSources) {
     if (!src.gripSpace || (src.handedness !== "left" && src.handedness !== "right")) continue;

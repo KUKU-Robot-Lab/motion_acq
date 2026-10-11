@@ -88,6 +88,7 @@ class HeadSession:
         self._last_tick_t: float | None = None
         self._toggle_requests = 0
         self._toggle_lock = threading.Lock()
+        self._front_warned = False
 
     def toggle_lock(self) -> None:
         """Thread-safe request (keyboard thread); applied at the next tick."""
@@ -171,11 +172,19 @@ class HeadSession:
         delay = self.auto_start_delay_s if self.unlock_mode == "auto" else 0.0
         if now - self._tracked_since < delay:
             return
+        front = _front(sample)
+        if getattr(sample, "front_required", False) and front is None:
+            if not self._front_warned:
+                log.warning("Head waits: the robot's front is not set (console [정면 맞추기]).")
+                self._front_warned = True
+            return
         measured = self._read_measured()
         if measured is None:
             return
-        if self.retargeter.anchor(np.asarray(sample.device_hmd_pose), measured, now):
-            log.info("Head anchored at pan %.1f / tilt %.1f deg.", *measured)
+        if self.retargeter.anchor(np.asarray(sample.device_hmd_pose), measured, now, front_pose7=front):
+            self._front_warned = False
+            log.info("Head anchored at pan %.1f / tilt %.1f deg%s.", *measured,
+                     "; home = the robot's front" if front is not None else "")
 
     def _check_hardware(self, now: float) -> None:
         if now - self._last_hw_check < HARDWARE_CHECK_PERIOD_S:
@@ -222,8 +231,18 @@ class HeadSession:
             self._end_tick()
             return None
         self._last_tick_t = now
+        front = _front(sample)
+        tracked = bool(sample.hmd_tracked)
+        if getattr(sample, "front_required", False):
+            if front is None:
+                tracked = False  # front dropped (VR restart, recenter): hold until it is set again
+            elif self.retargeter.front is None or not np.allclose(front, self.retargeter.front):
+                # a new front: same head command, angles from the new front
+                if self.retargeter.anchor(np.asarray(sample.device_hmd_pose), self.retargeter.command_deg,
+                                          now, front_pose7=front):
+                    log.info("Head follows the new front.")
         step = self.retargeter.step(
-            np.asarray(sample.device_hmd_pose), bool(sample.hmd_tracked), now
+            np.asarray(sample.device_hmd_pose), tracked, now
         )
         if step.reanchored:
             self.stats.reanchors += 1
@@ -282,3 +301,9 @@ def open_log(log_dir: Path, station: str) -> IO[str]:
     path = log_dir / f"head_{station or 'local'}_{stamp}.jsonl"
     log.info("Head log: %s", path)
     return path.open("w", encoding="utf-8", buffering=1)
+
+
+def _front(sample: ControllerPairSample) -> np.ndarray | None:
+    """The robot's front in the device frame (10.11, quest-view), None when unset or absent."""
+    front = getattr(sample, "device_front_pose", None)
+    return None if front is None else np.asarray(front, dtype=np.float64)

@@ -490,3 +490,18 @@ def return_home_on_exit(real_env: Any, home_q: np.ndarray, log: logging.Logger) 
             log.info("Arms ready to disable (at rest, or at home for robots without a stored path).")
     except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - disconnect must still run
         log.error("Arms could not return home / to rest: %s", exc or "interrupted")
+
+
+FRONT_MISSING_SPEECH = "정면 맞추기를 먼저 하세요"
+
+
+def announce_front_missing(requested: tuple[str, ...], anchored: tuple[str, ...], front_missing: bool,
+                           *, play_sounds: bool) -> bool:
+    """Tell the operator why a requested arm did not start (10.11: no robot front set yet)."""
+    if not requested or anchored or not front_missing:
+        return False
+    if play_sounds:
+        from motion_acq.utils.speech import say
+
+        say(FRONT_MISSING_SPEECH, lang="ko", interrupt=True)
+    return True

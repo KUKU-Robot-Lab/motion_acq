@@ -101,6 +101,10 @@ def follow_blockers(console, source: str | None) -> list[str]:
         out.append("Quest 자세 입력 없음: 머리(Quest) [연결] 먼저 (팔 [홈]/[차렷]은 Quest 없이 된다)")
     if source == "view" and not console.settings.get("webxr_arm_ok"):
         out.append("헤드셋 영상(WebXR)으로 팔을 처음 움직이기 전에 머리(Quest) > 방향 확인을 마칠 것(로봇은 안 움직인다)")
+    if source == "view" and console.mode == "real":
+        front = console.probe_raw("front")
+        if not (isinstance(front, dict) and front.get("set")):  # 10.11: forward comes from it
+            out.append("정면 미설정: 로봇 정면을 보고 머리(Quest) [정면 맞추기] 먼저")
     if source == "external":
         out.append(external_quest(console) + ": 그 프로그램을 끄고 HandUMI 앱 모드로")
     return out

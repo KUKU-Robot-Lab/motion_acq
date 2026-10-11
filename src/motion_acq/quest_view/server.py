@@ -43,6 +43,7 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 
 from motion_acq.quest_view.convert import handumi_frame
+from motion_acq.quest_view.front import FrontKeeper
 
 log = logging.getLogger("motion_acq.quest_view")
 
@@ -73,6 +74,7 @@ class Shared:
     head: dict | None = None
     frames_in: int = 0
     last_pose_at: float = 0.0
+    front: FrontKeeper = field(default_factory=FrontKeeper)  # the robot's front (10.11)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -306,7 +308,10 @@ def build_app(shared: Shared, poses: PoseBroadcast, *, video_fps: float) -> web.
                     except ValueError:
                         continue
                     if isinstance(message, dict) and message.get("type") == "pose":
-                        poses.send(handumi_frame(message))
+                        shared.front.observe(message)
+                        frame = handumi_frame(message)
+                        frame["front"] = shared.front.wire()  # key always present: quest-view needs a front
+                        poses.send(frame)
                         shared.frames_in += 1
                         shared.last_pose_at = time.monotonic()
                 elif msg.type is WSMsgType.ERROR:
@@ -316,7 +321,20 @@ def build_app(shared: Shared, poses: PoseBroadcast, *, video_fps: float) -> web.
             log.info("headset page left")
         return ws
 
+    async def front_get(_request):
+        return web.json_response(shared.front.status())
+
+    async def front_post(request):
+        # 10.11: the console's [정면 맞추기]; local only (the page and console are on this PC)
+        if request.remote not in ("127.0.0.1", "::1"):
+            return web.json_response({"ok": False, "text": "local only"}, status=403)
+        ok, text = shared.front.set()
+        log.info("front %s: %s", "set" if ok else "refused", text)
+        return web.json_response({"ok": ok, "text": text, **shared.front.status()})
+
     app.router.add_get("/", index)
+    app.router.add_get("/front", front_get)
+    app.router.add_post("/front", front_post)
     app.router.add_get("/ws", websocket)
     app.router.add_static("/static", WEB_DIR)
     return app
@@ -339,7 +357,7 @@ async def _push(ws: web.WebSocketResponse, shared: Shared, video_fps: float) -> 
             head = shared.head
             age = None if head is None else now - head.get("received_at", 0.0)
             await ws.send_str(json.dumps({"type": "status", "head": head, "head_age_s": age,
-                                          "camera_on": shared.camera_on}))
+                                          "camera_on": shared.camera_on, "front": shared.front.status()}))
         await asyncio.sleep(period)
 
 

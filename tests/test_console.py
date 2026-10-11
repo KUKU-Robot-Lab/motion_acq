@@ -515,7 +515,7 @@ def test_quest_offhead_wakes_then_connects_and_starts(console, monkeypatch):
 
 def test_webxr_arm_needs_the_direction_check(console, monkeypatch):
     console.set_mode("real")
-    data = _fresh({"can": {"right": {"port": "can0", "up": True, "fd": True}}})
+    data = _fresh({"can": {"right": {"port": "can0", "up": True, "fd": True}}, "front": {"set": True}})
     monkeypatch.setattr(console, "probe_raw", lambda name: data.get(name))
     monkeypatch.setattr(console.sup, "is_running", lambda key: key == "quest_view")
     monkeypatch.setattr(console.sup, "send_key", lambda key, text: None)
@@ -859,3 +859,31 @@ def test_glove_topic_needs_a_publisher_not_just_the_name(monkeypatch):
     monkeypatch.setattr(probes, "run", lambda argv, timeout, env: out)
     ros = probes.ros_state(units.Station.load("arm4090"), "real")
     assert ros["glove_topics"] == {"right": True, "left": False}
+
+
+def test_space_needs_the_robot_front_in_headset_view(console, monkeypatch):
+    """10.11: arms take forward from the front set once per VR session; Space waits for it."""
+    console.set_mode("real")
+    console.settings["webxr_arm_ok"] = True
+    data = _fresh({"can": {"right": {"port": "can0", "up": True, "fd": True}}, "front": {"set": False}})
+    monkeypatch.setattr(console, "probe_raw", lambda name: data.get(name))
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key == "quest_view")
+    monkeypatch.setattr(console.sup, "send_key", lambda key, text: None)
+    assert "정면 맞추기" in console.send_key("arm", " ")["error"]
+    data["front"] = {"set": True}
+    assert console.send_key("arm", " ")["ok"]
+
+
+def test_front_button_asks_quest_view(console, monkeypatch):
+    from motion_acq.console import probes
+
+    console.set_mode("real")
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key == "quest_view")
+    spoken = []
+    monkeypatch.setattr("motion_acq.utils.speech.say", lambda text, **kw: spoken.append(text))
+    monkeypatch.setattr(probes, "front_request", lambda method="GET", timeout=0.5: {"ok": True, "text": "정면 저장됨"})
+    assert console._quest_front() == "정면 저장됨" and spoken == ["정면 저장"]
+    monkeypatch.setattr(probes, "front_request",
+                        lambda method="GET", timeout=0.5: {"ok": False, "text": "고개가 움직였습니다 (9°): 다시"})
+    with pytest.raises(RuntimeError, match="고개가"):
+        console._quest_front()

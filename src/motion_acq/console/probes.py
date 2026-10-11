@@ -159,6 +159,25 @@ def adb_path() -> str:
     return _adb()
 
 
+QUEST_VIEW_URL = "http://127.0.0.1:8787"  # macq quest-view --port default
+
+
+def front_request(method: str = "GET", timeout: float = 0.5) -> dict | None:
+    """quest-view's robot front (10.11): GET the state, POST to keep the headset pose of now.
+    None when quest-view does not answer."""
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(f"{QUEST_VIEW_URL}/front", method=method, data=b"" if method == "POST" else None)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as reply:
+            return json.loads(reply.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return json.loads(exc.read().decode("utf-8") or "{}")
+    except (OSError, ValueError):
+        return None
+
+
 def quest_port_owner() -> dict | None:
     """Who listens on 127.0.0.1:65432: adb (the HandUMI forward), quest-view, the mock, or nobody."""
     return parse_ss_listener(run(["ss", "-ltnpH", "sport = :65432"], timeout=3))
@@ -344,6 +363,7 @@ class Probes:
         self._stop = threading.Event()
         self._sdk_heard: dict[str, tuple[str | None, str | None]] | None = None  # side -> (driver log, state)
         self._ros_kick = threading.Event()
+        self._front_set = False
         for name, target in (("fast", self._fast_loop), ("ros", self._ros_loop)):
             threading.Thread(target=target, daemon=True, name=f"console-probe-{name}").start()
 
@@ -357,6 +377,8 @@ class Probes:
         while not self._stop.is_set():
             self._guard("quest", quest_state)
             self._guard("quest_port", quest_port_owner)
+            self._guard("front", front_request)
+            self._speak_front(self.data.get("front"))
             self._guard("can", lambda: can_state(self.station))
             self._guard("can_holders", can_holders)
             self._guard("head_port", lambda: head_port(self.station))
@@ -366,6 +388,14 @@ class Probes:
                 self._guard("hand_drivers", external_hand_drivers)
             self.data["fast_at"] = time.time()
             self._stop.wait(FAST_PERIOD_S)
+
+    def _speak_front(self, front: dict | None) -> None:
+        """10.11: say when the robot's front went away (VR restart, recenter); arms and neck wait for it."""
+        was_set, self._front_set = self._front_set, bool(front and front.get("set"))
+        if was_set and not self._front_set and front and front.get("vr") is not None and self.mode_getter() == "real":
+            from motion_acq.utils.speech import say
+
+            say("정면이 풀렸습니다. 정면 맞추기를 다시 하세요", lang="ko")
 
     def _speak_sdk_calibration(self, gloves: dict) -> None:
         """Read a new SDK calibration step aloud (10.11 user: the operator wears the gloves and the Quest).

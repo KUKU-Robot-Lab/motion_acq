@@ -155,8 +155,15 @@ class TeleopController:
         requested_sides: tuple[str, ...],
         *,
         hmd_pose7: np.ndarray | None = None,
+        front_missing: bool = False,
+        from_front: bool = False,
     ) -> tuple[str, ...]:
         """Start the requested arms from their current hand poses.
+
+        ``hmd_pose7`` is the robot's front when one is set (10.11: quest-view keeps the headset
+        pose the operator set facing the robot; the gaze at Space turned the right arm 65 deg),
+        else the headset now. ``front_missing``: the stream needs a front and has none, so no
+        arm starts.
 
         With heading_from_hmd robot forward is where the headset faces now, and
         no arm starts while the headset is untracked (the workspace axes would be
@@ -166,6 +173,10 @@ class TeleopController:
         world_map = self.source_world_to_robot_world
         heading = float("nan")  # yaw (rad) of the headset in the workspace, when it set forward
         wanted = [s for s in requested_sides if s in self.enabled_sides and side_tracked[s]]
+        if self.heading_from_hmd and wanted and front_missing:
+            log.warning("%s not started: the robot's front is not set. Face the robot's front and press "
+                        "[정면 맞추기] in the console, then start again.", "/".join(wanted))
+            return ()
         if self.heading_from_hmd and wanted:
             if not _usable_pose7(hmd_pose7):
                 log.warning("Headset not tracked: %s not started (robot forward comes from the headset "
@@ -174,8 +185,9 @@ class TeleopController:
             hmd = np.asarray(hmd_pose7)
             world_map = heading_world_map(world_map, hmd)
             heading = heading_yaw(np.asarray(hmd, dtype=np.float64)[3:7])
-            log.info("%s: robot forward = headset heading, %+.0f deg from the workspace x.",
-                     "/".join(wanted), math.degrees(heading))
+            log.info("%s: robot forward = %s, %+.0f deg from the workspace x.", "/".join(wanted),
+                     "the front set in the console" if from_front else "headset heading",
+                     math.degrees(heading))
         anchored: list[str] = []
         for side in requested_sides:
             if side not in self.enabled_sides or not side_tracked[side]:

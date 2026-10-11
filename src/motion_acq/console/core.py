@@ -410,6 +410,8 @@ class Console:
             fn = {"app": self._quest_app, "view": self._quest_view, "connect": self._quest_connect,
                   "start": self._quest_start, "offhead": self._quest_offhead}[arg]
             return self._job("quest", fn)
+        if kind == "quest" and arg == "front":
+            return self._job("front", self._quest_front)
         if kind == "glove" and arg == "connect":
             return self._job("glove", self._glove_connect)
         if kind == "direction":
@@ -616,6 +618,25 @@ class Console:
             steps.append(self._quest_connect())
         steps.append(self._quest_start())
         return " / ".join(steps)
+
+    def _quest_front(self) -> str:
+        """[정면 맞추기] (10.11): quest-view keeps the headset pose of now as the robot's front;
+        both arms and the neck take forward / home from it until VR restarts or the Quest recenters."""
+        from motion_acq.console.probes import front_request
+        from motion_acq.utils.speech import say
+
+        if self.mode == "fake":
+            return "fake: 정면 없음 (가짜 Quest 는 예전 방식)"
+        if not self.sup.is_running("quest_view"):
+            raise RuntimeError("먼저 [연결]")
+        reply = front_request("POST", timeout=2.0)
+        if reply is None:
+            raise RuntimeError("quest-view 가 답하지 않는다")
+        text = str(reply.get("text", ""))
+        say("정면 저장" if reply.get("ok") else text.split(":")[0].split("(")[0], lang="ko", interrupt=True)
+        if not reply.get("ok"):
+            raise RuntimeError(text)
+        return text
 
     def _quest_connect(self) -> str:
         """[연결]: real = quest-view (camera + pose server) and the page in the headset; fake = mock + pattern."""

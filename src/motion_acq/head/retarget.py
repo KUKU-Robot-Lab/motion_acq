@@ -165,13 +165,16 @@ class _Axis:
         self.target_deg = axis.home_deg
         self.filtered = 0.0
 
-    def anchor(self, head_deg: float, t_s: float) -> None:
+    def anchor(self, head_deg: float, t_s: float, *, start_deg: float | None = None,
+               relative_deg: float = 0.0) -> None:
+        """``head_deg`` is the axis angle at relative 0; the command starts at ``start_deg``
+        (default ``head_deg``) and the filters at ``relative_deg`` (a front-relative start)."""
         self.base_deg = self.axis.clamp(head_deg)
         self.target_deg = self.base_deg
-        self.filtered = 0.0
-        self.deadband.reset(0.0)
-        self.filter.reset(0.0, t_s)
-        self.limiter.reset(self.base_deg)
+        self.filtered = float(relative_deg)
+        self.deadband.reset(float(relative_deg))
+        self.filter.reset(float(relative_deg), t_s)
+        self.limiter.reset(self.base_deg if start_deg is None else self.axis.clamp(start_deg))
 
     def step(self, relative_deg: float, t_s: float, dt: float) -> float:
         self.filtered = self.filter(self.deadband(relative_deg), t_s)
@@ -201,6 +204,7 @@ class HeadRetargeter:
         self._last_pitch = 0.0
         self._last_t: float | None = None
         self._hold_since: float | None = None
+        self.front: np.ndarray | None = None  # 10.11: device-frame front the anchor uses, if any
         self._pan = _Axis(config.pan, config, config.pan_enabled)
         self._tilt = _Axis(config.tilt, config, config.tilt_enabled)
 
@@ -209,17 +213,35 @@ class HeadRetargeter:
         return self._pan.limiter.position, self._tilt.limiter.position
 
     def anchor(
-        self, hmd_pose7: np.ndarray, head_deg: tuple[float, float], t_s: float
+        self, hmd_pose7: np.ndarray, head_deg: tuple[float, float], t_s: float,
+        *, front_pose7: np.ndarray | None = None,
     ) -> bool:
-        """Capture R_hmd_anchor and R_head_anchor. False if the HMD pose is unusable."""
+        """Capture R_hmd_anchor and R_head_anchor. False if the HMD pose is unusable.
+
+        With ``front_pose7`` (10.11: the robot's front the operator set, shared with the arms)
+        the head is at home when the HMD looks at the front: the angles are taken from the
+        front, and the command walks (rate limited) from ``head_deg`` to where the HMD looks."""
         angles = hmd_yaw_pitch_deg(hmd_pose7)
         if angles is None or angles[0] is None:
             return False
         yaw, pitch = angles
-        self._anchor_yaw = self._yaw_unwrapped = self._last_raw_yaw = yaw
-        self._anchor_pitch = self._last_pitch = pitch
-        self._pan.anchor(head_deg[0], t_s)
-        self._tilt.anchor(head_deg[1], t_s)
+        if front_pose7 is None:
+            self._anchor_yaw = self._yaw_unwrapped = self._last_raw_yaw = yaw
+            self._anchor_pitch = self._last_pitch = pitch
+            self._pan.anchor(head_deg[0], t_s)
+            self._tilt.anchor(head_deg[1], t_s)
+            self.front = None
+        else:
+            front = hmd_yaw_pitch_deg(front_pose7)
+            if front is None or front[0] is None:
+                return False
+            rel_yaw, rel_pitch = wrap_deg(yaw - front[0]), pitch - front[1]
+            self._anchor_yaw, self._anchor_pitch = front[0], front[1]
+            self._yaw_unwrapped = front[0] + rel_yaw
+            self._last_raw_yaw, self._last_pitch = yaw, pitch
+            self._pan.anchor(self.config.pan.home_deg, t_s, start_deg=head_deg[0], relative_deg=rel_yaw)
+            self._tilt.anchor(self.config.tilt.home_deg, t_s, start_deg=head_deg[1], relative_deg=rel_pitch)
+            self.front = np.asarray(front_pose7, dtype=np.float64).copy()
         self._last_t = t_s
         self._hold_since = None
         self.state = HeadState.RUNNING
@@ -237,7 +259,7 @@ class HeadRetargeter:
         )
 
     def _reanchor(self, hmd_pose7: np.ndarray, t_s: float) -> HeadStep:
-        self.anchor(hmd_pose7, self.command_deg, t_s)
+        self.anchor(hmd_pose7, self.command_deg, t_s, front_pose7=self.front)
         return HeadStep(
             HeadState.RUNNING, 0.0, 0.0, 0.0, 0.0,
             self._pan.target_deg, self._tilt.target_deg, *self.command_deg,

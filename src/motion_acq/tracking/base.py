@@ -56,6 +56,12 @@ class ControllerPairSample:
     connected: bool = False
     streaming: bool = False
     sequence: int = 0
+    # 10.11: the robot's front set once per VR session (quest-view). front_required: the stream
+    # carries a front (quest-view), so no arm or neck starts without it; *_front_pose: the
+    # headset pose kept as the front, in the workspace / raw device frame (None while unset).
+    front_required: bool = False
+    front_pose: np.ndarray | None = None
+    device_front_pose: np.ndarray | None = None
 
     @classmethod
     def empty(cls, device: str) -> ControllerPairSample:

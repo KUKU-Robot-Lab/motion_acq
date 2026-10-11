@@ -174,6 +174,7 @@ from motion_acq.teleop.tracking import LatestTrackingSampler, TrackingRecoveryPo
 from motion_acq.teleop.trajectory import TeleopCommandStream
 from motion_acq.tracking.base import TrackingProvider
 from motion_acq.tracking.gestures import BilateralClapArbiter, DoubleClapDetector
+from motion_acq.teleop.common import announce_front_missing
 from motion_acq.utils.speech import log_say
 from motion_acq.visualize import LiveCameraViews, OpenCVCameraViewer
 
@@ -1661,6 +1662,7 @@ def record_episode(
             real_env.check_health()
             continue
         anchored = teleop_frame.anchored_sides
+        announce_front_missing(start_sides, anchored, inputs.front_missing, play_sounds=play_sounds)
         if anchored:
             _hand_phase(real_env, "teleop", anchored)  # the RH56F1 hands follow the gloves (hand_link)
             record_log.info(

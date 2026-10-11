@@ -31,6 +31,9 @@ class TeleopInputs:
     openings: dict[str, float]
     sample_time_ns: int
     hmd_pose7: np.ndarray | None = None  # workspace headset pose, None when untracked
+    # 10.11: the robot's front (quest-view): forward comes from it, not from the gaze at Space
+    front_pose7: np.ndarray | None = None
+    front_missing: bool = False  # the stream needs a front and none is set yet
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,12 @@ class TeleopSession:
                 if bool(getattr(sample, "hmd_tracked", False))
                 else None
             ),
+            front_pose7=(
+                None if getattr(sample, "front_pose", None) is None
+                else np.asarray(sample.front_pose, dtype=np.float32).copy()
+            ),
+            front_missing=bool(getattr(sample, "front_required", False))
+            and getattr(sample, "front_pose", None) is None,
         )
 
     def advance(
@@ -101,7 +110,10 @@ class TeleopSession:
             for side, pose in inputs.raw_source_poses.items()
         }
         anchored_sides = self.controller.anchor(
-            source_poses, inputs.side_tracked, start_sides, hmd_pose7=inputs.hmd_pose7
+            source_poses, inputs.side_tracked, start_sides,
+            hmd_pose7=inputs.front_pose7 if inputs.front_pose7 is not None else inputs.hmd_pose7,
+            front_missing=inputs.front_missing,
+            from_front=inputs.front_pose7 is not None,
         )
         step = self.controller.step(source_poses, inputs.side_tracked, inputs.openings)
         exact_indices = tuple(

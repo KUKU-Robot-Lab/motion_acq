@@ -131,7 +131,17 @@ function nodeQuest(s) {
   }
   const last = qv ? parseFloat(qv.last) : NaN;
   if (qv && isFinite(last) && last < 3) {
-    return { ...n, tone: "ok", state: "영상 송출 중", sub: `자세 받는 곳 ${qv.clients} · 프레임 ${qv.frames}` };
+    // 10.11: arms and neck take forward from the front set here (once per VR start / recenter)
+    const front = (s.probes || {}).front || {};
+    const frontBtn = btn(front.set ? "정면 다시" : "정면 맞추기", { "data-action": "quest:front",
+      title: "로봇 정면을 보고 1 초 가만히 있다가 누르기: 양팔의 앞 / 목의 home 기준" }, front.set ? "ghost" : "go");
+    const frontJob = job("front").state === "failed" ? ` · ${jobLine("front")}` : "";
+    if (!front.set) {
+      return { ...n, tone: "warn", state: "정면 미설정: 팔·목 시작 안 됨", sub: (front.dropped || "로봇 정면을 보고 1 초 가만히, 그다음 [정면 맞추기]") + frontJob,
+               actions: frontBtn };
+    }
+    return { ...n, tone: "ok", state: "영상 송출 중 · 정면 설정됨",
+             sub: `정면 yaw ${front.yaw_deg}° · 자세 받는 곳 ${qv.clients} · 프레임 ${qv.frames}${frontJob}`, actions: frontBtn };
   }
   return { ...n, tone: "warn", state: "페이지 열림: 헤드셋을 쓰고 [시작]", sub: jobLine("quest"),
            actions: btn("시작", { "data-action": "quest:start" }, "go") + offhead };
