@@ -27,6 +27,7 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -82,6 +83,7 @@ from motion_acq.teleop.physical import (
 from motion_acq.teleop.session import TeleopSession
 from motion_acq.teleop.standby import GripperHomeStandby
 from motion_acq.teleop.tracking import LatestTrackingSampler, TrackingRecoveryPolicy
+from motion_acq.teleop.trace import TeleopTrace
 from motion_acq.utils.speech import log_say
 from motion_acq.visualize import LiveCameraViews
 
@@ -109,7 +111,8 @@ def _parse_real_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--joint-debug",
         action="store_true",
-        help="Log per-arm IK, filtered, and streamed joint positions once per second.",
+        help=("Log per-arm IK, filtered, and streamed joint positions once per second, "
+              "and trace every frame to logs/teleop_trace/ (tracker, target, joints)."),
     )
     parser.add_argument(
         "--ik-solver",
@@ -206,6 +209,9 @@ def _motion_joint_indices(runtime, enabled_sides: tuple[str, ...]) -> tuple[int,
             if index not in finger_indices
         )
     )
+
+
+_TRACE_DIR = Path(__file__).resolve().parents[3] / "logs" / "teleop_trace"
 
 
 def _log_joint_debug(
@@ -330,6 +336,24 @@ def _run_real() -> None:
         filtered_indices=motion_joint_indices
     )
     teleop_session = TeleopSession(controller, joint_filter)
+    trace: TeleopTrace | None = None
+    if args.joint_debug:  # 10.11 user: per-frame trace for arm tuning
+        trace = TeleopTrace(
+            _TRACE_DIR / f"trace_{args.side}_{time.strftime('%Y%m%d_%H%M%S')}.jsonl",
+            {side: [i for i in motion_joint_indices if i in set(runtime.arm_joint_indices(side))]
+             for side in enabled_sides},
+        )
+        trace.setup(
+            device=args.device, robot=args.robot, side=args.side,
+            translation_scale=float(args.translation_scale),
+            controller_tcp_calibration=str(args.controller_tcp_calibration),
+            fps=float(args.fps), ik_solver=args.ik_solver,
+            max_reach=None if controller.max_reach is None else float(controller.max_reach),
+            home_q=[round(float(v), 5) for v in home_q],
+            home_tcp={s: [round(float(v), 5) for v in controller.home_pose7[s]] for s in enabled_sides},
+            joint_names={s: [runtime.joint_names[i] for i in idx] for s, idx in trace.arm_indices.items()},
+        )
+        real_log.info("Teleop trace: %s", trace.path)
     joint_diagnostics = JointMotionDiagnostics(
         runtime.joint_names, motion_joint_indices
     )
@@ -388,7 +412,7 @@ def _run_real() -> None:
             feedback_sampler = _LatestJointFeedback(real_env.read, home_q)
             feedback_worker = BestEffortPeriodicWorker(
                 feedback_sampler.update,
-                rate_hz=10.0,
+                rate_hz=50.0,  # cached streamer feedback: cheap, and the trace wants it per frame
                 thread_name="handumi-joint-feedback-debug",
             )
             feedback_worker.start()
@@ -503,6 +527,8 @@ def _run_real() -> None:
                     command_stream.stop()
                     held = real_env.hold(q)
                     controller.tracking_lost(held)
+                    if trace is not None:
+                        trace.event("tracking_lost")
                     home_standby.enter_standby(enabled_sides)
                     joint_filter.reset(held)
                     q = held
@@ -604,6 +630,8 @@ def _run_real() -> None:
                     key_parked.update(parked)
                     park_sides = tuple(park_sides) + parked
                     _hand_phase(real_env, "home", parked)
+                    if trace is not None:
+                        trace.event("park", sides=list(parked), why="H")
                     real_log.info(
                         "H pressed; %s arm returning home (%.1f s); Space follows again.",
                         "/".join(parked),
@@ -711,6 +739,11 @@ def _run_real() -> None:
                 _hand_phase(real_env, "teleop", anchored_sides)
             for side in anchored_sides:
                 real_log.info("%s arm anchored; real robot follows from home.", side)
+                if trace is not None:
+                    anchor = controller.anchors[side] or {}
+                    trace.anchor(side, heading_rad=float(anchor.get("heading", float("nan"))),
+                                 source_pose7=teleop_frame.source_poses[side],
+                                 robot_pose7=controller.anchor_ref[side])
                 log_say(f"{side} anchored", play_sounds=play_sounds)
 
             if episode_start is None and anchored_this_frame:
@@ -739,6 +772,19 @@ def _run_real() -> None:
                 new_epoch=anchored_this_frame,
             )
             last_processed_tracking_time_ns = tracking_snapshot.source_time_ns
+            if trace is not None:
+                trace.frame(
+                    sample_time_ns=inputs.sample_time_ns,
+                    active=teleop_frame.step.anchored_sides,
+                    tracked=inputs.side_tracked,
+                    source=teleop_frame.source_poses,
+                    hmd=inputs.hmd_pose7,
+                    target=teleop_frame.step.target_pose7,
+                    ik_q=teleop_frame.step.q,
+                    filtered_q=q,
+                    feedback_q=None if feedback_sampler is None else feedback_sampler.latest(),
+                    openings=inputs.openings,
+                )
             real_env.check_health()
 
             timing_now_s = time.perf_counter()
@@ -816,6 +862,8 @@ def _run_real() -> None:
         real_log.info("Stopping.")
     finally:
         space_listener.close()
+        if trace is not None:
+            trace.close()
         try:
             command_stream.stop()
         finally:
