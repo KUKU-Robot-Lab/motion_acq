@@ -15,6 +15,7 @@ import socket
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -22,7 +23,7 @@ from head_helpers import make_config, pose_from_yaw_pitch
 from test_quest_view import free_port, webxr_quat
 from test_teleop_heading import OPEN, TRACKED, Sample, Widths, controller, yaw_pose7
 
-from motion_acq.head.retarget import HeadRetargeter
+from motion_acq.head.retarget import AxisConfig, HeadRetargeter
 from motion_acq.quest_view.convert import handumi_frame
 from motion_acq.quest_view.front import STILL_S, FrontKeeper, look_deg
 from motion_acq.robots.registry import load_embodiment
@@ -180,6 +181,37 @@ def test_the_neck_is_home_when_the_headset_looks_at_the_front():
     assert step.command_pan_deg == pytest.approx(-2.9 + 20.0)  # clamped to the 20 deg window
     step = rt.step(pose_from_yaw_pitch(-60.0, 0.0), True, 0.04)
     assert step.command_pan_deg == pytest.approx(-2.9, abs=1e-3)
+
+
+def test_with_a_home_pitch_the_tilt_follows_the_absolute_head_pitch():
+    """Option B (10.12): home looks 18.9 deg down; the front's own pitch does not matter."""
+    rt = HeadRetargeter(make_config(
+        tilt=AxisConfig(home_deg=71.8, range_deg=15.0, range_pos_deg=30.0, sign=-1.0),
+        tilt_home_pitch_deg=-18.9))
+    front = pose_from_yaw_pitch(0.0, -5.0)  # taken while looking a little down
+    assert rt.anchor(pose_from_yaw_pitch(0.0, 0.0), (-2.9, 71.8), 0.0, front_pose7=front)
+    step = rt.step(pose_from_yaw_pitch(0.0, 0.0), True, 0.02)  # looking level
+    assert step.rel_pitch_deg == pytest.approx(18.9, abs=1e-6)
+    assert step.command_tilt_deg == pytest.approx(71.8 - 18.9, abs=1e-3)  # camera level
+    step = rt.step(pose_from_yaw_pitch(0.0, -18.9), True, 0.04)
+    assert step.command_tilt_deg == pytest.approx(71.8, abs=1e-3)  # home = the table view
+    step = rt.step(pose_from_yaw_pitch(0.0, -30.0), True, 0.06)
+    assert step.command_tilt_deg == pytest.approx(71.8 + 11.1, abs=1e-3)
+    step = rt.step(pose_from_yaw_pitch(0.0, -60.0), True, 0.08)
+    assert step.command_tilt_deg == pytest.approx(71.8 + 15.0)  # the down window (34 deg below level)
+
+
+def test_the_station_neck_uses_the_absolute_pitch():
+    import yaml
+
+    from motion_acq.head.config import head_config_from_section
+
+    root = Path(__file__).resolve().parents[1]
+    data = yaml.safe_load((root / "configs" / "stations" / "arm4090.yaml").read_text())["head"]
+    config = head_config_from_section(data)
+    assert config.retarget.tilt_home_pitch_deg == pytest.approx(-18.9)
+    level = config.retarget.tilt.home_deg + config.retarget.tilt.sign * 18.9
+    assert config.tilt_window[0] < level < config.tilt_window[1]
 
 
 def test_a_neck_re_anchor_keeps_the_front():

@@ -122,6 +122,11 @@ class RetargetConfig:
     max_hmd_jump_deg: float = 30.0
     pan_enabled: bool = True
     tilt_enabled: bool = True
+    # 10.12 user (option B): the camera pitch at tilt home, in HMD pitch terms (deg, < 0 = down;
+    # arm4090 home looks 18.9 deg down at the table). With a robot front the tilt then follows the
+    # operator's absolute pitch: looking level puts the camera level, looking 30 deg down puts it
+    # 30 deg down. None: relative to the pitch the front was taken with.
+    tilt_home_pitch_deg: float | None = None
 
     def with_axes(self, axes: str) -> RetargetConfig:
         """Restrict to 'pan', 'tilt' or 'both' (staged hardware tests)."""
@@ -220,7 +225,9 @@ class HeadRetargeter:
 
         With ``front_pose7`` (10.11: the robot's front the operator set, shared with the arms)
         the head is at home when the HMD looks at the front: the angles are taken from the
-        front, and the command walks (rate limited) from ``head_deg`` to where the HMD looks."""
+        front, and the command walks (rate limited) from ``head_deg`` to where the HMD looks.
+        With ``tilt_home_pitch_deg`` the tilt ignores the front's pitch and follows the HMD's
+        absolute pitch (home when the HMD looks that far down)."""
         angles = hmd_yaw_pitch_deg(hmd_pose7)
         if angles is None or angles[0] is None:
             return False
@@ -235,8 +242,9 @@ class HeadRetargeter:
             front = hmd_yaw_pitch_deg(front_pose7)
             if front is None or front[0] is None:
                 return False
-            rel_yaw, rel_pitch = wrap_deg(yaw - front[0]), pitch - front[1]
-            self._anchor_yaw, self._anchor_pitch = front[0], front[1]
+            pitch_ref = front[1] if self.config.tilt_home_pitch_deg is None else self.config.tilt_home_pitch_deg
+            rel_yaw, rel_pitch = wrap_deg(yaw - front[0]), pitch - pitch_ref
+            self._anchor_yaw, self._anchor_pitch = front[0], pitch_ref
             self._yaw_unwrapped = front[0] + rel_yaw
             self._last_raw_yaw, self._last_pitch = yaw, pitch
             self._pan.anchor(self.config.pan.home_deg, t_s, start_deg=head_deg[0], relative_deg=rel_yaw)

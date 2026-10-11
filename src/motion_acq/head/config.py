@@ -67,6 +67,16 @@ def _axis(data: dict[str, Any], name: str) -> tuple[int, AxisConfig]:
     return dxl_id, axis
 
 
+def _home_pitch(tilt: dict[str, Any]) -> float | None:
+    value = tilt.get("home_pitch_deg")
+    if value is None:
+        return None
+    pitch = float(value)
+    if not -75.0 < pitch < 75.0:
+        raise SystemExit(f"head.tilt.home_pitch_deg {pitch} must be within (-75, 75).")
+    return pitch
+
+
 def _home_speed(limits: dict[str, Any]) -> float:
     speed = float(limits.get("home_speed_deg_s", 20.0))
     if not 0.0 < speed <= float(limits.get("max_velocity_deg_s", 60.0)):
@@ -101,6 +111,7 @@ def head_config_from_section(data: dict[str, Any], *, from_station: bool = True)
         d_cutoff_hz=float(filt.get("d_cutoff_hz", 1.0)),
         max_velocity_deg_s=float(limits.get("max_velocity_deg_s", 60.0)),
         max_acceleration_deg_s2=float(limits.get("max_acceleration_deg_s2", 300.0)),
+        tilt_home_pitch_deg=_home_pitch(data["tilt"]),
     )
     return HeadConfig(
         port=str(data.get("port") or ""),
