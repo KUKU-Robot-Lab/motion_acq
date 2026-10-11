@@ -82,13 +82,15 @@ head:
     id: 2
     home_deg: 71.8
     range_deg: 15.0
-    range_up_deg: 30.0  # 10.04 user: look up further (home looks ~19 deg down; +30 = ~11 deg up)
+    range_up_deg: 75.8  # window top -4.0: the camera ~3 deg above level (10.12 sweep, below)
     sign: -1          # verified 10.04 (scripts/head_direction_check.py): encoder + looks down
     # 10.12 user (option B): the camera pitch follows the operator's absolute head pitch.
     # Measured 10.12 at tilt 71.87: the head depth camera's table plane gives the optical axis
     # 72.8 deg below level (roll -6.9; the s2r "18.93" was not the camera pitch), so the camera is
-    # level near encoder -1. The window above stops at 41.8 (~43 deg below level) until the
-    # mechanical upper limit is checked on the robot.
+    # level near encoder -1. 10.12 tilt sweep (scripts/head_tilt_limit_probe.py, D435i accel,
+    # logs/head/tilt_probe_20261012_012926.csv on arm4090): no hard stop up to -4.4; camera pitch
+    # = -(encoder + 1.2) within 1 deg; a bolt rubs from 54 to 40 (at most -165 mA, lag 1.6 deg),
+    # which the user accepts.
     home_pitch_deg: -72.8
   motor:
     model_number: 1240        # XC330-M288-T

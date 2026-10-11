@@ -128,7 +128,7 @@ def test_station_head_config_loads():
     config = load_head_config(station_rig_config("arm4090"), allow_fake_default=False)
     assert config.port.endswith("FT763P8T-if00-port0")
     assert config.pan_window == pytest.approx(PAN_WINDOW)
-    assert config.tilt_window == pytest.approx((41.8, 86.8))  # 30 deg up (encoder -), 15 deg down
+    assert config.tilt_window == pytest.approx((-4.0, 86.8))  # up to ~3 deg above level (encoder -), 15 deg down
     assert (config.hardware.pan_id, config.hardware.tilt_id) == (1, 2)
 
 
