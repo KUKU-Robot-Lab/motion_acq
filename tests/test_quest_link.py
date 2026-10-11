@@ -55,13 +55,18 @@ case "${{args[0]}}" in
   connect) if [[ -e $S/tcp ]]; then touch $S/wifi; echo "connected to ${{args[1]}}"; else echo "failed to connect"; fi ;;
   disconnect) rm -f $S/wifi ;;
   usb) rm -f $S/tcp $S/wifi ;;
-  shell) if [[ "${{args[*]}}" == *wlan0* ]]; then echo "    inet 10.0.0.5/24 brd 10.0.0.255 scope global wlan0"; fi ;;
+  shell) if [[ "${{args[*]}}" == *wlan0* ]]; then echo "    inet 10.0.0.5/24 brd 10.0.0.255 scope global wlan0"; fi
+         if [[ "${{args[*]}}" == *"wifi status"* && -e $S/ssid ]]; then echo "Wifi is connected to \\"$(cat $S/ssid)\\""; fi ;;
   reverse) [[ "${{args[1]:-}}" == "--list" ]] && [[ -e $S/reverse ]] && echo "UsbFfs tcp:8787 tcp:8787"; true ;;
   forward) true ;;
 esac
 """)
     adb.chmod(0o755)
-    env = {**os.environ, "ADB": str(adb), "MACQ_QUEST_WIFI_FILE": str(tmp_path / "quest_wifi")}
+    nmcli = tmp_path / "nmcli"  # the PC's Wi-Fi: arm_419
+    nmcli.write_text("#!/usr/bin/env bash\necho 'yes:arm_419'\necho 'no:other'\n")
+    nmcli.chmod(0o755)
+    env = {**os.environ, "ADB": str(adb), "MACQ_QUEST_WIFI_FILE": str(tmp_path / "quest_wifi"),
+           "NMCLI": str(nmcli), "PING": "false"}
     env.pop("ANDROID_SERIAL", None)
 
     def run(*args):
@@ -129,3 +134,22 @@ def test_python_picks_the_same_device(fake_adb, monkeypatch):
     assert link.adb_env()["ANDROID_SERIAL"] == "10.0.0.5:5555"
     saved.unlink()
     assert link.current() == Device("USB1", "device")
+
+
+def test_wifi_on_another_network_stops_before_the_cable_link_drops(fake_adb):
+    """10.12 arm4090: the Quest on ARM_416_5G, the PC on arm_419, both 192.168.1.x."""
+    run, state, log, saved = fake_adb
+    (state / "ssid").write_text("ARM_416_5G")
+    done = run("wifi")
+    assert done.returncode != 0
+    assert "ARM_416_5G" in done.stderr and "arm_419" in done.stderr
+    assert not any("tcpip" in line for line in log.read_text().splitlines())
+    assert not saved.exists()
+
+
+def test_wifi_on_the_same_network_switches(fake_adb):
+    run, state, _, saved = fake_adb
+    (state / "ssid").write_text("arm_419")
+    done = run("wifi")
+    assert done.returncode == 0, done.stderr
+    assert saved.read_text().strip() == "10.0.0.5:5555"

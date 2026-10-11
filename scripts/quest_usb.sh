@@ -85,6 +85,15 @@ cmd_wifi() {
   ip="$("$ADB" -s "$usb" shell ip -f inet addr show wlan0 | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')"
   [[ -n "$ip" ]] || die "the Quest has no Wi-Fi address: join the same Wi-Fi as this PC in the headset"
   target="$ip:$WIFI_PORT"
+  # 10.12: the Quest on another router with the same 192.168.1.x range looks reachable but is not.
+  # Stop before 'tcpip', which restarts adbd and drops the cable's page link.
+  local quest_ssid pc_ssids
+  quest_ssid="$("$ADB" -s "$usb" shell cmd wifi status 2>/dev/null | sed -n 's/^Wifi is connected to "\(.*\)"\r\{0,1\}$/\1/p' | head -1)"
+  pc_ssids="$("${NMCLI:-nmcli}" -t -f ACTIVE,SSID dev wifi 2>/dev/null | awk -F: '$1 == "yes" {print $2}' | sort -u)"
+  if [[ -n "$quest_ssid" && -n "$pc_ssids" ]] && ! grep -qxF "$quest_ssid" <<< "$pc_ssids" \
+     && ! "${PING:-ping}" -c 1 -W 1 "$ip" >/dev/null 2>&1; then
+    die "the Quest is on Wi-Fi '$quest_ssid' but this PC is on '$(tr '\n' ' ' <<< "$pc_ssids" | sed 's/ $//')' and cannot reach $ip: join the PC's Wi-Fi in the headset, then $0 wifi again (the cable link is unchanged)"
+  fi
   # adbd restarts in TCP mode and drops the links of the cable: set them again on the Wi-Fi device
   "$ADB" -s "$usb" reverse --list | grep -q "tcp:$VIEW_PORT" && had_reverse=1
   "$ADB" forward --list | grep -q "^$usb tcp:$TCP_PORT" && had_forward=1
