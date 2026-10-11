@@ -245,7 +245,9 @@ def arm(station: Station, mode: str, side: str, scale: float = DEFAULT_SCALE, *,
         raise UnitError(f"arm unit must be one of {ARM_KEYS}, not {key!r}")
     if key != "arm" and side != key[4:]:
         raise UnitError(f"{key} moves the {key[4:]} arm, not {side!r}")
-    argv = (MACQ, "teleop-real", *_arm_common(station, mode, side, scale))
+    # --joint-debug: once a second per arm, IK / filtered / streamed / measured joints (deg), so a
+    # "the arm did not follow" run can be read afterwards (10.11 arm4090 right arm)
+    argv = (MACQ, "teleop-real", *_arm_common(station, mode, side, scale), "--joint-debug")
     return Launch(key, f"팔 원격조작 ({SIDE_KO[side]})", argv, _base_env(station), pty=True,
                   moves_robot=_real(mode),
                   summary=f"{SIDE_KO[side]}: 차렷이 벗어나 있으면 먼저 0.05 rad/s 로 기준 차렷에 맞추고, "
