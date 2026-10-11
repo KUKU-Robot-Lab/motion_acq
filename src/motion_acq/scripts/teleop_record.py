@@ -749,6 +749,18 @@ def _hand_phase(real_env, phase: str, sides) -> None:
         hand_phase(phase, tuple(sides))
 
 
+def _held_attempt_expired(
+    held_since_s: float | None, now_s: float, timeout_s: float
+) -> bool:
+    """A tracking loss held the arms and nothing can re-anchor them (no HandUMI grippers).
+
+    10.12 solo run: a 150 ms tracking gap at the start held both arms; the operator's view
+    stream came back at once, but without grippers nothing re-anchors during recording, so the
+    attempt sat held (fingers still on the gloves) until the console was stopped. The attempt
+    is rejected instead, as the loss warning says, and the arms go home."""
+    return held_since_s is not None and now_s - held_since_s >= timeout_s
+
+
 def _log_episode_interface(
     episode: int,
     total: str,
@@ -1248,6 +1260,7 @@ def record_episode(
     status = "interrupted"
     del initial_start_sides
     tracking_recovery = TrackingRecoveryPolicy()
+    held_since_s: float | None = None  # loss held the arms with no gripper to re-anchor
     sync_lag_ns = int(sync_lag_s * 1e9)
     q = controller.q.copy()
     if joint_filter is None:
@@ -1350,6 +1363,14 @@ def record_episode(
             side_tracked, enabled_sides
         )
 
+        if _held_attempt_expired(held_since_s, loop_start, tracking_loss_timeout_s):
+            record_log.warning(
+                "Tracking loss held the arms and no gripper can re-anchor them; "
+                "rejecting this attempt."
+            )
+            status = "tracking_lost"
+            break
+
         if not controller.active and not tracking_ok:
             tracking_recovery.reset()
             immediate_widths = _latest_widths(grippers)
@@ -1381,6 +1402,10 @@ def record_episode(
                 command_stream.stop()
                 held = real_env.hold(q)
                 controller.tracking_lost(held)
+                # held arms: the fingers stop following the gloves too (open, still)
+                _hand_phase(real_env, "home", enabled_sides)
+                if grippers is None:
+                    held_since_s = loop_start
                 home_standby.enter_standby(enabled_sides)
                 joint_filter.reset(held)
                 q = held

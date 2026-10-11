@@ -283,6 +283,19 @@ def test_record_needs_a_quest_source(console):
     assert not result["ok"] and "Quest" in result["error"]
 
 
+def test_a_manual_space_cannot_cut_a_solo_run(console, monkeypatch):
+    """10.12: a stray Space on the console saved the solo run 10 s in; [중지] is the way out."""
+    sent = []
+    monkeypatch.setattr(console.sup, "send_key", lambda key, text: sent.append((key, text)))
+    console.jobs["solo"] = {"state": "running", "text": "", "at": 0.0}
+    for key in ("record", "head"):
+        reply = console.send_key(key, " ")
+        assert not reply["ok"] and "중지" in reply["error"]
+    assert console.send_key("record", "r")["ok"] and sent == [("record", "r")]
+    console.jobs["solo"] = {"state": "ok", "text": "", "at": 0.0}
+    assert console.send_key("record", " ")["ok"]
+
+
 def test_arm_starts_without_the_quest_and_only_space_needs_it(console, monkeypatch):
     """10.11 user: the arms are independent of the Quest: [홈] / [차렷] without it, [따라가기] with it."""
     console.set_mode("real")

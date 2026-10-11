@@ -160,6 +160,15 @@ def test_episode_capture_keeps_robot_reads_off_control_thread(monkeypatch) -> No
         writer.close()
 
 
+def test_a_held_attempt_without_grippers_expires_after_the_loss_timeout():
+    """10.12: a tracking gap held both arms and nothing could re-anchor them (no HandUMI)."""
+    from motion_acq.scripts.teleop_record import _held_attempt_expired
+
+    assert not _held_attempt_expired(None, 100.0, 1.0)  # no loss, or grippers can re-anchor
+    assert not _held_attempt_expired(10.0, 10.9, 1.0)
+    assert _held_attempt_expired(10.0, 11.0, 1.0)
+
+
 def test_arms_return_home_on_exit_unless_the_streamer_failed():
     import logging
 

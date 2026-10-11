@@ -387,6 +387,9 @@ class Console:
         line = text.endswith("\n") and len(text) <= 81 and all(c in string.printable for c in text)
         if text not in ALLOWED_KEYS and not line:
             return {"ok": False, "error": "보낼 수 없는 키"}
+        if text == " " and key in ("record", "head") and self.jobs.get("solo", {}).get("state") == "running":
+            # 10.12: a stray Space on the console saved the solo run after 10 s; the run owns these keys
+            return {"ok": False, "error": "혼자 녹화 중: Space 대신 [중지]"}
         if text == " " and key in gates.FOLLOW_KEYS and self.mode == "real":
             problems = gates.follow_blockers(self, gates.quest_source(self))
             if problems:  # the arm stays at home; it would only log the ignored Space
