@@ -10,8 +10,10 @@ from motion_acq.hand.calibration import HandCalibration, run_session
 from motion_acq.hand.retarget import load_hand_retarget_config
 from motion_acq.hand.synthetic import POSE_ANGLES
 
-CONFIG = load_hand_retarget_config()
-# the configured method is flexion (10.11); the example map and the fingertip match keep their own tests
+CONFIGURED = load_hand_retarget_config()
+# the configured method is direct (10.11 user, Nova2Dex: test_hand_direct.py); these fixtures drive the hand
+# from senseglove_states signals, so CONFIG is the flexion map (configured 10.11 until direct)
+CONFIG = dataclasses.replace(CONFIGURED, method="flexion")
 EXAMPLES = dataclasses.replace(CONFIG, method="examples")
 KINEMATIC = dataclasses.replace(CONFIG, method="kinematic")
 

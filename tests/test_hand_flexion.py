@@ -36,7 +36,7 @@ def hold(fx: FlexionRetargeter, signals, n: int = 200) -> dict[str, float]:
     return out
 
 
-def test_configured_method_is_flexion():
+def test_flexion_config_checks():
     assert CONFIG.method == "flexion"
     with pytest.raises(ValueError, match="unknown keys"):
         flexion_config({"finger_span": 1.0})

@@ -26,10 +26,12 @@ from motion_acq_hand.common import (
 
 from geometry_msgs.msg import Quaternion
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import JointState
 from senseglove_msgs.msg import KinematicsVect3D, SenseGloveState
 from std_msgs.msg import String
 
-from motion_acq.hand.synthetic import POSE_ANGLES, synthetic_angles, synthetic_hand_model, synthetic_state
+from motion_acq.hand.synthetic import POSE_ANGLES, synthetic_angles, synthetic_hand_model, synthetic_sdk, synthetic_state
 
 
 class FakeGlove(Node):
@@ -48,6 +50,8 @@ class FakeGlove(Node):
         if self.mode not in ("cycle", "pose") or self.pose not in POSE_ANGLES:
             raise SystemExit(f"mode cycle|pose and pose in {sorted(POSE_ANGLES)}")
         self.pub = self.create_publisher(SenseGloveState, topic, glove_qos())
+        # the nova2_sdk node's topic too (the hand node's direct method, 10.11)
+        self.sdk_pub = self.create_publisher(JointState, f"/motion_acq/nova2_sdk/{self.side}", qos_profile_sensor_data)
         self.create_subscription(String, f"/motion_acq/fake_glove/{self.side}/pose", self._on_pose, 10)
         self.t0 = time.monotonic()
         self.create_timer(1.0 / rate_hz, self._tick)
@@ -91,6 +95,8 @@ class FakeGlove(Node):
         msg.finger_tip_position = [KinematicsVect3D(x=x, y=y, z=z) for x, y, z in tips]
         msg.imu_orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
         self.pub.publish(msg)
+        sdk = synthetic_sdk(angles, self.side)
+        self.sdk_pub.publish(JointState(header=msg.header, name=list(sdk), position=[float(v) for v in sdk.values()]))
 
 
 def main() -> None:

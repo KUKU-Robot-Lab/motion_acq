@@ -29,7 +29,14 @@
 #     from the fingertip match above at that thumb_2. 10.11 logs (cup grasp, both hands): kinematic
 #     sent middle_1 at most 0.28 (right) / 0.46 (left) of 1.53 rad with the glove at a full fist,
 #     and thumb_2 0.08-0.29 rad, moved by thumb_1 rather than the operator's thumb bend.
-method: flexion
+#   direct (10.11 user: "switch to the other project", Nova2Dex): each joint from one SenseGlove SDK value,
+#     read straight by the motion_acq_nova2 nova2_sdk node (started with the glove driver); no calibration
+#     of ours (the SDK learns the ranges while the fingers move). motion_acq.hand.direct; the section below.
+method: direct
+# finger_full / thumb_full: the SDK's normalized flexion read as a full bend (Nova2Dex 0.928571 / 0.733333).
+# thumb_yaw_rad: the SDK thumb first-joint X angle at thumb spread / across the palm, right glove (left mirrored).
+# thumb_1_rad: robot thumb_1 at those two (the open example 0.8, thumb_opposed 2.0).
+direct: {finger_full: 0.928571, thumb_full: 0.733333, thumb_yaw_rad: [0.0, -0.3], thumb_1_rad: [0.8, 2.0]}
 # Reference at [켜기] (10.06 user): when the robot hand reaches home (fingers straight, thumb
 # beside the index), the operator holds that same pose still for `seconds`; the take
 # re-zeroes the saved map and re-aligns the glove hand model, then the hand follows the glove.

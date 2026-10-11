@@ -144,3 +144,19 @@ def _tables(side: str):
     if side not in _TABLE_CACHE:
         _TABLE_CACHE[side] = TipTables.load(table_path(side))
     return _TABLE_CACHE[side]
+
+
+def synthetic_sdk(angles: Mapping[str, float], side: str) -> dict[str, float]:
+    """The nova2_sdk node's values (motion_acq.hand.direct, unprefixed) for this hand shape: the
+    robot pose in `angles` (q_*) read back through direct's default map, so the fake hand follows it."""
+    from motion_acq.hand.direct import DirectConfig
+
+    c = DirectConfig()
+    closed = {"thumb_2": 0.474555, **{f"{f}_1": 1.5285594 for f in CURLED}}
+    out = {f"nflex_{f}": float(np.clip(angles.get(f"q_{f}_1", 0.0) / closed[f"{f}_1"], 0.0, 1.0)) * c.finger_full
+           for f in CURLED}
+    out["nflex_thumb"] = float(np.clip(angles.get("q_thumb_2", 0.0) / closed["thumb_2"], 0.0, 1.0)) * c.thumb_full
+    (a, b), (y0, y1) = c.thumb_1_rad, c.thumb_yaw_rad
+    unit = float(np.clip((angles.get("q_thumb_1", 1.57) - a) / (b - a), 0.0, 1.0))
+    out["thumb_0_x"] = (-1.0 if side == "left" else 1.0) * (y0 + unit * (y1 - y0))
+    return out

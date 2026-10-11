@@ -12,6 +12,9 @@ broadcasters, haptics controller) in /senseglove/glove<serial>/<rh|lh>, with
 this package's config/nova2_<side>_controllers.yaml: its haptics_controller is a
 forward_command_controller the hand node drives with the RH56F1 feedback
 (10.05). The hand node reads <namespace>/senseglove_states.
+
+sdk:=true (default, 10.11 user: Nova2Dex) also starts motion_acq_nova2 nova2_sdk: the same gloves read
+straight from the SenseGlove SDK on /motion_acq/nova2_sdk/<side>, which the hand node's direct method uses.
 """
 
 from launch import LaunchDescription
@@ -65,11 +68,17 @@ def _gloves(context):
     for s in sides:
         actions.append(LogInfo(msg=f"[SenseGlove] Launching: robot=nova2_{s} serial={gloves[s].serial}"))
         actions += _glove_nodes(s, gloves[s].serial)
+    if LaunchConfiguration("sdk").perform(context) == "true":
+        from launch_ros.actions import Node
+
+        actions.append(Node(package="motion_acq_nova2", executable="nova2_sdk", parameters=[{"side": side}],
+                            output="screen"))
     return actions
 
 
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("side", default_value="both", choices=["both", "right", "left"]),
+        DeclareLaunchArgument("sdk", default_value="true", choices=["true", "false"]),
         OpaqueFunction(function=_gloves),
     ])

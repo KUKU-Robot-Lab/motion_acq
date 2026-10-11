@@ -398,7 +398,9 @@ class HandController:
                 return step
             cfg = self.retargeter.config
             self._reference, self.reference_note = [], None
-            self._set_phase(Phase.REFERENCE if cfg.reference_s > 0 else Phase.FOLLOW, t)
+            # direct (Nova2Dex, 10.11): the SDK calibrates the glove itself, there is nothing of ours to re-zero
+            reference = cfg.reference_s > 0 and cfg.method != "direct"
+            self._set_phase(Phase.REFERENCE if reference else Phase.FOLLOW, t)
         elif self.phase is not Phase.WAIT_ARM and t - self._phase_t0 > self.config.home_timeout_s:
             self.mode = Mode.FAULT
             self.fault_reason = f"home not reached in {self.config.home_timeout_s:g} s"

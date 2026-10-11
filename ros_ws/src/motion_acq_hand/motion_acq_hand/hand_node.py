@@ -24,12 +24,17 @@ driver's haptics_controller (forward_command_controller, percent per joint,
 motion_acq_hand config/nova2_<side>_controllers.yaml); motion_acq.hand.feedback
 has the rules; off since 10.06 (feedback.enabled false, the brakes got in the way).
 haptics:=false turns it off too. All off when not following the glove and when the node exits.
+
+method direct (configs retarget, 10.11 user: Nova2Dex): the glove comes from the motion_acq_nova2 nova2_sdk
+node (/motion_acq/nova2_sdk/<side>, the SenseGlove SDK read straight) instead of senseglove_states; its
+SDK calibration state (/motion_acq/nova2_sdk/<side>/calibration) goes into the status as sdk_calibration.
 """
 
 # ruff: noqa: I001  -- motion_acq_hand.common must be imported first (it puts motion_acq on sys.path)
 from __future__ import annotations
 
 import json
+import math
 import socket
 import time
 from pathlib import Path
@@ -47,12 +52,15 @@ from motion_acq_hand.common import (
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import JointState
 from rh56f1_interfaces.msg import GetAngleAct1, GetCurrentAct1, GetForceAct1, SetAngle1, SetForce1, SetSpeed1, TouchData1
 from senseglove_msgs.msg import SenseGloveState
 from std_msgs.msg import Bool, Float64MultiArray, Int32MultiArray, String
 
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.controller import ControllerConfig, HandController
+from motion_acq.hand.direct import SDK_PREFIX
 from motion_acq.hand.feedback import HAPTICS_BEAT_S, HAPTICS_MIN_PERIOD_S, OFF, haptics_topic_for, heartbeat
 from motion_acq.hand.kinematic import glove_points
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state, tip_signals
@@ -105,7 +113,14 @@ class HandNode(Node):
         self.speed_pub = self.create_publisher(SetSpeed1, f"{ns}/speed_set", 10)
         self.force_pub = self.create_publisher(SetForce1, f"{ns}/force_set", 10)
         self.status_pub = self.create_publisher(String, f"/motion_acq/hand_{self.side}/status", 10)
-        self.create_subscription(SenseGloveState, topic, self._on_glove, glove_qos())
+        self.sdk_calibration: str | None = None
+        if config.method == "direct":
+            sdk = f"/motion_acq/nova2_sdk/{self.side}"
+            self.create_subscription(JointState, sdk, self._on_sdk, qos_profile_sensor_data)
+            self.create_subscription(String, f"{sdk}/calibration", self._on_sdk_calibration, 10)
+            topic = sdk  # for the log line below
+        else:
+            self.create_subscription(SenseGloveState, topic, self._on_glove, glove_qos())
         self.create_subscription(GetAngleAct1, f"{ns}/angle_actual", self._on_actual, 10)
         self.create_subscription(Bool, f"/motion_acq/hand_{self.side}/enable", self._on_enable, 10)
         # the console's per-hand [홈] / [따라가기] / auto (HandController.command)
@@ -157,6 +172,21 @@ class HandNode(Node):
             self.get_logger().warning(f"bad glove sample: {exc}", throttle_duration_sec=2.0)
             return
         self.controller.on_glove(angles, time.monotonic())
+
+    def _on_sdk(self, msg: JointState) -> None:
+        """The nova2_sdk node's values (method direct)."""
+        if len(msg.name) != len(msg.position) or not all(math.isfinite(v) for v in msg.position):
+            self.controller.on_glove_error()
+            self.get_logger().warning("bad SDK glove sample (names/values differ or not finite)",
+                                      throttle_duration_sec=2.0)
+            return
+        self.controller.on_glove({SDK_PREFIX + n: float(v) for n, v in zip(msg.name, msg.position)},
+                                 time.monotonic())
+
+    def _on_sdk_calibration(self, msg: String) -> None:
+        if msg.data != self.sdk_calibration:
+            self.get_logger().info(f"SDK glove calibration: {msg.data}")
+        self.sdk_calibration = msg.data
 
     def _on_actual(self, msg: GetAngleAct1) -> None:
         self.controller.on_measured([int(v) for v in msg.joint_values], int(msg.hand_id), time.monotonic())
@@ -297,10 +327,11 @@ class HandNode(Node):
                     self.udp.sendto(line.encode("utf-8"), target)
         except OSError as exc:  # logging must never stop the control loop
             self.get_logger().warning(f"hand log/udp write failed: {exc}", throttle_duration_sec=5.0)
-        self.status_pub.publish(String(data=json.dumps({
-            k: out.record[k] for k in ("mode", "phase", "arm", "manual", "state", "fault", "refusal", "reference", "method", "glove_age_s",
-                                       "glove_frozen", "glove_errors", "registers", "measured_registers")
-        })))
+        status = {k: out.record[k] for k in ("mode", "phase", "arm", "manual", "state", "fault", "refusal", "reference",
+                                            "method", "glove_age_s", "glove_frozen", "glove_errors", "registers",
+                                            "measured_registers")}
+        status["sdk_calibration"] = self.sdk_calibration
+        self.status_pub.publish(String(data=json.dumps(status)))
 
     def return_home(self, interrupted) -> None:
         """End pose = rest (fist): disable walks the hand there; spin until it is."""

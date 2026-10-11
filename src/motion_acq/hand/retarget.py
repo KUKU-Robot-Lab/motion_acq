@@ -18,6 +18,7 @@ import yaml
 from motion_acq.filters import OneEuroFilter, RateLimiter
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.admittance import AdmittanceConfig, admittance_config
+from motion_acq.hand.direct import DirectConfig, DirectRetargeter, direct_config
 from motion_acq.hand.feedback import FeedbackConfig, feedback_config
 from motion_acq.hand.flexion import FLEX_INPUTS, FlexionConfig, FlexionRetargeter, flexion_config
 from motion_acq.hand.joystick import JoystickRetargeter
@@ -59,7 +60,8 @@ class HandRetargetConfig:
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
     # "examples": the example-pose map. "kinematic": fingertip retargeting when the calibration has an
     # alignment. "flexion" (10.11): every finger and thumb_2 show the operator's bend (flexion.py),
-    # thumb_1 from the fingertip match (the example map without an alignment)
+    # thumb_1 from the fingertip match (the example map without an alignment). "direct" (10.11 user, Nova2Dex):
+    # each joint from one SenseGlove SDK value (direct.py; the nova2_sdk node), no calibration of ours
     method: str = "examples"
     # reference at [켜기] (10.06 user): once the hand is home, the operator holds this example pose
     # (the robot hand's home shape: fingers straight, thumb and index in a C, 10.11 user) still for reference_s; that take
@@ -69,6 +71,7 @@ class HandRetargetConfig:
     reference_timeout_s: float = 10.0
     kinematic: KinematicConfig = field(default_factory=KinematicConfig)
     flexion: FlexionConfig = field(default_factory=FlexionConfig)
+    direct: DirectConfig = field(default_factory=DirectConfig)
     grip_guard: GripGuardConfig = field(default_factory=GripGuardConfig)
     admittance: AdmittanceConfig = field(default_factory=AdmittanceConfig)
 
@@ -90,7 +93,7 @@ class HandRetargetConfig:
         return {j: hi for j, (lo, hi) in self.limits_rad.items() if abs(self.home_rad[j] - lo) < 1e-9}
 
 
-METHODS = ("examples", "kinematic", "flexion")
+METHODS = ("examples", "kinematic", "flexion", "direct")
 
 
 def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConfig:
@@ -155,6 +158,7 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         reference_timeout_s=float(ref.get("timeout_s", 10.0)),
         kinematic=KinematicConfig(**{k: float(v) for k, v in (raw.get("kinematic") or {}).items()}),
         flexion=flexion_config(raw.get("flexion")),
+        direct=direct_config(raw.get("direct")),
         grip_guard=grip_guard_config(raw.get("grip_guard")),
         admittance=admittance_config(raw.get("admittance")),
     )
@@ -211,6 +215,8 @@ class HandRetargeter:
         self.kinematic = None
         self.flexion: FlexionRetargeter | None = None
         self.joystick: JoystickRetargeter | None = None
+        self.direct = (DirectRetargeter(config.direct, config.limits_rad, side)
+                       if config.method == "direct" else None)
         self.set_calibration(calibration)
         self._last_t: float | None = None
         self._filters = {j: OneEuroFilter(config.min_cutoff_hz, config.beta, config.d_cutoff_hz)
@@ -283,8 +289,11 @@ class HandRetargeter:
 
     def target(self, signals: Mapping[str, float]) -> tuple[dict[str, float], dict[str, float]]:
         """(raw map output, limited and amplitude-scaled target) for one glove sample."""
-        points = points_from_signals(signals) if self.kinematic is not None else None
-        if self.flexion is not None and self.flexion.ready(signals):
+        points = points_from_signals(signals) if self.kinematic is not None and self.direct is None else None
+        if self.direct is not None:  # Nova2Dex's map alone: none of our calibration (10.11 user)
+            raw = self.direct.solve(signals)
+            self.missing_inputs, self.method_used = [], "direct"
+        elif self.flexion is not None and self.flexion.ready(signals):
             raw = self.flexion.solve(signals)
             if points is not None and self.kinematic is not None:
                 # thumb_1 from the operator's thumb tip alone (10.11 user: one finger drives one finger)
@@ -300,7 +309,7 @@ class HandRetargeter:
         else:  # examples map: the method itself, or no hand model data / alignment this tick
             raw = self.calibration.predict(signals)
             self.missing_inputs, self.method_used = self.calibration.missing_inputs(signals), "examples"
-        if self.joystick is not None and self.joystick.ready(signals):
+        if self.direct is None and self.joystick is not None and self.joystick.ready(signals):
             raw = {**raw, **self.joystick.solve(signals)}
             self.method_used = "joystick" if set(self.joystick.joints) >= set(raw) else f"{self.method_used}+joystick"
         home = self.config.home_rad
@@ -346,6 +355,9 @@ class HandRetargeter:
             q_cmd[j] = self._limiters[j](smoothed, dt)
         q_cmd = self._cap(q_cmd, ceilings)
         self._last_registers = self.hand_map.to_registers(q_cmd, side=self.side)
+        if self.direct is not None:
+            return HandStep(HandState.RUNNING, self.direct.log_fields(signals), raw, q_target, q_cmd,
+                            self._last_registers)
         names = self.calibration.inputs if self.method_used.startswith("examples") else [
             n for n in signals if n.startswith(("knuckle_", "tip_"))]
         if self.method_used.startswith("flexion"):
