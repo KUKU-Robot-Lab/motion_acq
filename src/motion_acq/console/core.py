@@ -436,7 +436,11 @@ class Console:
                                             confirm=confirm, token=token)
             if reply is not None:
                 return reply
-        return self._job(key, lambda: self._hand_on_job(side, approved))
+        # a FAULT latches until the hand is switched off (hand controller); [켜기] on a faulted hand
+        # clears it first (10.11 arm4090: a 0.9 s readings gap latched the left hand, [켜기] did nothing)
+        rec = self.hand_udp[side].get() if side in self.hand_udp else None
+        clear = units.hand_enable(self.station, self.mode, side, False) if (rec or {}).get("fault") else None
+        return self._job(key, lambda: self._hand_on_job(side, approved, clear_fault=clear))
 
     def _wait_hand(self, side: str, *, starting: bool, need_node: bool, timeout_s: float) -> None:
         deadline = time.time() + timeout_s
@@ -455,8 +459,12 @@ class Console:
                 raise RuntimeError(" / ".join(problems))
             time.sleep(1.0)
 
-    def _hand_on_job(self, side: str, launches: list[Launch]) -> str:
+    def _hand_on_job(self, side: str, launches: list[Launch], *, clear_fault: Launch | None = None) -> str:
         enable = launches[-1]
+        if clear_fault is not None:
+            self._spawn_task_checked(clear_fault)
+            if self._wait_exit(clear_fault.key, 30) != 0:
+                raise RuntimeError("고장 해제(끄기) 토픽 발행 실패: 로그 확인")
         for launch in launches[:-1]:
             if launch.key.startswith("ecat_"):
                 self._spawn_task_checked(launch)

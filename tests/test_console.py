@@ -487,6 +487,33 @@ def test_hand_on_uses_a_running_driver(console, monkeypatch):
     assert "rh56f1_driver.py" not in reply["command"] and reply["summary"].startswith("노드 → 켜기")
 
 
+
+def test_hand_on_a_faulted_hand_switches_it_off_first(console, monkeypatch):
+    """10.11 arm4090: a FAULT latches until off; [켜기] on a faulted hand clears it, then enables."""
+    console.set_mode("real")
+    monkeypatch.setattr(console, "_hand_precheck", lambda side: [])
+    monkeypatch.setattr(console, "_hand_driver_present", lambda side: True)
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key == "hand_left")
+    console.update_settings({"user": "op1"})
+    rec = {"mode": "fault", "fault": "RH56F1 readings unchanged"}
+    monkeypatch.setitem(console.hand_udp, "left", type("Udp", (), {"get": lambda self: rec})())
+    jobs = {}
+    monkeypatch.setattr(console, "_job", lambda name, fn: jobs.update({name: fn}) or {"ok": True})
+    reply = console.action("hand_on:left")
+    assert console.action("hand_on:left", confirm=True, token=reply["token"]) == {"ok": True}
+    spawned = []
+    monkeypatch.setattr(console, "_spawn_task_checked", lambda launch: spawned.append(launch.key))
+    monkeypatch.setattr(console, "_wait_exit", lambda key, timeout_s: 0)
+    monkeypatch.setattr(console, "_wait_hand", lambda *a, **k: None)
+    jobs["hand_left"]()
+    assert spawned == ["task_hand_off_left", "task_hand_on_left"]
+    rec.update(mode="enabled", fault=None)
+    reply = console.action("hand_on:left")
+    console.action("hand_on:left", confirm=True, token=reply["token"])
+    spawned.clear()
+    jobs["hand_left"]()
+    assert spawned == ["task_hand_on_left"]
+
 def test_hand_driver_command_matches_s2r(tmp_path):
     launch = units.hand_driver(ARM4090, "real", "left")
     assert launch.key == "ecat_left" and launch.moves_robot and launch.env["ROS_DOMAIN_ID"] == "126"
