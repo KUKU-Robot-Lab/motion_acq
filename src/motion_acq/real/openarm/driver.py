@@ -300,12 +300,30 @@ class OpenArmSdkSide:
             self.arm.get_gripper().set_position(motor_position)
         self.arm.recv_all(500)
 
+    def motor_state(self, joint: int) -> str:
+        """One motor's own report (10.11: enabled, MOS / rotor temperature, torque, velocity)."""
+        motor = self.arm.get_arm().get_motors()[joint]
+        return (f"enabled {motor.is_enabled()}, MOS {motor.get_state_tmos():.0f} C, "
+                f"rotor {motor.get_state_trotor():.0f} C, torque {motor.get_torque():.2f} N m, "
+                f"velocity {motor.get_velocity():.2f} rad/s")
+
     def close(self) -> None:
         self.arm.disable_all()
         self.arm.recv_all(1_000)
 
 
 SideFactory = Callable[..., OpenArmSide]
+
+
+def motor_state(arm: OpenArmSide, joint: int) -> str | None:
+    """The motor's own report for a fault message, when the side can give one (never raises)."""
+    describe = getattr(arm, "motor_state", None)
+    if describe is None:
+        return None
+    try:
+        return str(describe(joint))
+    except Exception as exc:  # noqa: BLE001 - a failing report must not hide the fault itself
+        return f"unreadable ({type(exc).__name__}: {exc})"
 
 
 def load_gravity_models(settings: OpenArmCanSettings, sides: tuple[str, ...]) -> dict[str, ArmGravity]:
@@ -484,7 +502,7 @@ class OpenArmJointStreamer(JointStreamer):
                         raise RuntimeError(following_error_report(
                             self._trace, side, joint, float(commands[side][joint]),
                             float(feedback[side][joint]), self.settings.following_error_rad,
-                            float(targets[side][joint]),
+                            float(targets[side][joint]), motor_state(self.arms[side], joint),
                         ))
                 with self._lock:
                     self._feedback = feedback

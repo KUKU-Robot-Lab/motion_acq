@@ -40,6 +40,22 @@ class FakeMotor:
     def get_position(self) -> float:
         return self.position
 
+    # the real SDK's own motor report (10.11: in a following-error message)
+    def is_enabled(self) -> bool:
+        return True
+
+    def get_state_tmos(self) -> float:
+        return 30.0
+
+    def get_state_trotor(self) -> float:
+        return 30.0
+
+    def get_torque(self) -> float:
+        return self.tau
+
+    def get_velocity(self) -> float:
+        return 0.0
+
 
 class _MotorGroup:
     def __init__(self, motors: list[FakeMotor], owner: FakeOpenArm) -> None:

@@ -29,6 +29,28 @@ def test_trace_keeps_only_the_last_ticks(tmp_path):
     assert data["right_target"][:, 0].tolist() == [4, 6, 8]
 
 
+def test_frozen_reading_is_timed_per_joint():
+    ring = CommandTrace(ticks=50)
+    for i in range(30):
+        moving = np.full(7, 0.01 * i, dtype=np.float32)
+        moving[6] = 0.5 if i >= 10 else 0.01 * i  # joint7 stops answering at tick 10
+        ring.add(i * 0.01, {"left": moving}, {"left": moving}, {"left": moving})
+    assert ring.frozen_s("left", 6) == pytest.approx(0.19)
+    assert ring.frozen_s("left", 0) == 0.0
+    assert ring.frozen_s("right", 6) == 0.0
+
+
+def test_a_failing_motor_report_does_not_hide_the_fault():
+    from motion_acq.real.openarm.driver import motor_state
+
+    class Broken:
+        def motor_state(self, joint):
+            raise RuntimeError("no reply")
+
+    assert motor_state(object(), 6) is None  # sides without a report
+    assert motor_state(Broken(), 6).startswith("unreadable (RuntimeError")
+
+
 def test_following_error_names_the_angles_and_saves_the_trace(monkeypatch, tmp_path):
     monkeypatch.setattr(trace, "TRACE_DIR", tmp_path)
     backend, env, home = fake_right(monkeypatch, feedforward=True)
@@ -47,6 +69,8 @@ def test_following_error_names_the_angles_and_saves_the_trace(monkeypatch, tmp_p
         assert isinstance(error, RuntimeError)
         message = str(error)
         assert "joint7" in message and "commanded" in message and "measured" in message
+        assert "has not changed for" in message  # 10.11: a stuck joint says so
+        assert "Motor: enabled True, MOS 30 C, rotor 30 C" in message
         saved = sorted(tmp_path.glob("following_error_right_*.npz"))
         assert len(saved) == 1 and str(saved[0]) in message
         data = np.load(saved[0])
