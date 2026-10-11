@@ -27,7 +27,8 @@ haptics:=false turns it off too. All off when not following the glove and when t
 
 method direct (configs retarget, 10.11 user: Nova2Dex): the glove comes from the motion_acq_nova2 nova2_sdk
 node (/motion_acq/nova2_sdk/<side>, the SenseGlove SDK read straight) instead of senseglove_states; its
-SDK calibration state (/motion_acq/nova2_sdk/<side>/calibration) goes into the status as sdk_calibration.
+SDK calibration state (/motion_acq/nova2_sdk/<side>/calibration) goes into the status as sdk_calibration,
+and its steps are read aloud in Korean (sounds:=false to mute; never on the fake domain).
 """
 
 # ruff: noqa: I001  -- motion_acq_hand.common must be imported first (it puts motion_acq on sys.path)
@@ -60,11 +61,12 @@ from std_msgs.msg import Bool, Float64MultiArray, Int32MultiArray, String
 
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.controller import ControllerConfig, HandController
-from motion_acq.hand.direct import SDK_PREFIX
+from motion_acq.hand.direct import SDK_PREFIX, sdk_calibration_speech
 from motion_acq.hand.feedback import HAPTICS_BEAT_S, HAPTICS_MIN_PERIOD_S, OFF, haptics_topic_for, heartbeat
 from motion_acq.hand.kinematic import glove_points
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state, tip_signals
 from motion_acq.hand.retarget import DEFAULT_RETARGET, HandRetargeter, load_hand_retarget_config
+from motion_acq.utils.speech import say
 from motion_acq.hand.rh56f1 import DEFAULT_MAP, load_rh56f1_map
 from motion_acq.hand_link import hand_link_reply, parse_arm_message
 from motion_acq.sidecar import parse_udp_targets
@@ -83,6 +85,7 @@ class HandNode(Node):
         log_dir = Path(str(declare(self, "log_dir", str(REPO_ROOT / "logs" / "hand"))))
         udp_target = str(declare(self, "udp_target", ""))
         haptics = bool(declare(self, "haptics", True))
+        self.sounds = bool(declare(self, "sounds", True)) and not fake_isolated()
         # arm link (motion_acq.hand_link): the arm process holds this hand at the fist while it moves; 0 = off
         arm_link_port = int(declare(self, "arm_link_port", 0))
         haptics_topic = str(declare(self, "haptics_topic", haptics_topic_for(topic)))
@@ -186,6 +189,9 @@ class HandNode(Node):
     def _on_sdk_calibration(self, msg: String) -> None:
         if msg.data != self.sdk_calibration:
             self.get_logger().info(f"SDK glove calibration: {msg.data}")
+            line = sdk_calibration_speech(self.side, self.sdk_calibration, msg.data)
+            if line and self.sounds:
+                say(line, lang="ko")
         self.sdk_calibration = msg.data
 
     def _on_actual(self, msg: GetAngleAct1) -> None:

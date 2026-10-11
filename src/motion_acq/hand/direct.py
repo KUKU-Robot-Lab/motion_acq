@@ -34,6 +34,29 @@ JOINTS = ("thumb_1", "thumb_2", *FINGER_JOINTS)
 SIDES = ("right", "left")
 
 
+SDK_STEPS = {  # SDK calibration state -> what the operator hears (10.11 user)
+    "move fingers": "장갑 보정. 다섯 손가락을 끝까지 쥐었다 펴고, 엄지도 크게 돌리세요",
+    "all sensors moved": "장갑 보정 완료",
+}
+
+
+def sdk_calibration_speech(side: str, before: str | None, now: str) -> str | None:
+    """The line read aloud when the SDK calibration state changes, else None.
+
+    The nova2_sdk node sends "<state> | <instructions>"; only a new state is read.
+    """
+
+    def state(text: str | None) -> str:
+        return (text or "").split("|")[0].strip().lower()
+
+    if state(now) == state(before):
+        return None
+    line = SDK_STEPS.get(state(now))
+    if line is None:
+        return None
+    return f"{'오른손' if side == 'right' else '왼손'} {line}"
+
+
 class DirectError(ValueError):
     pass
 

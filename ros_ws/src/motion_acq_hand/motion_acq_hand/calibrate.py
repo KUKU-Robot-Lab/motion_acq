@@ -53,6 +53,7 @@ from motion_acq.hand.kinematic import glove_points
 from motion_acq.hand.nova2 import GloveDataError, angles_from_state, tip_signals
 from motion_acq.hand.retarget import DEFAULT_RETARGET, load_hand_retarget_config
 from motion_acq.hand.sweeps import MIN_MOVE, SOURCE_KO, SWEEPS, SweepError, fit_sweeps, report, travel, unsteady
+from motion_acq.utils.speech import Voice
 
 # fake glove poses a sweep alternates between (after the open hand)
 FAKE_SWEEP_POSES = {"thumb": ("thumb_bend", "thumb_opposed"), "index": ("index",), "middle": ("middle",),
@@ -201,6 +202,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--sweep-seconds", type=float, default=6.0, help="--fingers: moving part of each sweep")
     ap.add_argument("--fake", action="store_true", help="drive the fake glove to each pose")
     ap.add_argument("--yes", action="store_true", help="no prompts (fake runs)")
+    ap.add_argument("--no-sounds", action="store_true", help="do not read the prompts aloud")
     args = ap.parse_args(argv)
     side = check_side(args.side)
     config = load_hand_retarget_config(args.retarget_config)
@@ -210,16 +212,26 @@ def main(argv: list[str] | None = None) -> None:
     if args.fake:
         require_fake_isolation("calibrate --fake")
     examples = {p: (e.prompt, e.target) for p, e in config.examples.items()}
-    ask = (lambda text: None) if args.yes else ask_enter
+    # 10.11 user: the prompts are read aloud (the operator wears the gloves and the
+    # Quest); "기록 중" / "시작:" start a recording, so they cut a prompt still being read
+    voice = Voice(not (args.no_sounds or args.fake or args.yes), lang="ko", now_cues=("기록 중", "시작:"))
+
+    def ask(text: str) -> None:
+        if args.yes:
+            return
+        voice(text)
+        ask_enter(text)
 
     def say(text: str) -> None:
         print(text, flush=True)
+        voice(text)
 
     rclpy.init()
     node = Recorder(topic, side, 0.0 if args.fake else config.feedback.strap_hold)
     try:
         spin_for(node, 1.0)
         if time.monotonic() - node.last_rx > 0.5:
+            voice("장갑 신호가 없습니다. 장갑 드라이버를 확인하세요")
             raise SystemExit(f"no glove samples on {topic}")
 
         def record(pose: str) -> list[dict[str, float]]:
@@ -233,6 +245,7 @@ def main(argv: list[str] | None = None) -> None:
             sweeps = finger_sweeps(node, side, ask, say, fake=args.fake, rest_s=1.0, move_s=args.sweep_seconds)
             saved.with_sweeps(sweeps).save(out)
             print(f"손가락별 맞춤 저장됨: {out}")
+            voice("손가락별 맞춤 저장됨. 끝났습니다")
             for line in report(sweeps):
                 print(line)
             return
@@ -242,6 +255,7 @@ def main(argv: list[str] | None = None) -> None:
             say("  기록 중: 그대로 멈춰 있으세요")
             calibration = rezero(saved, record(OPEN_POSE), OPEN_POSE, thumb_of(config.examples[OPEN_POSE].target))
             calibration.save(out)
+            voice("편 손 맞춤 저장됨. 끝났습니다")
             shift = ", ".join(f"{n} {v:+.2f}" for m in calibration.models.values()
                               for n, v in zip(m.inputs, m.offset) if abs(v) > 0.02)
             print(f"편 손 맞춤 저장됨: {out} ({shift or '거의 그대로'})")
@@ -251,10 +265,12 @@ def main(argv: list[str] | None = None) -> None:
                                   examples=examples, ask=ask, record=record, say=say)
         calibration.save(out)
         print(f"보정 저장됨: {out}")
+        voice("보정 저장됨. 끝났습니다")
         print("  손가락별 맞춤은 새 보정에 없다: 필요하면 [손가락별 맞춤]을 다시 한다")
         print(f"  예시 자세 {len(examples)}개, 예시에서의 최대 오차 {fit_error(calibration, examples):.3f} rad")
         print(alignment_line(calibration))
     except CalibrationError as exc:
+        voice(f"보정 실패. {exc}")
         raise SystemExit(f"calibration failed: {exc}") from exc
     finally:
         node.release_strap()
