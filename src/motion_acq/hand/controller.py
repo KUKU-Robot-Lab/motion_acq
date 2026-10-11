@@ -97,6 +97,10 @@ class ControllerConfig:
     glove_frozen_s: float = 1.0
     measured_stale_s: float = 0.5
     hand_frozen_s: float = 0.5
+    # A driver status (1 Hz ecat_status) this recent that says the link is alive (OP, no new bad WKC,
+    # cycles counting) vouches for a hand whose readings are still: 10.11 arm4090 the right hand at
+    # home read bit-identical angles, forces and currents for 0.5 s with the link healthy (false FAULT).
+    link_status_s: float = 2.5
     resend_s: float = 1.0
     home_timeout_s: float = 5.0
     home_tolerance_registers: int = 30  # ~3 deg on the fingers
@@ -173,6 +177,8 @@ class HandController:
         self._status: dict | None = None
         self._hand_changed_t = -math.inf
         self._sensor_streams = False
+        self._link_ok_t = -math.inf  # last driver status that said the EtherCAT link is alive
+        self._link_status: dict | None = None  # the status before it (counters)
 
     # -- inputs -----------------------------------------------------------
     def on_glove(self, angles: Mapping[str, float], t: float) -> None:
@@ -210,11 +216,26 @@ class HandController:
             self._hand_changed_t = t
 
     def hand_frozen(self, t: float) -> bool:
+        """Readings unchanged for hand_frozen_s, unless a recent driver status says the link is alive."""
+        if t - self._link_ok_t <= self.config.link_status_s:
+            return False
         return self._sensor_streams and t - self._hand_changed_t > self.config.hand_frozen_s
 
-    def on_status(self, status: dict) -> None:
-        """The driver's 1 Hz status (state codes, errors, WKC): logged on the next tick."""
-        self._status = status
+    def on_status(self, status: dict, t: float | None = None) -> None:
+        """The driver's 1 Hz status (state codes, errors, WKC): logged on the next tick, and with t
+        the link health: OP, wkc_bad not grown and the cycle counter moving since the last one."""
+        self._status = status  # cleared once logged
+        prev, self._link_status = self._link_status, status
+        if t is None or not isinstance(prev, dict):
+            return
+        alive = (status.get("op") is True and status.get("node_ok", True) is not False
+                 and isinstance(status.get("cycles"), int) and isinstance(prev.get("cycles"), int)
+                 and status["cycles"] > prev["cycles"]
+                 and int(status.get("wkc_bad", 0) or 0) <= int(prev.get("wkc_bad", 0) or 0))
+        if alive:
+            self._link_ok_t = t
+        else:
+            self._link_ok_t = -math.inf
 
     def on_glove_error(self) -> None:
         self.glove_errors += 1

@@ -373,6 +373,45 @@ def test_a_hand_that_stops_answering_is_a_fault_and_releases_the_glove():
     assert rig.ctl.mode is not Mode.ENABLED and "frozen" in (out.record["refusal"] or "")
 
 
+def _status(cycles, wkc_bad=0, op=True):
+    return {"op": op, "node_ok": True, "cycles": cycles, "wkc_bad": wkc_bad}
+
+
+def test_a_still_hand_on_a_live_link_is_not_frozen():
+    """10.11 arm4090: the right hand waiting at home read bit-identical angles, forces and
+    currents for 0.5 s while ecat_status said OP, wkc_bad 0, cycles counting: a false FAULT."""
+    rig = Rig(make_controller())
+    rig.ctl.on_status(_status(900), rig.t - 0.5)  # the driver's status runs before the hand is enabled
+    rig.ctl.request_enable(True)
+    for k in range(int(3.0 / DT)):
+        if k % int(1.0 / DT) == 0:
+            rig.ctl.on_status(_status(1000 + k * 10), rig.t)
+        _sensors(rig, [0, 0, 0, 0, 0], -13, rig.t)
+        out = rig.step(POSE_ANGLES["open"])
+    assert rig.ctl.mode is Mode.ENABLED and out.record["state"] == "running"
+
+
+def test_a_still_hand_on_a_bad_link_is_a_fault():
+    """The same still readings with the link reporting new bad WKC (or the status gone) fault."""
+    rig = Rig(make_controller())
+    rig.ctl.request_enable(True)
+    rig.ctl.on_status(_status(1000), rig.t)
+    for k in range(int(2.0 / DT)):
+        if k == int(0.5 / DT):
+            rig.ctl.on_status(_status(1500, wkc_bad=100), rig.t)
+        _sensors(rig, [0, 0, 0, 0, 0], -13, rig.t)
+        rig.step(POSE_ANGLES["open"])
+    assert rig.ctl.mode is Mode.FAULT and "unchanged" in rig.ctl.fault_reason
+    rig = Rig(make_controller())  # a status that stopped coming vouches for nothing after link_status_s
+    rig.ctl.request_enable(True)
+    rig.ctl.on_status(_status(1000), rig.t)
+    rig.ctl.on_status(_status(1500), rig.t)
+    for _ in range(int(4.0 / DT)):
+        _sensors(rig, [0, 0, 0, 0, 0], -13, rig.t)
+        rig.step(POSE_ANGLES["open"])
+    assert rig.ctl.mode is Mode.FAULT
+
+
 def test_a_still_hand_without_sensor_streams_is_not_frozen():
     """Only angles (an old driver): a hand at rest repeats its registers exactly."""
     rig = Rig(make_controller())

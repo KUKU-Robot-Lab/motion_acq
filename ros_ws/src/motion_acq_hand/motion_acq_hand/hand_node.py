@@ -172,7 +172,7 @@ class HandNode(Node):
             status = json.loads(msg.data)
         except ValueError:
             status = {"raw": msg.data}
-        self.controller.on_status(status if isinstance(status, dict) else {"raw": status})
+        self.controller.on_status(status if isinstance(status, dict) else {"raw": status}, time.monotonic())
 
     def _on_force(self, msg: GetForceAct1) -> None:
         self.controller.on_joint_force(list(msg.joint_names), list(msg.joint_values), time.monotonic())
