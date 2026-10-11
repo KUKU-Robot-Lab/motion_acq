@@ -22,6 +22,7 @@ Examples:
 
 import argparse
 import logging
+import math
 import os
 import sys
 import threading
@@ -423,6 +424,9 @@ def _run_real() -> None:
         )
 
         space_listener.start()
+        key_parked: set[str] = set()  # arms sent home by H, rate-limited until Space starts them again
+        key_park_until = -math.inf  # Space waits until the H park has had time to arrive home
+        last_command_q: np.ndarray | None = None
         if args.space_start:
             real_log.info(
                 "Real %s is at home. Open a HandUMI gripper to start that arm; "
@@ -571,6 +575,42 @@ def _run_real() -> None:
                     _hand_phase(real_env, "home", parked)
                     for side in parked:
                         log_say(f"{side} arm standby", play_sounds=play_sounds)
+            if args.space_start and space_listener.consume_key("h"):
+                # 10.11 user (console arm [홈]): the following arms go back home and wait for Space
+                key_park = tuple(
+                    side
+                    for side in enabled_sides
+                    if controller.anchors[side] is not None and side not in park_sides
+                )
+                parked = controller.park(key_park) if key_park else ()
+                if parked:
+                    park_indices = tuple(
+                        index
+                        for index in motion_joint_indices
+                        if any(
+                            index in controller.side_indices[side] for side in parked
+                        )
+                    )
+                    rate = np.deg2rad(args.park_max_joint_speed_deg_s)
+                    command_stream.limit_joint_rates(park_indices, rate)
+                    travel = max(
+                        (
+                            abs(float(controller.q[i]) - float(last_command_q[i]))
+                            for i in park_indices
+                        ),
+                        default=0.0,
+                    ) if last_command_q is not None else np.pi
+                    key_park_until = max(key_park_until, loop_start + travel / rate + 0.5)
+                    key_parked.update(parked)
+                    park_sides = tuple(park_sides) + parked
+                    _hand_phase(real_env, "home", parked)
+                    real_log.info(
+                        "H pressed; %s arm returning home (%.1f s); Space follows again.",
+                        "/".join(parked),
+                        key_park_until - loop_start,
+                    )
+                else:
+                    real_log.info("H pressed; no arm is following.")
             if wake_sides:
                 wake_indices = tuple(
                     index
@@ -591,6 +631,25 @@ def _run_real() -> None:
                     for side in controller.idle_sides()
                     if side not in start_sides and not home_standby.is_standby(side)
                 )
+                if space_sides and loop_start < key_park_until:
+                    # a fresh anchor restarts the joint player without its rate limit: not on the way home
+                    real_log.info(
+                        "Space ignored; arm still returning home (%.1f s).",
+                        key_park_until - loop_start,
+                    )
+                    space_sides = ()
+                again = tuple(side for side in space_sides if side in key_parked)
+                if again:
+                    command_stream.clear_joint_rate_limits(
+                        tuple(
+                            index
+                            for index in motion_joint_indices
+                            if any(
+                                index in controller.side_indices[side] for side in again
+                            )
+                        )
+                    )
+                    key_parked.difference_update(again)
                 start_sides += space_sides
                 if space_sides:
                     real_log.info("Space pressed; starting %s.", "/".join(space_sides))
@@ -668,6 +727,7 @@ def _run_real() -> None:
                 real_log.info("Teleop timer started.")
 
             q = teleop_frame.q
+            last_command_q = np.asarray(q, dtype=np.float64).copy()
             joint_diagnostics.observe(teleop_frame.step.q, q)
             command_stream.submit(
                 q,

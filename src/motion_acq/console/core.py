@@ -25,8 +25,8 @@ from motion_acq.console.probes import LatestUdp, Probes, adb_path, ros_state, ru
 from motion_acq.console.supervisor import Supervisor, _same_process, left_behind, stop_left_behind
 from motion_acq.console.units import ROOT, Launch, Station, UnitError
 
-SPACE_UNITS = ("record", "arm", "head")
-ALLOWED_KEYS = {" ", "r", "q", "\x1b", "\n", "y\n", "n\n"}
+SPACE_UNITS = ("record", "arm", "arm_right", "arm_left", "head")
+ALLOWED_KEYS = {" ", "r", "q", "h", "\x1b", "\n", "y\n", "n\n"}
 CONFIRM_TTL_S = 120.0
 DEFAULT_SETTINGS = {"user": "", "arm_side": "right", "scale": units.DEFAULT_SCALE,
                     "task": "teleop demonstration", "episodes": 10,
@@ -36,7 +36,8 @@ HAND_NODE_VISIBLE_S = 20.0
 HAND_LINK_NOTE = (" 손: 노드가 꺼진 채 먼저 뜨고, 팔이 손을 주먹으로 쥔 뒤 차렷 -> 홈. 홈에서 손이 펴지면 1 초 동안 "
                   "손을 편 채 멈춰 있을 것(기준 자세), 그 뒤 장갑을 따라간다. 정지 때는 손을 주먹으로 쥔 뒤 차렷.")
 HAND_DRIVER_UP_S = 30.0  # EtherCAT: OP and the first /hand_<side>/angle_actual
-ARM_UNITS = ("arm", "record")
+# arm / record: everything at once (the arm_side setting); arm_right / arm_left: one arm alone (10.11 user)
+ARM_UNITS = ("arm", "record", "arm_right", "arm_left")
 
 
 def same_commands(a: list[Launch], b: list[Launch]) -> bool:
@@ -161,6 +162,8 @@ class Console:
             return units.head(st, mode)
         if key == "arm":
             return units.arm(st, mode, str(s["arm_side"]), float(s["scale"]))
+        if key in ("arm_right", "arm_left"):
+            return units.arm(st, mode, key[4:], float(s["scale"]), key=key)
         if key == "record":
             streams = units.record_streams(st, set(self.sup.running()))
             out = ROOT / "outputs" / f"{st.name}_{time.strftime('%Y%m%d_%H%M%S')}"
@@ -193,24 +196,37 @@ class Console:
             if key == "record":
                 missing = [item["name"] for item in self.record_checklist() if not item["ok"]]
                 extra = (" 빠진 것: " + ", ".join(missing) + ".") if missing else " 모든 스트림이 준비됨."
-            if key in ARM_UNITS and self._arm_hand_sides():
+            if key in ARM_UNITS and self._arm_hand_sides(key):
                 return self._start_arm_with_hands(launch, extra, confirm=confirm, token=token)
             return self._gate(launch, confirm=confirm, token=token, extra=extra)
 
     # -- arm start with the RH56F1 hands (10.06 user: fist -> rest -> home -> fingers) ----------------
-    def _arm_hand_sides(self) -> tuple[str, ...]:
+    def arm_sides(self, key: str) -> tuple[str, ...]:
+        """The arms a unit moves: arm_right / arm_left one, arm / record the arm_side setting."""
+        if key in ("arm_right", "arm_left"):
+            return (key[4:],)
         side = str(self.settings["arm_side"])
-        sides = ("right", "left") if side == "both" else (side,)
-        return tuple(s for s in sides if s in self.station.hand_link and s in self.station.hands)
+        return ("right", "left") if side == "both" else (side,)
+
+    def arms_on(self, side: str) -> list[str]:
+        """Running arm units that move this side's arm."""
+        return [k for k in ARM_UNITS if self.sup.is_running(k) and side in self.arm_sides(k)]
+
+    def _arm_hand_sides(self, key: str) -> tuple[str, ...]:
+        return tuple(s for s in self.arm_sides(key) if s in self.station.hand_link and s in self.station.hands)
 
     def _start_arm_with_hands(self, arm: Launch, extra: str, *, confirm: bool, token: str) -> dict:
-        """[팔 시작] brings up the hand driver and node of each arm side first (disabled). The arm then closes
-        the hands to the fist (hand_link), plays rest -> home, and at home the hands open, take the open-hand
-        reference and follow the gloves."""
-        sides = self._arm_hand_sides()
+        """[홈] of an arm / [전체 시작] brings up the hand driver and node of each arm side first (disabled).
+        The arm then closes the hands to the fist (hand_link), plays rest -> home, and at home the hands
+        open. All at once (arm / record) the hands are set back to auto first, so they follow the gloves
+        when the arms follow; one arm alone leaves its hand's [홈] / [따라가기] as the operator set it."""
+        sides = self._arm_hand_sides(arm.key)
         problems, launches = [], []
         for side in sides:
             if self.sup.is_running(f"hand_{side}"):
+                rec = self.hand_udp[side].get() if side in self.hand_udp else None
+                if arm.key in ("arm", "record") and (rec or {}).get("manual"):
+                    launches.append(units.hand_command(self.station, self.mode, side, "auto"))
                 continue
             side_ko = "오른손" if side == "right" else "왼손"
             problems += [f"{side_ko}: {p}" for p in self._hand_precheck(side)]
@@ -230,6 +246,10 @@ class Console:
 
     def _arm_with_hands_job(self, sides: tuple[str, ...], launches: list[Launch]) -> str:
         for launch in launches[:-1]:
+            if launch.key.startswith("task_hand_"):  # auto: the arm decides again
+                if self._wait_exit(self._spawn_task(launch), 30) != 0:
+                    raise RuntimeError(f"{launch.title} 실패: 로그 확인")
+                continue
             side = launch.key.split("_", 1)[1]
             if launch.key.startswith("ecat_"):
                 self._spawn_task_checked(launch)
@@ -241,7 +261,7 @@ class Console:
         for side in sides:
             self._wait_hand(side, starting=False, need_node=True, timeout_s=HAND_NODE_VISIBLE_S)
         self._spawn_task_checked(launches[-1])
-        return "팔 시작: 손 주먹 -> 차렷 -> 홈 -> 손 펴고 장갑 따라감"
+        return "팔 시작: 손 주먹 -> 차렷 -> 홈 -> 손 펴고 기다림 (Space: 팔과 손이 따라감)"
 
     def _approve(self, key: str, launches: list[Launch], *, title: str, summary: str, confirm: bool,
                  token: str) -> tuple[dict | None, list[Launch]]:
@@ -375,12 +395,15 @@ class Console:
                 return self._gate(units.glove_task(self.station, self.mode, arg), confirm=confirm, token=token)
             if kind == "check":
                 return self._spawn(units.station_check(self.station, str(self.settings["user"])))
-        if kind == "hand_on":
-            return self._hand_on(units.check_side(arg), confirm=confirm, token=token)
+        if kind == "hand":
+            side, _, what = arg.partition(":")
+            if what not in ("home", "follow"):
+                return {"ok": False, "error": f"unknown hand command {what!r}"}
+            return self._hand_cmd(units.check_side(side), what, confirm=confirm, token=token)
         if kind == "hand_off":
             side = units.check_side(arg)
-            if side in self.station.hand_link and any(self.sup.is_running(k) for k in ARM_UNITS):
-                return {"ok": False, "error": "팔을 먼저 정지할 것: 팔이 차렷으로 돌아갈 때 손을 주먹으로 쥐어야 한다"}
+            if side in self.station.hand_link and self.arms_on(side):
+                return {"ok": False, "error": "이 손의 팔을 먼저 정지할 것: 팔이 차렷으로 돌아갈 때 손을 주먹으로 쥐어야 한다"}
             return self.stop(f"hand_{side}")  # SIGINT: the node closes the hand to the fist, exits
         if kind == "driver_off":
             side = units.check_side(arg)
@@ -416,7 +439,9 @@ class Console:
                     out.append(f"/hand_{side}/angle_set 을 다른 노드({', '.join(foreign)})가 발행 중: 그쪽 손 제어를 먼저 끌 것")
         return out
 
-    def _hand_on(self, side: str, *, confirm: bool, token: str) -> dict:
+    def _hand_cmd(self, side: str, kind: str, *, confirm: bool, token: str) -> dict:
+        """[홈] / [따라가기] of one hand (10.11 user: each hand on its own): driver and node if missing, then
+        the command. Also clears a latched FAULT (HandController.command)."""
         key = f"hand_{side}"
         with self.lock:
             problems = self._hand_precheck(side)
@@ -427,20 +452,15 @@ class Console:
                 launches.append(units.hand_driver(self.station, self.mode, side))
             if not self.sup.is_running(key):
                 launches.append(self.build(key))
-            launches.append(units.hand_enable(self.station, self.mode, side, True))
-            side_ko = "오른손" if side == "right" else "왼손"
-            steps = " → ".join(["드라이버" if item.key.startswith("ecat_") else "노드" if item.key == key else "켜기"
-                                for item in launches])
-            reply, approved = self._approve(f"hand_on_{side}", launches, title=f"로봇 {side_ko} 켜기",
-                                            summary=f"{steps}: home(펼침)으로 간 뒤 장갑을 따라간다.",
-                                            confirm=confirm, token=token)
+            command = units.hand_command(self.station, self.mode, side, kind)
+            launches.append(command)
+            steps = " → ".join(["드라이버" if item.key.startswith("ecat_") else "노드" if item.key == key
+                                else units.HAND_COMMANDS[kind] for item in launches])
+            reply, approved = self._approve(f"hand_{kind}_{side}", launches, title=f"로봇 {command.title}",
+                                            summary=f"{steps}. {command.summary}", confirm=confirm, token=token)
             if reply is not None:
                 return reply
-        # a FAULT latches until the hand is switched off (hand controller); [켜기] on a faulted hand
-        # clears it first (10.11 arm4090: a 0.9 s readings gap latched the left hand, [켜기] did nothing)
-        rec = self.hand_udp[side].get() if side in self.hand_udp else None
-        clear = units.hand_enable(self.station, self.mode, side, False) if (rec or {}).get("fault") else None
-        return self._job(key, lambda: self._hand_on_job(side, approved, clear_fault=clear))
+        return self._job(key, lambda: self._hand_cmd_job(side, approved))
 
     def _wait_hand(self, side: str, *, starting: bool, need_node: bool, timeout_s: float) -> None:
         deadline = time.time() + timeout_s
@@ -459,12 +479,8 @@ class Console:
                 raise RuntimeError(" / ".join(problems))
             time.sleep(1.0)
 
-    def _hand_on_job(self, side: str, launches: list[Launch], *, clear_fault: Launch | None = None) -> str:
-        enable = launches[-1]
-        if clear_fault is not None:
-            self._spawn_task_checked(clear_fault)
-            if self._wait_exit(clear_fault.key, 30) != 0:
-                raise RuntimeError("고장 해제(끄기) 토픽 발행 실패: 로그 확인")
+    def _hand_cmd_job(self, side: str, launches: list[Launch]) -> str:
+        command = launches[-1]
         for launch in launches[:-1]:
             if launch.key.startswith("ecat_"):
                 self._spawn_task_checked(launch)
@@ -474,10 +490,10 @@ class Console:
                     self._wait_hand(side, starting=True, need_node=False, timeout_s=5.0)
                 self._spawn_task_checked(launch)
         self._wait_hand(side, starting=False, need_node=True, timeout_s=HAND_NODE_VISIBLE_S)
-        self._spawn_task_checked(enable)
-        if self._wait_exit(enable.key, 30) != 0:
-            raise RuntimeError("켜기 토픽 발행 실패: 로그 확인")
-        return "켬: home(펼침) 뒤 장갑을 따라간다"
+        self._spawn_task_checked(command)
+        if self._wait_exit(command.key, 30) != 0:
+            raise RuntimeError(f"{command.title} 토픽 발행 실패: 로그 확인")
+        return command.summary
 
     def _spawn_task_checked(self, launch: Launch) -> None:
         result = self._spawn(launch, confirmed=launch.moves_robot)
@@ -664,8 +680,9 @@ class Console:
         """What a recording started now would contain; anything not ok is missing from the dataset."""
         st, running = self.station, set(self.sup.running())
         source = gates.quest_source(self)
+        arms = [k for k in ("arm", "arm_right", "arm_left") if k in running]
         items = [{"name": "Quest 자세", "ok": source in ("view", "app", "mock"), "detail": source or "없음"},
-                 {"name": "로봇 팔", "ok": "arm" not in running, "detail": "팔 원격조작을 먼저 정지" if "arm" in running
+                 {"name": "로봇 팔", "ok": not arms, "detail": "팔 원격조작을 먼저 정지" if arms
                   else {"right": "오른팔", "left": "왼팔", "both": "양팔"}[str(self.settings["arm_side"])]}]
         if st.cameras:
             items.append({"name": "카메라 영상", "ok": "quest_view" in running,
@@ -700,6 +717,7 @@ class Console:
     def unit_keys(self) -> list[str]:
         keys = ["quest_view"] + (["mock_quest"] if self.mode == "fake" else [])
         keys += (["head"] if self.station.has_head else []) + ["arm", "record"]
+        keys += [f"arm_{side}" for side in ("right", "left") if side in self.station.can_ports]
         for side in self.station.hands:
             keys += [f"hand_{side}", f"calib_{side}", f"rezero_{side}"] + ([f"ecat_{side}"] if self.mode == "real" else [])
         return keys

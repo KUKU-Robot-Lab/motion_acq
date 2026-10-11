@@ -24,6 +24,7 @@ VENV_BIN = Path(sys.executable).parent
 MACQ = str(VENV_BIN / "macq")
 SIDES = ("right", "left")
 ARM_SIDES = ("right", "left", "both")
+ARM_KEYS = ("arm", "arm_right", "arm_left")
 FAKE_DOMAIN = "177"
 
 # UDP ports the console listens on (copies of the records the recorder gets).
@@ -237,12 +238,19 @@ def _arm_common(station: Station, mode: str, side: str, scale: float) -> list[st
 SIDE_KO = {"right": "오른팔", "left": "왼팔", "both": "양팔"}
 
 
-def arm(station: Station, mode: str, side: str, scale: float = DEFAULT_SCALE) -> Launch:
+def arm(station: Station, mode: str, side: str, scale: float = DEFAULT_SCALE, *, key: str = "arm") -> Launch:
+    """key arm: the all-at-once arm start; arm_right / arm_left: one arm on its own (10.11 user), both may
+    run at the same time (own CAN port, own hand link; quest-view serves every pose client)."""
+    if key not in ARM_KEYS:
+        raise UnitError(f"arm unit must be one of {ARM_KEYS}, not {key!r}")
+    if key != "arm" and side != key[4:]:
+        raise UnitError(f"{key} moves the {key[4:]} arm, not {side!r}")
     argv = (MACQ, "teleop-real", *_arm_common(station, mode, side, scale))
-    return Launch("arm", f"팔 원격조작 ({SIDE_KO[side]})", argv, _base_env(station), pty=True,
+    return Launch(key, f"팔 원격조작 ({SIDE_KO[side]})", argv, _base_env(station), pty=True,
                   moves_robot=_real(mode),
                   summary=f"{SIDE_KO[side]}: 차렷이 벗어나 있으면 먼저 0.05 rad/s 로 기준 차렷에 맞추고, "
                           "저장 경로로 home 에 간 뒤 Space 를 기다린다. Space 순간 착용자가 바라보는 방향이 로봇 앞(+x)이 된다. "
+                          "따라가는 중 [홈](H)이면 home 으로 돌아가 다시 Space 를 기다린다. "
                           "정지하면 home → 차렷으로 돌아간 뒤 모터를 끈다.",
                   stop_grace_s=120.0)
 
@@ -340,15 +348,21 @@ def hand_driver(station: Station, mode: str, side: str) -> Launch:
                   stop_grace_s=10.0)
 
 
-def hand_enable(station: Station, mode: str, side: str, on: bool) -> Launch:
+HAND_COMMANDS = {"home": "홈", "follow": "따라가기", "auto": "자동(팔이 정함)"}
+
+
+def hand_command(station: Station, mode: str, side: str, kind: str) -> Launch:
+    """[홈] (open at home, still) / [따라가기] (follow the glove) for one hand, or auto (the arm decides)."""
     side = check_side(side)
-    value = "true" if on else "false"
-    command = f"ros2 topic pub --once /motion_acq/hand_{side}/enable std_msgs/msg/Bool '{{data: {value}}}'"
+    if kind not in HAND_COMMANDS:
+        raise UnitError(f"hand command must be one of {tuple(HAND_COMMANDS)}, not {kind!r}")
+    command = f"ros2 topic pub --once /motion_acq/hand_{side}/command std_msgs/msg/String '{{data: {kind}}}'"
     side_ko = "오른손" if side == "right" else "왼손"
-    return Launch(f"task_hand_{'on' if on else 'off'}_{side}", f"{side_ko} {'켜기' if on else '끄기'}",
-                  ros_argv(command), _ros_env(station, mode), moves_robot=_real(mode) and on,
-                  summary=(f"{side_ko}: home(펼침)으로 간 뒤 장갑을 따라간다(팔이 경로를 도는 동안은 주먹)." if on
-                           else f"{side_ko}: 주먹(rest)으로 쥔 뒤 멈춘다."),
+    summary = {"home": f"{side_ko}: home(펼침)으로 가서 그대로 멈춘다(장갑 무시).",
+               "follow": f"{side_ko}: home(펼침) → 1 초 기준 자세 → 장갑을 따라간다(팔이 home 에 있어도).",
+               "auto": f"{side_ko}: 팔이 정한다(팔이 따라갈 때 장갑을 따라감)."}[kind]
+    return Launch(f"task_hand_{kind}_{side}", f"{side_ko} {HAND_COMMANDS[kind]}", ros_argv(command),
+                  _ros_env(station, mode), moves_robot=_real(mode) and kind != "auto", summary=summary,
                   stop_grace_s=5.0)
 
 

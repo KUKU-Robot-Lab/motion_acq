@@ -5,7 +5,8 @@
         -p amplitude:=0.3 -p driver_speed:=1000 -p driver_force:=300
 
 Disabled at start; enable/disable with std_msgs/Bool on
-/motion_acq/hand_<side>/enable. The enable/fault rules live in
+/motion_acq/hand_<side>/enable, or std_msgs/String home / follow / auto on
+/motion_acq/hand_<side>/command (the console's per-hand [홈] / [따라가기]). The enable/fault rules live in
 motion_acq.hand.controller (fresh, plausible angle_actual; all driver topics
 subscribed; hand_id taken from angle_actual; speed/force re-sent every second;
 angle_actual loss -> latched FAULT, the hand stays put). Enable walks home (hand
@@ -107,6 +108,8 @@ class HandNode(Node):
         self.create_subscription(SenseGloveState, topic, self._on_glove, glove_qos())
         self.create_subscription(GetAngleAct1, f"{ns}/angle_actual", self._on_actual, 10)
         self.create_subscription(Bool, f"/motion_acq/hand_{self.side}/enable", self._on_enable, 10)
+        # the console's per-hand [홈] / [따라가기] / auto (HandController.command)
+        self.create_subscription(String, f"/motion_acq/hand_{self.side}/command", self._on_command, 10)
         self.create_subscription(TouchData1, f"{ns}/touch_data", self._on_touch, 10)
         self.create_subscription(GetForceAct1, f"{ns}/force_actual", self._on_force, 10)
         self.create_subscription(GetCurrentAct1, f"{ns}/current_actual", self._on_current, 10)
@@ -199,6 +202,13 @@ class HandNode(Node):
         self.get_logger().info(f"enable request: {bool(msg.data)}")
         self.controller.request_enable(bool(msg.data))
 
+    def _on_command(self, msg: String) -> None:
+        self.get_logger().info(f"command: {msg.data}")
+        try:
+            self.controller.command(str(msg.data).strip())
+        except ValueError as exc:
+            self.get_logger().error(str(exc))
+
     def _subscribers_ready(self) -> bool:
         return all(p.get_subscription_count() > 0 for p in (self.angle_pub, self.speed_pub, self.force_pub))
 
@@ -288,7 +298,7 @@ class HandNode(Node):
         except OSError as exc:  # logging must never stop the control loop
             self.get_logger().warning(f"hand log/udp write failed: {exc}", throttle_duration_sec=5.0)
         self.status_pub.publish(String(data=json.dumps({
-            k: out.record[k] for k in ("mode", "phase", "arm", "state", "fault", "refusal", "reference", "method", "glove_age_s",
+            k: out.record[k] for k in ("mode", "phase", "arm", "manual", "state", "fault", "refusal", "reference", "method", "glove_age_s",
                                        "glove_frozen", "glove_errors", "registers", "measured_registers")
         })))
 

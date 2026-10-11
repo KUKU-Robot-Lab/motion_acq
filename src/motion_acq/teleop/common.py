@@ -314,13 +314,14 @@ class TeleopLoopTimer:
 
 
 class KeyboardSpaceListener:
-    """Non-blocking terminal key listener: Space, plus R (reset) and Q (finish).
+    """Non-blocking terminal key listener: Space, plus R (reset), Q (finish) and H (home).
 
     The assistant drives recording from the keyboard when the operator's hands
-    are busy (gloves, mounted controllers): see teleop_record.
+    are busy (gloves, mounted controllers): see teleop_record. H: teleop-real
+    sends the following arms back home and waits for Space (the console's arm [홈]).
     """
 
-    EPISODE_KEYS = ("r", "q")
+    EPISODE_KEYS = ("r", "q", "h")
 
     def __init__(self, *, enabled: bool, stop_event: threading.Event | None = None) -> None:
         # One reader owns the terminal: with stop_event set, Esc stops the

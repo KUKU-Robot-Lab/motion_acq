@@ -457,6 +457,52 @@ def test_arm_start_parks_a_disabled_hand_then_home_hands_it_the_glove():
     assert out.record["phase"] == "rest" and rig.ctl.at_rest(rig.t)
 
 
+
+def test_operator_home_and_follow_work_alone_and_override_the_arm_at_home():
+    """10.11 user: each hand on its own first ([홈] = open and still, [따라가기] = the glove), then together."""
+    rig = Rig(make_controller())
+    rig.ctl.command("home")                                   # no arm: open at home, the glove ignored
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["phase"] == "wait_arm")
+    for _ in range(int(6.0 / DT)):                            # no home timeout while it waits
+        out = rig.step(POSE_ANGLES["fist"])
+    assert out.record["phase"] == "wait_arm" and out.record["manual"] == "home"
+    assert max(abs(a - b) for a, b in zip(rig.hand, HOME_R, strict=True)) <= 2
+    rig.ctl.command("follow")
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["state"] == "running")
+    rig.ctl.command("home")                                   # following -> back to the open hand
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["phase"] == "wait_arm")
+    rig.ctl.set_arm_phase("teleop")                           # [홈] wins over the arm following
+    for _ in range(30):
+        out = rig.step(POSE_ANGLES["fist"])
+    assert out.record["phase"] == "wait_arm"
+    rig.ctl.set_arm_phase("home")
+    rig.ctl.command("follow")                                 # [따라가기] wins over the arm at home
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["state"] == "running")
+    rig.ctl.set_arm_phase("path")                             # the arm's path still holds the fist
+    out = rig.step(POSE_ANGLES["open"])
+    assert out.record["phase"] == "rest"
+    run_until(rig, POSE_ANGLES["open"], lambda o: rig.ctl.at_rest(rig.t))
+    rig.ctl.set_arm_phase("home")
+    rig.ctl.command("auto")                                   # all at once: the arm decides again
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["phase"] == "wait_arm")
+    assert rig.ctl.manual is None
+    with pytest.raises(ValueError):
+        rig.ctl.command("dance")
+
+
+def test_an_operator_command_clears_a_latched_fault():
+    rig = Rig(make_controller())
+    rig.ctl.command("home")
+    run_until(rig, POSE_ANGLES["open"], lambda o: o.record["phase"] == "wait_arm")
+    for _ in range(20):
+        rig.step(POSE_ANGLES["open"], measured=False)
+    assert rig.ctl.mode is Mode.FAULT
+    rig.ctl.command("auto")                                   # auto leaves a fault alone
+    assert rig.ctl.mode is Mode.FAULT
+    rig.ctl.command("follow")
+    run_until(rig, POSE_ANGLES["fist"], lambda o: o.record["state"] == "running")
+    assert rig.ctl.fault_reason is None
+
 def test_home_without_a_path_does_not_enable():
     rig = Rig(make_controller())
     rig.ctl.set_arm_phase("home")                       # the arm was already home (no path played)

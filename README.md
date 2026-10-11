@@ -91,8 +91,9 @@ stop) is in the panel on the right when the part is clicked.
 | 머리 (Quest) | 연결 → 시작 | quest-view (head camera + pose server) and the page in the headset, then VR from the PC: the camera shows in the headset. Fake: mock sender + test pattern |
 | 목 (Dynamixel) | 시작 / Space / 정지 | `macq head --unlock key` |
 | 왼손·오른손 (Nova 2) | 연결 | `nova2.sh up`, then the glove driver as soon as both are connected (needs `ros_ws_setup.sh --full`: SenseCom) |
-| 로봇 팔 | 이 팔 사용 + 팔 시작 / Space / 정지 | `macq teleop-real` right / left / both |
-| 로봇 손 (RH56F1) | 켜기 / 끄기 | hand_node + enable in one confirmed step; 끄기 = open, then the node exits |
+| 로봇 오른팔·왼팔 | 홈 / 따라가기 / 홈 / 정지 | one arm alone: `macq teleop-real --side right` (unit `arm_right`) or left (`arm_left`); both may run at once. [홈] = rest -> home, [따라가기] = Space, [홈] while following = H (back home, waits for Space) |
+| 전체 시작 (between the arms) | 전체 시작 / 전체 따라가기 / 전체 홈 / 정지 | both arms + both hands: `macq teleop-real --side both` (unit `arm`), hands set back to auto |
+| 로봇 손 (RH56F1) | 홈 / 따라가기 / 끄기 | driver + hand_node if missing, then `/motion_acq/hand_<side>/command`: home (open, still) or follow (the glove, whatever the arm does at home); 끄기 = fist, then the node exits |
 | 녹화 | 녹화 시작, then Space / R / Q | `macq teleop-record` with every running stream: arms, head, hands, gloves, the Quest poses (controllers, HMD) and the head camera video taken from quest-view (TCP 47126, camera type `quest-view`) |
 
 The arms follow the headset view's (WebXR) controllers only after the direction
@@ -121,9 +122,12 @@ axes (forward / left / up) while the robot stays still; [방향 맞음] allows i
 - Arm and hands (arm4090, 10.06): the arm start closes the RH56F1 hands to the fist (rest), plays the
   stored path rest -> home, then the hands open and follow the gloves; the stop closes them again before
   the path home -> rest (`motion_acq.hand_link`, UDP `robots.openarm_rh56f1.hand_link` of the station).
-  [팔 시작] brings up the hand drivers and nodes of the arm sides first (disabled, one approval); at home
-  the hands open (hold the open hand still for the 1 s reference) and follow the gloves. [끄기] on a hand
-  is refused while the arm runs; a hand [끄기] alone ends at the fist too.
+  An arm start brings up the hand drivers and nodes of its sides first (disabled, one approval); at home
+  the hands open and wait. All at once ([전체 시작], auto) they follow the gloves when the arms follow
+  (hold the open hand still for the 1 s reference). One by one (10.11): check each arm and hand alone with
+  its own [홈] / [따라가기] first; a hand's [홈] / [따라가기] overrides its arm at home or following (the
+  arm's path still holds the fist) and also clears a latched FAULT. [끄기] on a hand is refused while its
+  arm runs; a hand [끄기] alone ends at the fist too.
 - The RH56F1 EtherCAT driver is never started here: bring it up from the s2r
   console. arm5080 has no head, gloves or hands in its rig, so those cards are hidden.
 

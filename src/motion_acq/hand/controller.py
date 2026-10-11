@@ -20,6 +20,12 @@ enabled and opens (home) and waits there (WAIT_ARM); it takes the reference and 
 once the arm follows the operator ("teleop", 10.06 user: not when the hand opens at home), and goes back
 to the open hand when the arm parks ("home"). at_rest() is what the arm waits for.
 
+Operator command (10.11 user: check each hand on its own before everything together): command("home")
+enables the hand and keeps it open at home, command("follow") enables it and follows the glove, whatever
+the arm does at home or in teleop; command("auto") gives the decision back to the arm (the all-at-once
+start). The arm's path and rest still hold the fist (the stored paths assume it). An explicit home /
+follow also clears a latched FAULT (the operator asks for that hand again).
+
 Enable needs: a fresh angle_actual whose six registers are plausible (no 0,
 -1 or 65535 sentinels, within each axis' command range ± margin), and every
 driver topic subscribed. The hand then starts from that measured pose;
@@ -63,6 +69,7 @@ from motion_acq.hand.nova2 import SIDE_PREFIX, glove_joint_names
 from motion_acq.hand.retarget import HandRetargeter, HandState
 from motion_acq.hand.rh56f1 import N_SLOTS, Rh56f1Map
 
+COMMANDS = ("home", "follow", "auto")
 MEASURED_MARGIN = 100  # registers beyond the command range still accepted as plausible
 SENTINELS = (-1, 0, 65535)
 
@@ -79,7 +86,7 @@ class Phase(str, Enum):
     FOLLOW = "follow"
     RETURN = "return_home"  # after disable: walk to rest (fist), then disable
     REST = "rest"  # the arm moves along its path or rests: hold the fist
-    WAIT_ARM = "wait_arm"  # at home (open), the arm is home but not following the operator yet
+    WAIT_ARM = "wait_arm"  # at home (open), not following: [홈], or the arm is home but not following yet
 
 
 @dataclass(frozen=True)
@@ -152,6 +159,7 @@ class HandController:
         self.rest_rad = retargeter.config.park_rad
         self._rest_registers = hand_map.to_registers(self.rest_rad, side=side)
         self.arm_phase: str | None = None  # from the arm (path / home / rest); None: no arm link heard
+        self.manual: str | None = None  # operator command: home / follow; None: the arm decides (auto)
         self.feedback = HapticFeedback(retargeter.config.feedback, retargeter.config.closed_rad)
         self.grip_guard = GripGuard(retargeter.config.grip_guard)
         self._speeds_sent: list[int] | None = None
@@ -225,6 +233,23 @@ class HandController:
             self.mode = Mode.DISABLED
             self.fault_reason = None
             self.retargeter.state = HandState.IDLE
+
+    def command(self, kind: str) -> None:
+        """Operator [홈] / [따라가기] for this hand alone, or auto (the arm decides again)."""
+        if kind not in COMMANDS:
+            raise ValueError(f"hand command must be one of {COMMANDS}, not {kind!r}")
+        self.manual = None if kind == "auto" else kind
+        if kind == "auto":
+            return
+        if self.mode is Mode.FAULT:
+            self.request_enable(False)  # the operator asks for this hand again: clear the latch
+        self.request_enable(True)
+
+    def _hold_home(self) -> bool:
+        """Stay open at home instead of following: the operator's [홈], or (auto) the arm home, not following."""
+        if self.manual is not None:
+            return self.manual == "home"
+        return self.arm_phase == "home"
 
     @property
     def arm_hold(self) -> bool:
@@ -332,7 +357,7 @@ class HandController:
             self._take_reference(t)
             return step
         if self._at_home(t):
-            if self.arm_phase == "home":   # the arm is home but does not follow the operator: wait open
+            if self._hold_home():   # [홈], or the arm is home but does not follow the operator: wait open
                 if self.phase is not Phase.WAIT_ARM:
                     self._set_phase(Phase.WAIT_ARM, t)
                 return step
@@ -421,8 +446,8 @@ class HandController:
         if self.mode is Mode.ENABLED and self.arm_hold and self.phase in (Phase.TO_HOME, Phase.REFERENCE,
                                                                           Phase.FOLLOW, Phase.WAIT_ARM):
             self._set_phase(Phase.REST, t)
-        if self.mode is Mode.ENABLED and self.arm_phase == "home" and self.phase in (Phase.REFERENCE, Phase.FOLLOW):
-            self._set_phase(Phase.TO_HOME, t)   # the arm parked: back to the open hand, wait
+        if self.mode is Mode.ENABLED and self._hold_home() and self.phase in (Phase.REFERENCE, Phase.FOLLOW):
+            self._set_phase(Phase.TO_HOME, t)   # [홈] or the arm parked: back to the open hand, wait
         if self.mode is Mode.ENABLED and not self._measured_fresh(t):
             self.mode = Mode.FAULT
             self.fault_reason = f"angle_actual lost for > {self.config.measured_stale_s} s"
@@ -459,6 +484,7 @@ class HandController:
             "mode": self.mode.value,
             "phase": self.phase.value if self.mode is Mode.ENABLED else None,
             "arm": self.arm_phase,
+            "manual": self.manual,
             "state": step.state.value if step else HandState.IDLE.value,
             "fault": self.fault_reason,
             "refusal": self.last_refusal if self.mode is Mode.DISABLED else None,

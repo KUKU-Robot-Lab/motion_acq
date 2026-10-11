@@ -17,6 +17,9 @@ ARM_RULES: tuple[Rule, ...] = (
     ("following the stored path", "live", "저장 경로로 이동 중"),
     ("is at home", "ok", "home 대기: Space 로 따라가기 시작"),
     ("Space pressed; starting", "live", "따라가는 중"),
+    ("Space ignored", "warn", "아직 home 으로 가는 중: 도착한 뒤 Space"),
+    ("no arm is following", "ok", "home 대기: Space 로 따라가기 시작"),
+    ("H pressed;", "live", "home 으로 돌아가는 중: 도착하면 Space 로 다시 따라가기"),
     ("arm anchored", "live", "따라가는 중"),
     ("Tracking lost", "warn", "트래킹 끊김: 팔 정지"),
     ("Headset not tracked", "warn", "헤드셋 추적 안 됨: 팔 시작 안 함 (헤드셋을 쓰거나, 벗고 쓰면 깨운 채 로봇 앞을 보게 두고 Space 다시)"),
@@ -73,7 +76,7 @@ CALIB_RULES: tuple[Rule, ...] = (
     ("기록됨", "live", "기록됨: 다음 자세"),
 )
 
-RULES = {"arm": ARM_RULES, "record": RECORD_RULES, "quest_view": QUEST_VIEW_RULES,
+RULES = {"arm": ARM_RULES, "arm_right": ARM_RULES, "arm_left": ARM_RULES, "record": RECORD_RULES, "quest_view": QUEST_VIEW_RULES,
          "calib_right": CALIB_RULES, "calib_left": CALIB_RULES,
          "rezero_right": CALIB_RULES, "rezero_left": CALIB_RULES}
 

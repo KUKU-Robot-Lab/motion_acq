@@ -81,9 +81,24 @@ def test_hand_joins_the_s2r_domain_and_starts_disabled(tmp_path):
         units.hand(ARM5080, "real", "right", "op1", tmp_path)
 
 
-def test_hand_enable_only_on_needs_approval():
-    assert units.hand_enable(ARM4090, "real", "right", True).moves_robot
-    assert not units.hand_enable(ARM4090, "real", "right", False).moves_robot
+def test_hand_commands_home_and_follow_need_approval_auto_does_not():
+    home = units.hand_command(ARM4090, "real", "right", "home")
+    assert home.moves_robot and home.key == "task_hand_home_right" and "/motion_acq/hand_right/command" in home.argv[-1]
+    assert "{data: home}" in home.argv[-1] and home.env["ROS_DOMAIN_ID"] == "126"
+    assert units.hand_command(ARM4090, "real", "left", "follow").moves_robot
+    assert not units.hand_command(ARM4090, "real", "left", "auto").moves_robot
+    assert not units.hand_command(ARM4090, "fake", "left", "follow").moves_robot
+    with pytest.raises(units.UnitError):
+        units.hand_command(ARM4090, "real", "left", "dance")
+
+
+def test_one_arm_units_move_only_their_arm():
+    right = units.arm(ARM4090, "real", "right", 0.5, key="arm_right")
+    assert right.key == "arm_right" and right.argv[right.argv.index("--side") + 1] == "right" and right.moves_robot
+    with pytest.raises(units.UnitError):
+        units.arm(ARM4090, "real", "left", 0.5, key="arm_right")
+    with pytest.raises(units.UnitError):
+        units.arm(ARM4090, "real", "right", 0.5, key="arm_up")
 
 
 @pytest.mark.parametrize("user", ["", "a b", "x;rm", "../x"])
@@ -168,6 +183,10 @@ def test_arm_phase_follows_the_latest_line():
     assert phases.phase("arm", lines) == ("ok", "home 대기: Space 로 따라가기 시작")
     assert phases.phase("arm", lines + ["Stopping."])[1].startswith("정지")
     assert phases.phase("head", lines) is None
+    parked = lines + ["H pressed; right arm returning home (2.3 s); Space follows again."]
+    assert phases.phase("arm_right", parked)[1].startswith("home 으로 돌아가는 중")
+    assert phases.phase("arm_left", parked + ["Space ignored; arm still returning home (1.0 s)."])[0] == "warn"
+    assert phases.phase("arm", lines + ["H pressed; no arm is following."]) == ("ok", "home 대기: Space 로 따라가기 시작")
 
 
 def test_prompt_detection():
@@ -247,7 +266,7 @@ def test_arm_needs_a_quest_source(console):
 def test_real_motion_needs_the_operator_confirmation(console, monkeypatch):
     console.set_mode("real")
     monkeypatch.setattr(console, "blockers", lambda key: [])
-    monkeypatch.setattr(console, "_arm_hand_sides", lambda: ())  # the hands: test below
+    monkeypatch.setattr(console, "_arm_hand_sides", lambda key: ())  # the hands: test below
     started = []
     monkeypatch.setattr(console, "_spawn", lambda launch, confirmed=False: started.append(launch) or {"ok": True})
     reply = console.start("arm", {"arm_side": "left"})
@@ -462,57 +481,97 @@ def test_webxr_arm_needs_the_direction_check(console, monkeypatch):
     assert any("방향 확인" in b for b in console.blockers("arm"))
 
 
-def test_hand_on_asks_once_for_driver_node_and_enable(console, monkeypatch):
+def test_hand_home_asks_once_for_driver_node_and_command(console, monkeypatch):
+    """10.11 user: each hand on its own: [홈] / [따라가기] bring up what is missing, then the command."""
     console.set_mode("real")
     monkeypatch.setattr(console, "_hand_precheck", lambda side: [])
     monkeypatch.setattr(console, "_hand_driver_present", lambda side: False)
     console.update_settings({"user": "op1"})
-    jobs = []
-    monkeypatch.setattr(console, "_job", lambda name, fn: jobs.append(name) or {"ok": True})
-    reply = console.action("hand_on:right")
-    assert reply["need_confirm"] and jobs == []
+    jobs = {}
+    monkeypatch.setattr(console, "_job", lambda name, fn: jobs.update({name: fn}) or {"ok": True})
+    reply = console.action("hand:right:home")
+    assert reply["need_confirm"] and jobs == {}
     lines = reply["command"].split("\n")
-    assert "rh56f1_driver.py --side right" in lines[0] and "hand_node" in lines[1] and "enable" in lines[2]
-    assert reply["summary"].startswith("드라이버 → 노드 → 켜기")
-    assert console.action("hand_on:right", confirm=True, token=reply["token"]) == {"ok": True}
-    assert jobs == ["hand_right"]
+    assert "rh56f1_driver.py --side right" in lines[0] and "hand_node" in lines[1] and "{data: home}" in lines[2]
+    assert reply["summary"].startswith("드라이버 → 노드 → 홈")
+    assert console.action("hand:right:home", confirm=True, token=reply["token"]) == {"ok": True}
+    spawned = []
+    monkeypatch.setattr(console, "_spawn_task_checked", lambda launch: spawned.append(launch.key))
+    monkeypatch.setattr(console, "_wait_exit", lambda key, timeout_s: 0)
+    monkeypatch.setattr(console, "_wait_hand", lambda *a, **k: None)
+    jobs["hand_right"]()
+    assert spawned == ["ecat_right", "hand_right", "task_hand_home_right"]
+    assert not console.action("hand:right:dance")["ok"]
 
 
-def test_hand_on_uses_a_running_driver(console, monkeypatch):
-    console.set_mode("real")
-    monkeypatch.setattr(console, "_hand_precheck", lambda side: [])
-    monkeypatch.setattr(console, "_hand_driver_present", lambda side: True)
-    console.update_settings({"user": "op1"})
-    reply = console.action("hand_on:left")
-    assert "rh56f1_driver.py" not in reply["command"] and reply["summary"].startswith("노드 → 켜기")
-
-
-
-def test_hand_on_a_faulted_hand_switches_it_off_first(console, monkeypatch):
-    """10.11 arm4090: a FAULT latches until off; [켜기] on a faulted hand clears it, then enables."""
+def test_hand_follow_on_a_running_node_is_just_the_command(console, monkeypatch):
     console.set_mode("real")
     monkeypatch.setattr(console, "_hand_precheck", lambda side: [])
     monkeypatch.setattr(console, "_hand_driver_present", lambda side: True)
     monkeypatch.setattr(console.sup, "is_running", lambda key: key == "hand_left")
     console.update_settings({"user": "op1"})
-    rec = {"mode": "fault", "fault": "RH56F1 readings unchanged"}
-    monkeypatch.setitem(console.hand_udp, "left", type("Udp", (), {"get": lambda self: rec})())
+    reply = console.action("hand:left:follow")
+    assert "rh56f1_driver.py" not in reply["command"] and "hand_node" not in reply["command"]
+    assert reply["summary"].startswith("따라가기.") and "{data: follow}" in reply["command"]
+
+
+def test_hand_off_waits_only_for_its_own_arm(console, monkeypatch):
+    console.set_mode("real")
+    running = {"hand_left", "hand_right", "arm_right"}
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key in running)
+    stopped = []
+    monkeypatch.setattr(console, "stop", lambda key: stopped.append(key) or {"ok": True})
+    assert not console.action("hand_off:right")["ok"]          # the right arm runs: it needs the fist
+    assert console.action("hand_off:left")["ok"] and stopped == ["hand_left"]
+    running.add("arm")
+    console.update_settings({"arm_side": "both"})
+    assert not console.action("hand_off:left")["ok"]
+
+
+def test_one_arm_units_run_together_but_not_with_everything_at_once(console, monkeypatch):
+    console.set_mode("real")
+    probes_now = _fresh({"can": {"right": {"port": "can0", "up": True, "fd": True},
+                                 "left": {"port": "can1", "up": False, "fd": False}}})
+    monkeypatch.setattr(console, "probe_raw", lambda name: probes_now.get(name))
+    console.update_settings({"arm_side": "both"})
+    assert console.blockers("arm_right") == []                  # its own CAN only
+    assert any("can1" in b for b in console.blockers("arm_left"))
+    running = {"arm_left"}
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key in running)
+    assert console.blockers("arm_right") == []
+    assert any("arm_left 실행 중" in b for b in console.blockers("arm"))
+    assert any("arm_left 실행 중" in b for b in console.blockers("record"))
+    running = {"arm"}
+    assert any("arm 실행 중" in b for b in console.blockers("arm_right"))
+    assert console.arms_on("left") == ["arm"]
+    assert console.build("arm_left").argv[console.build("arm_left").argv.index("--side") + 1] == "left"
+    assert {"arm_right", "arm_left"} <= set(console.unit_keys())
+
+
+def test_everything_at_once_puts_the_hands_back_to_auto(console, monkeypatch):
+    """A hand left at [홈] / [따라가기] from the one-by-one check follows its arm again in [전체 시작]."""
+    console.set_mode("real")
+    console.update_settings({"user": "op1", "arm_side": "both"})
+    monkeypatch.setattr(console, "blockers", lambda key: [])
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key in ("hand_right", "hand_left"))
+    recs = {"right": {"mode": "enabled", "manual": "home"}, "left": {"mode": "enabled", "manual": None}}
+    for side in ("right", "left"):
+        monkeypatch.setitem(console.hand_udp, side, type("Udp", (), {"get": lambda self, s=side: recs[s]})())
     jobs = {}
     monkeypatch.setattr(console, "_job", lambda name, fn: jobs.update({name: fn}) or {"ok": True})
-    reply = console.action("hand_on:left")
-    assert console.action("hand_on:left", confirm=True, token=reply["token"]) == {"ok": True}
+    reply = console.start("arm")
+    assert "{data: auto}" in reply["command"] and "hand_left/command" not in reply["command"]
+    assert console.start("arm", confirm=True, token=reply["token"]) == {"ok": True}
     spawned = []
+    monkeypatch.setattr(console, "_spawn_task", lambda launch: spawned.append(launch.key) or launch.key)
     monkeypatch.setattr(console, "_spawn_task_checked", lambda launch: spawned.append(launch.key))
     monkeypatch.setattr(console, "_wait_exit", lambda key, timeout_s: 0)
     monkeypatch.setattr(console, "_wait_hand", lambda *a, **k: None)
-    jobs["hand_left"]()
-    assert spawned == ["task_hand_off_left", "task_hand_on_left"]
-    rec.update(mode="enabled", fault=None)
-    reply = console.action("hand_on:left")
-    console.action("hand_on:left", confirm=True, token=reply["token"])
-    spawned.clear()
-    jobs["hand_left"]()
-    assert spawned == ["task_hand_on_left"]
+    jobs["arm"]()
+    assert spawned == ["task_hand_auto_right", "arm"]
+    one = console.start("arm_right")                            # one arm alone keeps the operator's choice
+    assert "{data: auto}" not in one.get("command", "")
+
 
 def test_hand_driver_command_matches_s2r(tmp_path):
     launch = units.hand_driver(ARM4090, "real", "left")

@@ -9,7 +9,8 @@ let selected = "quest";
 let drawerKey = null;
 let lastEventT = Date.now() / 1000;
 const SIDE_KO = { right: "오른", left: "왼" };
-const UNIT_KO = { quest_view: "영상 서버", mock_quest: "가짜 Quest", head: "목", arm: "팔", record: "녹화",
+const UNIT_KO = { quest_view: "영상 서버", mock_quest: "가짜 Quest", head: "목", arm: "팔 전체", record: "녹화",
+  arm_right: "로봇 오른팔", arm_left: "로봇 왼팔",
   hand_right: "로봇 오른손", hand_left: "로봇 왼손", calib_right: "오른손 보정", calib_left: "왼손 보정",
   rezero_right: "오른손 편 손 맞춤", rezero_left: "왼손 편 손 맞춤",
   ecat_right: "로봇 오른손 드라이버", ecat_left: "로봇 왼손 드라이버" };
@@ -80,6 +81,9 @@ const job = (name) => (S?.jobs || {})[name] || {};
 const jobRunning = (name) => job(name).state === "running";
 const real = () => S?.mode === "real";
 const armSides = () => ({ right: ["right"], left: ["left"], both: ["right", "left"] })[S.settings.arm_side] || [];
+// the all-at-once units (arm / record) move the arm_side arms; arm_right / arm_left one arm on its own (10.11 user)
+const allArmOn = (side) => ["arm", "record"].find((k) => running(k) && armSides().includes(side));
+const oneArmOn = () => ["arm_right", "arm_left"].some((k) => running(k) || jobRunning(k));
 
 function btn(label, attrs, cls = "") {
   const a = Object.entries(attrs).map(([k, v]) => (v === true ? k : v === false || v == null ? "" : `${k}="${esc(v)}"`)).join(" ");
@@ -167,18 +171,30 @@ function nodeGlove(s, side) {
 }
 
 function nodeArm(s, side) {
+  const key = `arm_${side}`;
   const can = ((s.probes || {}).can || {})[side] || {};
-  const inUse = armSides().includes(side);
-  const busy = running("arm") || running("record");
   const n = { title: `로봇 ${SIDE_KO[side]}팔`, dev: `OpenArm · ${can.port || "-"}` };
-  const pick = `<label class="pick"><input type="checkbox" data-pick="${side}" ${inUse ? "checked" : ""} ${busy ? "disabled" : ""}> 이 팔 사용</label>`;
   const canText = can.up && can.fd ? "CAN UP FD" : can.exists === false ? "CAN 없음" : can.up ? "CAN FD 아님" : "CAN DOWN";
-  if (busy && inUse) {
-    const st = unitState(running("record") ? "record" : "arm") || ["live", "실행 중"];
-    return { ...n, tone: st[0], state: st[1], sub: canText, actions: pick };
+  const all = allArmOn(side);
+  if (all) {
+    const st = unitState(all) || ["live", "실행 중"];
+    return { ...n, tone: st[0], state: st[1], sub: `${unitName(all)}로 움직이는 중 (가운데 버튼)` };
   }
-  return { ...n, tone: inUse ? (can.up && can.fd || !real() ? "ok" : "warn") : "mute",
-           state: inUse ? "대기 (선택됨)" : "사용 안 함", sub: canText, actions: pick };
+  if (jobRunning(key)) return { ...n, tone: "live", state: "손 준비 중...", sub: canText };
+  if (!running(key)) {
+    const st = unitState(key);
+    const failed = job(key).state === "failed" ? job(key).text : unit(key).error ? `지난 시작 실패: ${unit(key).error}` : "";
+    const busy = running("arm") || running("record");
+    return { ...n, tone: st ? st[0] : failed ? "bad" : (can.up && can.fd || !real() ? "ok" : "warn"),
+             state: st ? st[1] : "꺼짐 (차렷)", sub: failed || canText,
+             actions: btn("홈", { "data-start": key, disabled: busy, title: busy ? "전체(팔·녹화)가 실행 중" :
+               "차렷 → 저장 경로 → home (손은 주먹, home 에서 펼침). 이 팔만 움직인다" }, "primary") };
+  }
+  const st = unitState(key) || ["live", "실행 중"];
+  return { ...n, tone: st[0], state: st[1], sub: canText,
+           actions: btn("따라가기", { "data-key": key, "data-text": " ", title: "Space: 이 팔이 컨트롤러를 따라간다" }, "key") +
+                    btn("홈", { "data-key": key, "data-text": "h", title: "H: 따라가던 팔이 home 으로 돌아가 Space 를 기다린다" }, "key") +
+                    btn("정지", { "data-stop": key, title: "home → 차렷 → 모터 끔" }, "danger small") };
 }
 
 function driverText(s, side) {
@@ -190,29 +206,34 @@ function driverText(s, side) {
   return h.driver ? "드라이버 있음" : "드라이버는 [켜기] 때 같이 켠다";
 }
 
+const HAND_PHASE = { to_home: ["live", "home(펼침)으로 이동"], reference: ["warn", "기준 자세: 손가락 펴고 엄지는 검지 옆, 1초 멈춤"],
+  follow: ["live", "장갑 따라가는 중"], rest: ["ok", "주먹 (팔이 경로를 도는 중)"], return_home: ["live", "주먹으로 닫는 중"] };
+
 function nodeHand(s, side) {
   const key = `hand_${side}`;
-  const h = (((s.probes || {}).ros || {}).hands || {})[side] || {};
   const rec = (s.hands || {})[side];
   const n = { title: `로봇 ${SIDE_KO[side]}손`, dev: "RH56F1 EtherCAT" };
-  const on = btn("켜기", { "data-action": `hand_on:${side}` }, "primary");
-  if (jobRunning(key)) return { ...n, tone: "live", state: "켜는 중...", sub: "" };
+  const manual = running(key) ? rec?.manual : null;
+  const home = btn("홈", { "data-action": `hand:${side}:home`, title: "home(펼침)으로 가서 멈춘다(장갑 무시)" }, manual === "home" ? "go" : "primary");
+  const follow = btn("따라가기", { "data-action": `hand:${side}:follow`, title: "home → 1초 기준 자세 → 장갑을 따라간다(팔과 무관)" },
+                     manual === "follow" ? "go" : "primary");
+  if (jobRunning(key)) return { ...n, tone: "live", state: "준비 중 (드라이버·노드)...", sub: "" };
   if (!running(key)) {
     const st = unitState(key);
     const failed = job(key).state === "failed" ? job(key).text : "";
     return { ...n, tone: st ? st[0] : failed ? "bad" : "mute", state: st ? st[1] : "꺼짐",
-             sub: failed || driverText(s, side), actions: on };
+             sub: failed || driverText(s, side), actions: home + follow };
   }
   let st = ["ok", "노드 실행 (손 꺼짐)"];
   if (rec?.fault) st = ["bad", `FAULT ${rec.fault}`];
-  else if (rec?.mode === "enabled" && rec.phase === "reference")
-    st = ["warn", "기준 자세: 손가락 펴고 엄지는 검지 옆에 붙인 채 1초 멈추세요"];
-  else if (rec?.mode === "enabled") st = ["live", rec.state === "homing" ? "home(펼침)으로 이동"
-    : `장갑 따라가는 중${rec.method === "examples" ? " (예시 자세 방식)" : ""}`];
+  else if (rec?.mode === "enabled" && rec.phase === "wait_arm")
+    st = manual === "home" ? ["ok", "home 에서 멈춤"] : ["ok", "home 대기: 팔이 따라가면 같이 따라감"];
+  else if (rec?.mode === "enabled") st = HAND_PHASE[rec.phase] || ["live", rec.phase || "켜짐"];
   st = unitState(key, st);
-  const enabled = rec?.mode === "enabled";
-  return { ...n, tone: st[0], state: st[1], sub: job(key).state === "failed" ? job(key).text : rec?.refusal || rec?.reference || "",
-           actions: (enabled ? "" : on) + btn("끄기", { "data-action": `hand_off:${side}` }, "danger small") };
+  const how = manual === "home" ? "수동: 홈" : manual === "follow" ? "수동: 따라가기" : "자동: 팔과 같이";
+  const sub = job(key).state === "failed" ? job(key).text : rec?.refusal || rec?.reference || how;
+  return { ...n, tone: st[0], state: st[1], sub,
+           actions: home + follow + btn("끄기", { "data-action": `hand_off:${side}`, title: "주먹으로 쥔 뒤 노드를 내린다" }, "danger small") };
 }
 
 function nodeRecord(s) {
@@ -268,19 +289,22 @@ function renderNodes(s) {
 }
 
 function renderArmCtrl(s) {
+  // all at once (10.11 user: after each arm and hand was checked on its own): both arms + both hands
   const box = $("#arm-ctrl");
   let html;
   if (running("arm")) {
-    html = btn("Space 따라가기", { "data-key": "arm", "data-text": " " }, "key") +
+    html = `<span class="meta">전체</span>` +
+           btn("전체 따라가기", { "data-key": "arm", "data-text": " ", title: "Space: 팔과 손이 같이 따라간다" }, "key") +
+           btn("전체 홈", { "data-key": "arm", "data-text": "h", title: "H: 따라가던 팔이 home 으로, 손은 펼침" }, "key") +
            btn("정지 (home → 차렷)", { "data-stop": "arm" }, "danger") +
            `<span class="meta">${esc((unitState("arm") || ["", ""])[1])}</span>`;
   } else {
-    const none = armSides().length === 0;
     const err = unit("arm").error;
-    html = btn(`<svg><use href="#i-play"/></svg>팔 시작`, { "data-start": "arm", disabled: none || running("record"),
-                title: running("record") ? "녹화가 팔을 쓰는 중" : "" }, "primary big") +
+    const block = running("record") ? "녹화가 팔을 쓰는 중" : oneArmOn() ? "한 팔씩 실행 중: 그 팔을 먼저 정지" : "";
+    html = btn(`<svg><use href="#i-play"/></svg>전체 시작`, { "data-start": "arm", "data-opts": JSON.stringify({ arm_side: "both" }),
+                disabled: !!block || jobRunning("arm"), title: block || "양팔 + 양손: 차렷 → home, 손은 자동(팔이 따라가면 같이)" }, "primary big") +
            (err ? `<span class="meta" style="color: var(--bad)">지난 시작 실패: ${esc(err)}</span>`
-                : `<span class="meta">차렷 → home, Space 로 따라가기 · 배율 ${fmt(s.settings.scale, 1)}</span>`);
+                : `<span class="meta">${esc(block || `양팔+양손 · Space 로 같이 따라가기 · 배율 ${fmt(s.settings.scale, 1)}`)}</span>`);
   }
   if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
 }
@@ -372,9 +396,11 @@ function detailArm(s) {
   rows.push(["TCP 보정", s.station.tcp.measured ? s.station.tcp.path : "identity (측정 전)"]);
   rows.push(["RT 한도", p.rt ? `rtprio ${p.rt.rtprio}` : "-", p.rt?.ok ? "ok" : "warn"]);
   return `<h3>로봇 팔 · OpenArm</h3>${facts(rows)}
-    <div class="row"><label class="field">이동 배율 <input type="number" id="scale" min="0.1" max="1.7" step="0.1" value="${esc(s.settings.scale)}" ${running("arm") || running("record") ? "disabled" : ""}></label></div>
-    <p class="hint">시작: 차렷 → 저장 경로 → home (손은 주먹). Space 로 따라가기. 정지: home → 차렷 → 모터 끔.</p>
-    <div class="actions">${logButton("arm")}</div>`;
+    <div class="row"><label class="field">이동 배율 <input type="number" id="scale" min="0.1" max="1.7" step="0.1" value="${esc(s.settings.scale)}" ${["arm", "record", "arm_right", "arm_left"].some(running) ? "disabled" : ""}></label></div>
+    <p class="hint">한 팔씩: 팔 칸의 [홈] = 차렷 → 저장 경로 → home (손은 주먹, home 에서 펼침), [따라가기] = Space,
+      따라가는 중 [홈] = home 으로 돌아가 다시 기다림, [정지] = home → 차렷 → 모터 끔. 손 칸의 [홈]/[따라가기]는 팔과 따로 움직인다.
+      모두 확인되면 가운데 [전체 시작]: 양팔 + 양손, Space 하나로 같이 따라간다.</p>
+    <div class="actions">${logButton("arm_right").replace("전체 로그", "오른팔 로그")}${logButton("arm_left").replace("전체 로그", "왼팔 로그")}${logButton("arm").replace("전체 로그", "전체 시작 로그")}</div>`;
 }
 
 function detailHand(s, side) {
@@ -386,7 +412,7 @@ function detailHand(s, side) {
     ["EtherCAT 드라이버", driverText(s, side), h.driver ? "ok" : ""],
     ["angle_set 발행", (h.angle_set_publisher_nodes || []).join(", ") || String(h.angle_set_publishers ?? "-")]];
   if (rec) {
-    rows.push(["상태", `${rec.mode} · ${rec.state}`, rec.fault ? "bad" : ""]);
+    rows.push(["상태", `${rec.mode} · ${rec.phase || "-"} · ${rec.state} · ${rec.manual ? "수동 " + rec.manual : "자동"}`, rec.fault ? "bad" : ""]);
     rows.push(["장갑 나이", `${fmt(rec.glove_age_s, 2)} s${rec.glove_frozen ? " (멈춤)" : ""}`, rec.glove_frozen ? "warn" : ""]);
     if (rec.refusal) rows.push(["켜기 거부", rec.refusal, "bad"]);
   }
@@ -396,7 +422,7 @@ function detailHand(s, side) {
   const driverOff = real() && running(`ecat_${side}`) && !running(key)
     ? btn("드라이버 내리기", { "data-action": `driver_off:${side}` }, "ghost small") : "";
   return `<h3>로봇 ${SIDE_KO[side]}손 · RH56F1</h3>${facts(rows)}
-    <p class="hint">[켜기]: 드라이버(없으면) → 노드 → 켜기, home(펼침) 뒤 장갑을 따라간다. [끄기]: 펼침으로 돌아간 뒤 노드를 내린다(드라이버는 남는다). 장갑 보정이 먼저 있어야 한다.</p>
+    <p class="hint">[홈]: 드라이버·노드(없으면) → home(펼침)에서 멈춤. [따라가기]: home → 1초 기준 자세(손가락 펴고 엄지는 검지 옆) → 장갑을 따라감, 팔이 home 에 있어도. 둘 다 FAULT 도 풀고 다시 켠다. [끄기]: 주먹으로 쥔 뒤 노드를 내린다(드라이버는 남는다). 팔이 경로를 도는 동안은 언제나 주먹. 전체 시작은 손을 자동(팔이 따라가면 같이)으로 되돌린다. 장갑 보정이 먼저 있어야 한다.</p>
     <div class="actions">${logButton(key)}${real() ? logButton(`ecat_${side}`).replace("전체 로그", "드라이버 로그") : ""}${driverOff}</div>`;
 }
 
@@ -414,7 +440,7 @@ const DETAILS = {
   arm_left: detailArm, arm_right: detailArm, hand_left: (s) => detailHand(s, "left"), hand_right: (s) => detailHand(s, "right"),
   record: detailRecord,
 };
-const DETAIL_TAIL = { quest: "quest_view", neck: "head", arm_left: "arm", arm_right: "arm", hand_left: "hand_left",
+const DETAIL_TAIL = { quest: "quest_view", neck: "head", arm_left: "arm_left", arm_right: "arm_right", hand_left: "hand_left",
   hand_right: "hand_right", record: "record", glove_left: "calib", glove_right: "calib" };
 
 function renderDetail(s) {
@@ -422,6 +448,7 @@ function renderDetail(s) {
   const html = DETAILS[selected](s);
   let tailKey = DETAIL_TAIL[selected];
   if (tailKey === "calib") tailKey = ["calib_right", "calib_left", "rezero_right", "rezero_left"].find(running) || "task_glove_up";
+  if (/^arm_/.test(tailKey) && !running(tailKey) && (running("arm") || unit(tailKey).rc == null)) tailKey = "arm";
   if (box.dataset.html !== html && !box.contains(document.activeElement)) {
     box.innerHTML = html + `<pre class="tail" id="detail-tail"></pre>`;
     box.dataset.html = html;
@@ -541,9 +568,9 @@ document.addEventListener("click", async (ev) => {
   if (d.mode && !b.disabled && S && d.mode !== S.mode) {
     if (d.mode === "real" && !(await confirmDialog("실기 모드로", "이제부터 시작하는 것은 실제 로봇·장치를 쓴다. 움직이는 것은 시작 전에 명령을 다시 보여 준다.", "", true))) return;
     act("mode", { mode: d.mode }, null, d.mode === "real" ? "실기 모드" : "FAKE 모드");
-  } else if (d.start) act("start", { key: d.start }, b, `${unitName(d.start)} 시작`);
+  } else if (d.start) act("start", { key: d.start, opts: d.opts ? JSON.parse(d.opts) : undefined }, b, `${unitName(d.start)} 시작`);
   else if (d.stop) act("stop", { key: d.stop }, b, `${unitName(d.stop)} 정지 요청 (안전 자세로)`);
-  else if (d.key !== undefined && d.text !== undefined && d.key) act("key", { key: d.key, text: d.text }, null, `${unitName(d.key)} ← ${d.text === " " ? "Space" : d.text.trim() || "Enter"}`);
+  else if (d.key !== undefined && d.text !== undefined && d.key) act("key", { key: d.key, text: d.text }, null, `${unitName(d.key)} ← ${d.text === " " ? "Space" : d.text === "h" ? "홈(H)" : d.text.trim() || "Enter"}`);
   else if (d.send) act("key", { key: d.send, text: d.text }, b, "입력 보냄");
   else if (d.action) act("action", { name: d.action }, b, "요청함");
   else if (d.log) openDrawer(d.log);
@@ -553,14 +580,6 @@ document.addEventListener("click", async (ev) => {
 
 document.addEventListener("change", (ev) => {
   const t = ev.target;
-  if (t.dataset.pick && S) {
-    const sides = new Set(armSides());
-    if (t.checked) sides.add(t.dataset.pick); else sides.delete(t.dataset.pick);
-    if (!sides.size) { t.checked = true; toast("팔은 하나 이상 골라야 한다", "bad"); return; }
-    const side = sides.size === 2 ? "both" : [...sides][0];
-    act("settings", { arm_side: side }, null, `팔: ${({ right: "오른팔", left: "왼팔", both: "양팔" })[side]}`);
-    return;
-  }
   const field = { scale: ["scale", Number], task: ["task", String], episodes: ["episodes", Number], user: ["user", String] }[t.id];
   if (field) act("settings", { [field[0]]: field[1](t.value) }, null, "설정 저장");
 });

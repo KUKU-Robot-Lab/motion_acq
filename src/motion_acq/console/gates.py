@@ -12,10 +12,13 @@ import time
 
 from motion_acq.console import units
 
-# arm and record both own the CAN arms. quest_view and the mock never clash: the mock only runs in
+# arm and record (all at once) own every CAN arm; arm_right / arm_left one arm each, so they may run
+# together but not with arm / record. quest_view and the mock never clash: the mock only runs in
 # fake mode, where quest-view serves a test pattern without the pose server.
-EXCLUSIVE = ({"arm", "record"},)
-QUEST_PRODUCERS = ("head", "arm", "record")
+CONFLICTS = {"arm": ("record", "arm_right", "arm_left"), "record": ("arm", "arm_right", "arm_left"),
+             "arm_right": ("arm", "record"), "arm_left": ("arm", "record")}
+ARM_KEYS = tuple(CONFLICTS)
+QUEST_PRODUCERS = ("head", *ARM_KEYS)
 FAST_STALE_S = 10.0
 ROS_STALE_S = 20.0
 
@@ -47,17 +50,15 @@ def blockers(console, key: str) -> list[str]:
         return ["콘솔이 종료 중이다"]
     if key in console.left_keys():
         out.append(f"이전 콘솔이 남긴 {key} 가 아직 돈다: 위 빨간 막대에서 먼저 정지")
-    for group in EXCLUSIVE:
-        if key in group:
-            out += [f"{other} 실행 중" for other in group - {key} if _running_or_left(console, other)]
+    out += [f"{other} 실행 중" for other in CONFLICTS.get(key, ()) if _running_or_left(console, other)]
     source = quest_source(console)
     if key in QUEST_PRODUCERS and source is None:
         out.append("Quest 자세 입력 없음: HandUMI 앱 모드" + (" 또는 가짜 Quest" if console.mode == "fake" else ""))
     if console.mode == "real":
         if key in QUEST_PRODUCERS:
             out += _fast_probe_problems(console)
-        if key in ("arm", "record"):
-            out += _arm_blockers(console, source)
+        if key in ARM_KEYS:
+            out += _arm_blockers(console, source, console.arm_sides(key))
             calibrating = [k for k in ("calib_right", "calib_left", "rezero_right", "rezero_left")
                            if console.sup.is_running(k)]
             if calibrating:
@@ -87,17 +88,16 @@ def _fast_probe_problems(console) -> list[str]:
     return []
 
 
-def _arm_blockers(console, source: str | None) -> list[str]:
+def _arm_blockers(console, source: str | None, sides: tuple[str, ...]) -> list[str]:
     out = []
     if source == "view" and not console.settings.get("webxr_arm_ok"):
         out.append("헤드셋 영상(WebXR)으로 팔을 처음 움직이기 전에 머리(Quest) > 방향 확인을 마칠 것(로봇은 안 움직인다)")
     if source == "external":
         out.append(external_quest(console) + ": 그 프로그램을 끄고 HandUMI 앱 모드로")
-    side = str(console.settings["arm_side"])
     can = console.probe("can")
     if "error" in can:
         out.append(f"CAN 상태 확인 실패: {can['error']}")
-    for s in (("right", "left") if side == "both" else (side,)):
+    for s in sides:
         link = can.get(s) or {}
         if not (link.get("up") and link.get("fd")):
             out.append(f"CAN {link.get('port', s)} 가 UP/FD 가 아님(s2r 콘솔 CAN 단계 또는 운영자 확인)")
