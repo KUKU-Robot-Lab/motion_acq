@@ -159,7 +159,7 @@ cmd_driver() {
   # The launch writes its PID (= its process group) for "stop".
   setsid -f bash -c "echo \$\$ > '$DRIVER_PID'; source /opt/ros/$distro/setup.bash && source '$ROOT/ros_ws/install/setup.bash' && exec $pin ros2 launch motion_acq_hand nova2.launch.py" \
     >"$log" 2>&1 < /dev/null
-  local deadline=$((SECONDS + 15))
+  local deadline=$((SECONDS + 45))  # the controller manager retries until SenseCom lists the gloves
   # humble-dev colours its log ("activated \e[1msenseglove_state_broadcaster"): strip the codes first
   until sed 's/\x1b\[[0-9;]*m//g' "$log" 2>/dev/null | grep -q "Configured and activated senseglove_state_broadcaster"; do
     (( SECONDS >= deadline )) && { echo "glove driver not confirmed yet; see $log" >&2; return 1; }

@@ -44,8 +44,11 @@ def _glove_nodes(side: str, serial: str) -> list:
                     output="screen", namespace=ns)
 
     return [
+        # respawn: SenseCom can report the gloves connected a few seconds before its SDK lists them;
+        # the hardware interface then aborts with "No SenseGloves detected" (10.12). The spawners
+        # keep waiting for the controller manager, so a retry brings the controllers up.
         Node(package="controller_manager", executable="ros2_control_node",
-             parameters=[description, controllers],
+             parameters=[description, controllers], respawn=True, respawn_delay=2.0,
              arguments=["--ros-args", "--log-level", "resource_manager:=WARN"], output="screen", namespace=ns),
         Node(package="robot_state_publisher", executable="robot_state_publisher", parameters=[description],
              output="screen", namespace=ns),
