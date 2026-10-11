@@ -207,7 +207,11 @@ grip_guard:
   # Grip ~ driver admittance k (3.6 g/register) x cap: 0.07 rad ~ 38 registers ~ 140-200 g. To be
   # tuned on the cup. thumb_1 (position only) is not capped.
   contact_cap_rad: 0.07
-  contact_cap_release_s: 0.3
+  # 10.11 cup run: released when the glove opens 0.05 rad below the touch (a held finger at its cap
+  # reads < 60 g: a force-based release re-took the cap deeper, a staircase creep); a tip touch needs
+  # 0.5 N (the ring tip drifted to 0.2-0.3 N with the hand open after a grasp)
+  contact_cap_open_rad: 0.05
+  contact_cap_tip_n: 0.5
 
 # RH56F1 sensors -> Nova 2 haptics (motion_acq.hand.feedback; 10.05 user: the
 # glove limits the operator to what the hand can do and shows contact). Only

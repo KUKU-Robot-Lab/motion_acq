@@ -170,24 +170,46 @@ def test_controller_sends_contact_speed_at_once_and_driver_speed_after():
 # -- contact cap (10.11 arm4090 left cup: the finger crept on for 1.4 s after the operator stopped) --
 
 def test_contact_cap_holds_a_touching_joint_near_where_it_touched():
-    g = guard_with(force=(0, 0, 0, 150, 0, 0), contact_cap_rad=0.07, contact_cap_release_s=0.3)
-    g.speeds(1.0, 2000)  # index in contact
-    assert g.contact_ceilings(MEASURED, 1.0) == {"index_1": pytest.approx(0.87)}
+    g = guard_with(force=(0, 0, 0, 150, 0, 0), contact_cap_rad=0.07)
+    ask = {**MEASURED, "index_1": 1.2}
+    assert g.contact_ceilings(MEASURED, ask, 1.0) == {"index_1": pytest.approx(0.87)}
     later = {**MEASURED, "index_1": 0.85}  # it moved on: the touch point stays where it touched
-    assert g.contact_ceilings(later, 1.1) == {"index_1": pytest.approx(0.87)}
+    assert g.contact_ceilings(later, ask, 1.1) == {"index_1": pytest.approx(0.87)}
 
 
-def test_contact_cap_waits_before_releasing_and_skips_thumb_rotation():
-    g = guard_with(force=(0, 0, 0, 150, 0, 150), contact_cap_rad=0.07, contact_cap_release_s=0.3)
-    g.speeds(1.0, 2000)
-    assert set(g.contact_ceilings(MEASURED, 1.0)) == {"index_1"}  # thumb_1: position only
-    g.on_force(NAMES, (0, 0, 0, 0, 0, 0), 1.1)
-    g.speeds(1.1, 2000)
-    assert "index_1" in g.contact_ceilings(MEASURED, 1.1)  # a dip: kept
-    g.on_force(NAMES, (0, 0, 0, 0, 0, 0), 1.45)
-    g.speeds(1.45, 2000)
-    assert g.contact_ceilings(MEASURED, 1.45) == {}  # gone for 0.35 s: released
-    assert guard_with(force=(0, 0, 0, 150, 0, 0)).contact_ceilings(MEASURED, 1.0) == {}  # default off
+def test_contact_cap_is_kept_while_the_held_finger_reads_little_force():
+    """10.11: at its cap the ring read < 60 g; a force-based release re-took the cap deeper (creep)."""
+    g = guard_with(force=(0, 0, 0, 150, 0, 0), contact_cap_rad=0.07)
+    ask = {**MEASURED, "index_1": 1.2}
+    g.contact_ceilings(MEASURED, ask, 1.0)
+    g.on_force(NAMES, (0, 0, 0, 30, 0, 0), 2.0)
+    deeper = {**MEASURED, "index_1": 0.87}
+    assert g.contact_ceilings(deeper, ask, 2.0) == {"index_1": pytest.approx(0.87)}  # same touch, 1 s later
+    g.on_force(NAMES, (0, 0, 0, 200, 0, 0), 2.1)
+    assert g.contact_ceilings(deeper, ask, 2.1) == {"index_1": pytest.approx(0.87)}
+
+
+def test_contact_cap_is_released_when_the_operator_opens():
+    g = guard_with(force=(0, 0, 0, 150, 0, 150), contact_cap_rad=0.07)
+    assert set(g.contact_ceilings(MEASURED, {**MEASURED, "index_1": 1.2}, 1.0)) == {"index_1"}  # not thumb_1
+    assert "index_1" in g.contact_ceilings(MEASURED, {**MEASURED, "index_1": 0.77}, 1.1)  # a small relax
+    g.on_force(NAMES, (0, 0, 0, 0, 0, 0), 1.2)
+    assert g.contact_ceilings(MEASURED, {**MEASURED, "index_1": 0.7}, 1.2) == {}  # opened 0.1 below
+    assert guard_with(force=(0, 0, 0, 150, 0, 0)).contact_ceilings(MEASURED, None, 1.0) == {}  # default off
+
+
+def test_a_drifting_tip_does_not_pin_a_cap_on_a_free_finger():
+    """10.11: the ring tip read 0.2-0.3 N with the hand open after a grasp."""
+    g = guard_with(contact_cap_rad=0.07)
+    g.on_tips({"ring": 0.3}, 1.0)
+    assert g.contact_ceilings(MEASURED, {**MEASURED, "ring_1": 1.2}, 1.0) == {}
+    g.on_tips({"ring": 0.8}, 1.1)
+    assert set(g.contact_ceilings(MEASURED, {**MEASURED, "ring_1": 1.2}, 1.1)) == {"ring_1"}
+
+
+def test_no_touch_is_taken_while_the_operator_opens():
+    g = guard_with(force=(0, 0, 0, 150, 0, 0), contact_cap_rad=0.07)
+    assert g.contact_ceilings(MEASURED, {**MEASURED, "index_1": 0.5}, 1.0) == {}
 
 
 def test_controller_contact_cap_stops_the_finger_soon_after_the_touch():

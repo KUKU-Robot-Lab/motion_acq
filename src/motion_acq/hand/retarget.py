@@ -195,6 +195,7 @@ class HandRetargeter:
         self.hand_map = hand_map
         self.side = side
         self.state = HandState.IDLE
+        self.operator_target: dict[str, float] | None = None
         self.missing_inputs: list[str] = []
         self.method_used: str | None = None
         self.kinematic = None
@@ -292,6 +293,7 @@ class HandRetargeter:
             return HandStep(HandState.HOLD, None, None, None, q_hold, self._last_registers)
         self.state = HandState.RUNNING
         raw, q_target = self.target(signals)
+        self.operator_target = dict(q_target)  # the glove's ask before admittance and caps (grip guard)
         for j, y in (offsets or {}).items():
             if j in q_target:
                 q_target[j] = max(q_target[j] - y, self.config.limits_rad[j][0])

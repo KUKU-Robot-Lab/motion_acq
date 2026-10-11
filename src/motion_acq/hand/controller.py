@@ -168,6 +168,7 @@ class HandController:
         self.manual: str | None = None  # operator command: home / follow / fist; None: the arm decides (auto)
         self.feedback = HapticFeedback(retargeter.config.feedback, retargeter.config.closed_rad)
         self.grip_guard = GripGuard(retargeter.config.grip_guard)
+        self._operator_target: dict[str, float] | None = None
         self._speeds_sent: list[int] | None = None
         self.admittance = Admittance(retargeter.config.admittance)
         self._driver_adm: list[int] | None = None
@@ -296,6 +297,7 @@ class HandController:
         """t None: the phase clock starts at the next tick (request_enable has no time)."""
         self.phase = phase
         self._phase_t0 = t
+        self._operator_target = None
         if phase is not Phase.FOLLOW:
             self.grip_guard.release_touch()  # the next follow starts without old touch points
 
@@ -369,13 +371,16 @@ class HandController:
             measured = self._measured_rad() if self._measured_fresh(t) else None
             ceilings = self.grip_guard.ceilings(measured, t)
             # contact cap: a touching joint goes at most contact_cap_rad past where it touched (10.11)
-            for j, top in self.grip_guard.contact_ceilings(measured, t).items():
+            for j, top in self.grip_guard.contact_ceilings(measured, self._operator_target, t).items():
                 ceilings[j] = min(top, ceilings.get(j, top))
             # admittance: the operator's target minus the force term (admittance.py), every tick
             offsets = self.admittance.update(t, self.grip_guard.relative_force(t), self.grip_guard.tips_now(t))
             for j, top in self.admittance.ceilings(t, measured, self.retargeter.command()).items():
                 ceilings[j] = min(top, ceilings.get(j, top))
-            return self.retargeter.step(glove[0] if fresh and glove else None, t, ceilings, offsets)
+            step = self.retargeter.step(glove[0] if fresh and glove else None, t, ceilings, offsets)
+            if step.q_target is not None:  # the glove's ask before admittance and caps, for the next tick
+                self._operator_target = getattr(self.retargeter, "operator_target", None)
+            return step
         if self._phase_t0 is None:
             self._phase_t0 = t
         if self.phase in (Phase.REST, Phase.RETURN):
