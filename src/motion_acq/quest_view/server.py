@@ -409,7 +409,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--head-status-port", type=int, default=HEAD_STATUS_PORT)
     p.add_argument("--camera", default="auto",
                    help="V4L2 index of the head camera, -1 = none, auto = the RealSense colour node (default)")
-    p.add_argument("--width", type=int, default=640)
+    p.add_argument("--width", type=int, default=848,
+                   help="848x480 keeps the D435i colour sensor's full width (70 deg); 640x480 crops it to 55.7 deg")
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--fps", type=float, default=30.0)
     p.add_argument("--jpeg-quality", type=int, default=70)

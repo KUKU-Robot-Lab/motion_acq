@@ -7,11 +7,14 @@ station: arm4090
 
 # The head RealSense belongs to macq quest-view (shown in the headset); the
 # recorder takes the same frames from it over TCP (camera type quest-view).
+# The console starts quest-view at this size. D435i colour: 4:3 modes crop the
+# sensor sides (640x480 = 55.7 x 43.3 deg); 848x480 keeps the full width
+# (70.0 x 43.3 deg, measured 10.11) so the whole table is in view.
 cameras:
   head:
     type: quest-view
     index_or_path: "127.0.0.1:47126"
-    width: 640
+    width: 848
     height: 480
     fps: 30
 

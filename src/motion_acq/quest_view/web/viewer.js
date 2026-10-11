@@ -30,7 +30,7 @@ function connect() {
         if (!xrSession) {  // page preview: keep the status visible even without camera frames
           if (!latestImage) { previewCtx.fillStyle = "#000"; previewCtx.fillRect(0, 0, preview.width, preview.height); }
           else previewCtx.drawImage(latestImage, 0, 0, preview.width, preview.height);
-          drawStatus(previewCtx, 0, 420, 640, 60);
+          drawStatus(previewCtx, 0, preview.height - 60, preview.width, 60);
         }
       }
       return;
@@ -39,7 +39,10 @@ function connect() {
     if (latestImage) latestImage.close();
     latestImage = bitmap;
     imageSeq += 1;
-    if (!xrSession) { previewCtx.drawImage(bitmap, 0, 0, preview.width, preview.height); drawStatus(previewCtx, 0, 420, 640, 60); }
+    if (preview.width !== bitmap.width || preview.height !== bitmap.height) {  // preview follows the camera size
+      preview.width = bitmap.width; preview.height = bitmap.height;
+    }
+    if (!xrSession) { previewCtx.drawImage(bitmap, 0, 0, preview.width, preview.height); drawStatus(previewCtx, 0, preview.height - 60, preview.width, 60); }
   };
 }
 connect();
@@ -272,7 +275,9 @@ function onXRFrame(time, frame) {
   for (const view of viewer.views) {
     const vp = layer.getViewport(view);
     gl.viewport(vp.x, vp.y, vp.width, vp.height);
-    if (look.camera) drawQuad(videoTex, quadMatrix(view.projectionMatrix, 0, 0.05, -1.2, 0.6, 0.45));
+    // the video quad keeps the image aspect (848x480: 0.80 x 0.45 m at 1.2 m)
+    const aspect = latestImage ? latestImage.width / latestImage.height : 4 / 3;
+    if (look.camera) drawQuad(videoTex, quadMatrix(view.projectionMatrix, 0, 0.05, -1.2, 0.45 * aspect, 0.45));
     drawQuad(overlayTex, quadMatrix(view.projectionMatrix, 0, -0.48, -1.2, 0.6, 0.094));
   }
 }

@@ -400,8 +400,18 @@ def test_http_guard(console):
 # -- simplified flow (body view) -----------------------------------------------------------------------
 
 def test_quest_view_fake_is_a_test_pattern_without_the_pose_server():
-    assert units.quest_view(ARM4090, "fake").argv[-2:] == ("--test-pattern", "--no-pose-server")
-    assert units.quest_view(ARM4090, "real").argv[-1] == "quest-view"
+    fake = units.quest_view(ARM4090, "fake").argv
+    assert "--test-pattern" in fake and "--no-pose-server" in fake
+    real = units.quest_view(ARM4090, "real").argv
+    assert "--test-pattern" not in real and "--no-pose-server" not in real
+
+
+def test_quest_view_sends_the_size_the_recorder_expects():
+    # 10.11: 848x480 keeps the D435i colour sensor's full width (70 deg); 640x480 cropped it to 55.7 deg
+    assert ARM4090.quest_view_size == (848, 480)
+    for mode in ("real", "fake"):
+        argv = units.quest_view(ARM4090, mode).argv
+        assert argv[argv.index("--width") + 1] == "848" and argv[argv.index("--height") + 1] == "480"
 
 
 def test_record_takes_the_head_camera_from_quest_view(tmp_path):

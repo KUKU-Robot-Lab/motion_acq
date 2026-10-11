@@ -82,6 +82,14 @@ class Station:
         return None if value is None else str(int(value))
 
     @property
+    def quest_view_size(self) -> tuple[int, int] | None:
+        """(width, height) of the station's quest-view camera, so quest-view sends what the recorder expects."""
+        for cam in (self.rig.get("cameras") or {}).values():
+            if isinstance(cam, dict) and cam.get("type") == "quest-view":
+                return int(cam["width"]), int(cam["height"])
+        return None
+
+    @property
     def cameras(self) -> tuple[str, ...]:
         """Cameras the recorder captures (arm4090: head, frames from quest-view)."""
         return tuple(str(name) for name in (self.rig.get("cameras") or {}))
@@ -181,6 +189,9 @@ def quest_view(station: Station, mode: str = "real") -> Launch:
     """Real: head camera + pose server for the headset page. Fake: a moving test pattern only
     (the mock sender keeps TCP 65432), so a fake recording still has video."""
     argv = (MACQ, "quest-view") + (() if _real(mode) else ("--test-pattern", "--no-pose-server"))
+    size = station.quest_view_size
+    if size:
+        argv += ("--width", str(size[0]), "--height", str(size[1]))
     return Launch("quest_view", "헤드셋 영상 서버", argv, _base_env(station), stop_grace_s=5.0)
 
 

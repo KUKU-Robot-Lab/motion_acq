@@ -161,7 +161,7 @@ def test_frame_stream_reaches_the_recorder_camera():
                              "--test-pattern", "--no-pose-server", "--fps", "30"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        cam = _make_camera("quest-view", index_or_path=f"127.0.0.1:{frames}", fps=30, width=640, height=480)
+        cam = _make_camera("quest-view", index_or_path=f"127.0.0.1:{frames}", fps=30, width=848, height=480)
         assert isinstance(cam, QuestViewCameraDevice)
         deadline = _time.monotonic() + 15
         while True:
@@ -175,7 +175,7 @@ def test_frame_stream_reaches_the_recorder_camera():
         before = _time.monotonic_ns()
         _time.sleep(0.3)
         sample = cam.sample_at(_time.monotonic_ns())
-        assert sample.image.shape == (480, 640, 3)
+        assert sample.image.shape == (480, 848, 3)
         assert sample.capture_time_ns > before - 200_000_000
         # the pattern's box is BGR (0, 200, 255): in RGB the first channel is 255 and the last 0 there
         box = (sample.image[:, :, 0] == 255) & (sample.image[:, :, 1] == 200)
