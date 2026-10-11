@@ -35,6 +35,10 @@ sim = [
     "viser>=1.0.0",
     "mujoco>=3.9.0",
 ]
+voice = [
+    "edge-tts>=7.0",
+    "miniaudio>=1.61",
+]
 
 [project.scripts]
 macq = "motion_acq.scripts.cli:main"

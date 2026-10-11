@@ -68,3 +68,96 @@ def test_over_ssh_the_voice_goes_to_the_desktop_session(monkeypatch):
     assert speech._session_env()["XDG_RUNTIME_DIR"] == f"/run/user/{speech.os.getuid()}"
     monkeypatch.setenv("XDG_RUNTIME_DIR", "/elsewhere")
     assert speech._session_env()["XDG_RUNTIME_DIR"] == "/elsewhere"
+
+
+# ---- neural voice (10.12 user: espeak's Korean is hard to understand) ----------------------------
+
+
+@pytest.fixture()
+def neural(monkeypatch, tmp_path):
+    """Neural voice on, synthesis replaced by a tone, playback recorded."""
+    import numpy as np
+
+    monkeypatch.delenv("MACQ_TTS", raising=False)
+    monkeypatch.setattr(speech.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(speech, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(speech, "_offline_until", 0.0)
+    made, played = [], []
+
+    def fake_wav(text, voice):
+        path = speech.cache_path(text, voice)
+        if not path.exists():
+            made.append(text)
+            import wave
+            with wave.open(str(path), "wb") as out:
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(speech.SAMPLE_RATE)
+                out.writeframes(np.zeros(240, dtype=np.int16).tobytes())
+        return path
+
+    class Proc:
+        def __init__(self, cmd, **kw):
+            played.append(cmd)
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(speech, "neural_wav", fake_wav)
+    monkeypatch.setattr(speech.subprocess, "Popen", Proc)
+    monkeypatch.setattr(speech.subprocess, "run", lambda cmd, **kw: played.append(list(cmd)))
+    return made, played
+
+
+def test_korean_uses_the_neural_voice_and_reuses_its_cache(neural):
+    made, played = neural
+    speech.say("정면 저장", lang="ko", blocking=True)
+    speech.say("정면 저장", lang="ko", blocking=True)
+    assert made == ["정면 저장"]
+    paplays = [cmd for cmd in played if cmd[0] == "paplay"]
+    assert len(paplays) == 2 and paplays[0][1].endswith(".wav")
+
+
+def test_without_the_network_korean_falls_back_to_espeak(monkeypatch, neural):
+    _, played = neural
+    monkeypatch.setattr(speech, "neural_wav", lambda text, voice: None)
+    speech.say("정면 저장", lang="ko", blocking=True)
+    assert ["spd-say", "-l", "ko", "정면 저장", "--wait"] in played
+
+
+def test_english_and_forced_espeak_keep_the_old_voice(monkeypatch, neural):
+    assert speech.neural_voice(None) is None
+    monkeypatch.setenv("MACQ_TTS", "espeak")
+    assert speech.neural_voice("ko") is None
+
+
+def test_prefetch_makes_each_prompt_once(neural):
+    made, _ = neural
+    assert speech.prefetch(["십", "구", "십"]) == 3
+    assert made == ["십", "구"]
+
+
+def test_a_failed_synthesis_waits_before_trying_the_network_again(monkeypatch, tmp_path):
+    import sys
+    import types
+
+    monkeypatch.delenv("MACQ_TTS", raising=False)
+    monkeypatch.setattr(speech, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(speech, "_offline_until", 0.0)
+    calls = []
+
+    class Communicate:
+        def __init__(self, text, voice):
+            calls.append(text)
+
+        async def stream(self):
+            raise OSError("no network")
+            yield  # pragma: no cover
+
+    monkeypatch.setitem(sys.modules, "edge_tts", types.SimpleNamespace(Communicate=Communicate))
+    assert speech.neural_wav("하나", "ko-KR-SunHiNeural") is None
+    assert speech.neural_wav("둘", "ko-KR-SunHiNeural") is None
+    assert calls == ["하나"]  # no second network wait within OFFLINE_RETRY_S
