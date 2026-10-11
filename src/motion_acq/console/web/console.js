@@ -109,6 +109,8 @@ function nodeQuest(s) {
   const qv = s.quest_view;
   const n = { title: "머리", dev: "Quest 3", actions: "" };
   const connect = btn("연결", { "data-action": "quest:connect" }, "primary");
+  // 10.11 user: set up without wearing the headset (proximity sensor off + wake, then connect + VR)
+  const offhead = btn("안 쓰고 시작", { "data-action": "quest:offhead", title: "근접 센서를 끄고 헤드셋을 깨운 뒤 연결 + VR 시작 (되돌리기: 자세히 > 근접 센서 원래대로)" }, "ghost");
   if (jobRunning("quest")) return { ...n, tone: "live", state: "연결 중...", sub: "" };
   if (!real()) {
     if (running("mock_quest")) return { ...n, tone: "ok", state: "가짜 Quest", sub: running("quest_view") ? "테스트 영상 송출" : "" };
@@ -118,14 +120,14 @@ function nodeQuest(s) {
   if (s.quest_source === "external") return { ...n, tone: "bad", state: "콘솔 밖 프로그램이 65432 사용", sub: "자세히 보기" };
   if (!running("quest_view")) {
     return { ...n, tone: usb ? "mute" : "bad", state: usb ? "꺼짐" : (q.text || "확인 중"),
-             sub: q.awake === false ? "헤드셋 잠듦: 쓰면 깬다" : jobLine("quest"), actions: connect };
+             sub: q.awake === false ? "헤드셋 잠듦: 쓰면 깬다" : jobLine("quest"), actions: connect + (usb ? offhead : "") };
   }
   const last = qv ? parseFloat(qv.last) : NaN;
   if (qv && isFinite(last) && last < 3) {
     return { ...n, tone: "ok", state: "영상 송출 중", sub: `자세 받는 곳 ${qv.clients} · 프레임 ${qv.frames}` };
   }
   return { ...n, tone: "warn", state: "페이지 열림: 헤드셋을 쓰고 [시작]", sub: jobLine("quest"),
-           actions: btn("시작", { "data-action": "quest:start" }, "go") };
+           actions: btn("시작", { "data-action": "quest:start" }, "go") + offhead };
 }
 
 function nodeNeck(s) {

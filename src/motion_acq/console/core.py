@@ -356,9 +356,9 @@ class Console:
     # -- tasks and sequences --------------------------------------------------------------------
     def action(self, name: str, *, confirm: bool = False, token: str = "") -> dict:
         kind, _, arg = name.partition(":")
-        if kind == "quest" and arg in ("app", "view", "connect", "start"):
+        if kind == "quest" and arg in ("app", "view", "connect", "start", "offhead"):
             fn = {"app": self._quest_app, "view": self._quest_view, "connect": self._quest_connect,
-                  "start": self._quest_start}[arg]
+                  "start": self._quest_start, "offhead": self._quest_offhead}[arg]
             return self._job("quest", fn)
         if kind == "glove" and arg == "connect":
             return self._job("glove", self._glove_connect)
@@ -529,6 +529,21 @@ class Console:
         """Head camera in the headset in one go: [연결] then [시작]."""
         self._quest_users_check()
         return f"{self._quest_connect()} / {self._quest_start()}"
+
+    def _quest_offhead(self) -> str:
+        """[안 쓰고 시작] (10.11 user): proximity sensor off + wake, then [연결] if needed and [시작].
+
+        For setting up without wearing the headset; [근접 센서 원래대로] in 자세히 undoes it."""
+        if self.mode == "fake":
+            return "fake: 헤드셋 없음"
+        if self._wait_exit(self._spawn_task(units.quest_task(self.station, "unworn")), 20) != 0:
+            raise RuntimeError("헤드셋이 깨지 않았다: 전원 버튼을 한 번 누르고 다시")
+        self._quest_users_check()
+        steps = ["근접 센서 끔"]
+        if not self.sup.is_running("quest_view"):
+            steps.append(self._quest_connect())
+        steps.append(self._quest_start())
+        return " / ".join(steps)
 
     def _quest_connect(self) -> str:
         """[연결]: real = quest-view (camera + pose server) and the page in the headset; fake = mock + pattern."""

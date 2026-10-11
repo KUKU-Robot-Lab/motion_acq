@@ -431,6 +431,24 @@ def test_quest_source_follows_the_mode(console, monkeypatch):
     assert gates.quest_source(console) == "view"
 
 
+def test_quest_offhead_wakes_then_connects_and_starts(console, monkeypatch):
+    # 10.11 user: [안 쓰고 시작] sets up without wearing the headset
+    console.set_mode("real")
+    calls = []
+    monkeypatch.setattr(console, "_spawn_task", lambda launch: calls.append(launch.argv[-1]) or launch.key)
+    monkeypatch.setattr(console, "_wait_exit", lambda key, timeout_s: 0)
+    monkeypatch.setattr(console, "_quest_users_check", lambda: None)
+    monkeypatch.setattr(console.sup, "is_running", lambda key: False)
+    monkeypatch.setattr(console, "_quest_connect", lambda: calls.append("connect") or "connect")
+    monkeypatch.setattr(console, "_quest_start", lambda: calls.append("start") or "start")
+    assert console._quest_offhead() == "근접 센서 끔 / connect / start"
+    assert calls == ["unworn", "connect", "start"]
+    calls.clear()
+    monkeypatch.setattr(console.sup, "is_running", lambda key: key == "quest_view")
+    console._quest_offhead()
+    assert calls == ["unworn", "start"]  # the page is already open
+
+
 def test_webxr_arm_needs_the_direction_check(console, monkeypatch):
     console.set_mode("real")
     data = _fresh({"can": {"right": {"port": "can0", "up": True, "fd": True}}})

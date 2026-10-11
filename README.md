@@ -138,6 +138,7 @@ rig uses `quest_ip: 127.0.0.1`. adb (Google platform-tools) and the pinned APK
 scripts/quest_usb.sh status    # device authorized? app installed? forwards
 scripts/quest_usb.sh install   # first time per Quest
 scripts/quest_usb.sh forward   # after every replug or adb restart
+scripts/quest_usb.sh unworn    # set up off the head: proximity sensor off + wake (console: 머리 [안 쓰고 시작]); undo: worn
 macq tracking pose --device meta
 ```
 
