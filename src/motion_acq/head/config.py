@@ -112,6 +112,7 @@ def head_config_from_section(data: dict[str, Any], *, from_station: bool = True)
         max_velocity_deg_s=float(limits.get("max_velocity_deg_s", 60.0)),
         max_acceleration_deg_s2=float(limits.get("max_acceleration_deg_s2", 300.0)),
         tilt_home_pitch_deg=_home_pitch(data["tilt"]),
+        tilt_down_gain=float(data["tilt"].get("down_gain", 1.0)),
     )
     return HeadConfig(
         port=str(data.get("port") or ""),

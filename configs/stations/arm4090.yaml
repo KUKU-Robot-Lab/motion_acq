@@ -92,6 +92,7 @@ head:
     # = -(encoder + 1.2) within 1 deg; a bolt rubs from 54 to 40 (at most -165 mA, lag 1.6 deg),
     # which the user accepts.
     home_pitch_deg: -72.8
+    down_gain: 2.0  # 10.12 user: below level the camera tilts 2x the HMD (36 deg down -> 72, the table)
   motor:
     model_number: 1240        # XC330-M288-T
     operating_mode: 3         # position control

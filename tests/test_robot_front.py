@@ -201,6 +201,39 @@ def test_with_a_home_pitch_the_tilt_follows_the_absolute_head_pitch():
     assert step.command_tilt_deg == pytest.approx(71.8 + 15.0)  # the down window (34 deg below level)
 
 
+def test_below_level_the_camera_tilts_by_the_down_gain():
+    """10.12 user: the solo run looked at most 36 deg down, the table needs ~73: down x2, up 1:1."""
+    rt = HeadRetargeter(make_config(
+        tilt=AxisConfig(home_deg=71.8, range_deg=15.0, range_pos_deg=75.8, sign=-1.0),
+        tilt_home_pitch_deg=-72.8, tilt_down_gain=2.0))
+    assert rt.anchor(pose_from_yaw_pitch(0.0, 0.0), (-2.9, 71.8), 0.0, front_pose7=pose_from_yaw_pitch(0.0, 0.0))
+    step = rt.step(pose_from_yaw_pitch(0.0, 0.0), True, 0.02)  # level stays level
+    assert step.command_tilt_deg == pytest.approx(71.8 - 72.8, abs=1e-3)
+    step = rt.step(pose_from_yaw_pitch(0.0, -18.0), True, 0.04)  # 18 down -> camera 36 down
+    assert step.command_tilt_deg == pytest.approx(71.8 - 72.8 + 36.0, abs=1e-3)
+    step = rt.step(pose_from_yaw_pitch(0.0, -36.4), True, 0.06)  # 36.4 down -> home, the table view
+    assert step.command_tilt_deg == pytest.approx(71.8, abs=1e-3)
+    rt.step(pose_from_yaw_pitch(0.0, -10.0), True, 0.08)  # (a 30 deg jump would re-anchor)
+    step = rt.step(pose_from_yaw_pitch(0.0, 2.0), True, 0.10)  # up stays 1:1
+    assert step.command_tilt_deg == pytest.approx(71.8 - 72.8 - 2.0, abs=1e-3)
+
+
+def test_the_down_gain_needs_a_robot_front():
+    """Without a front (anchor-relative mode) the gain is not applied."""
+    rt = HeadRetargeter(make_config(tilt_home_pitch_deg=-72.8, tilt_down_gain=2.0))
+    assert rt.anchor(pose_from_yaw_pitch(0.0, 0.0), (0.0, 0.0), 0.0)
+    step = rt.step(pose_from_yaw_pitch(0.0, -10.0), True, 0.02)
+    assert step.rel_pitch_deg == pytest.approx(-10.0, abs=1e-6)
+
+
+def test_the_down_gain_is_bounded():
+    from motion_acq.head.retarget import RetargetConfig
+
+    with pytest.raises(ValueError):
+        RetargetConfig(pan=AxisConfig(home_deg=0.0, range_deg=20.0), tilt=AxisConfig(home_deg=0.0, range_deg=20.0),
+                       tilt_down_gain=0.5)
+
+
 def test_the_station_neck_uses_the_absolute_pitch():
     import yaml
 
@@ -210,6 +243,7 @@ def test_the_station_neck_uses_the_absolute_pitch():
     data = yaml.safe_load((root / "configs" / "stations" / "arm4090.yaml").read_text())["head"]
     config = head_config_from_section(data)
     assert config.retarget.tilt_home_pitch_deg == pytest.approx(-72.8)  # measured 10.12
+    assert config.retarget.tilt_down_gain == pytest.approx(2.0)  # 10.12 user
     assert config.tilt_window[0] < config.retarget.tilt.home_deg < config.tilt_window[1]
 
 

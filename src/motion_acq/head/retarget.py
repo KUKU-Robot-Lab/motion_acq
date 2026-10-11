@@ -127,6 +127,18 @@ class RetargetConfig:
     # operator's absolute pitch: looking level puts the camera level, looking 30 deg down puts it
     # 30 deg down. None: relative to the pitch the front was taken with.
     tilt_home_pitch_deg: float | None = None
+    # 10.12 user: with tilt_home_pitch_deg, the camera pitch below level is this many times the
+    # HMD's (above level stays 1:1). The first solo run looked at most 36 deg down while the
+    # table needs the camera ~73 deg down; 2.0 maps 36 -> 72.
+    tilt_down_gain: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not 1.0 <= self.tilt_down_gain <= 3.0:
+            raise ValueError(f"tilt_down_gain {self.tilt_down_gain} must be within [1, 3].")
+
+    def camera_pitch_deg(self, hmd_pitch_deg: float) -> float:
+        """Absolute mode: the camera pitch the HMD pitch asks for (down scaled by tilt_down_gain)."""
+        return hmd_pitch_deg * self.tilt_down_gain if hmd_pitch_deg < 0.0 else hmd_pitch_deg
 
     def with_axes(self, axes: str) -> RetargetConfig:
         """Restrict to 'pan', 'tilt' or 'both' (staged hardware tests)."""
@@ -243,7 +255,7 @@ class HeadRetargeter:
             if front is None or front[0] is None:
                 return False
             pitch_ref = front[1] if self.config.tilt_home_pitch_deg is None else self.config.tilt_home_pitch_deg
-            rel_yaw, rel_pitch = wrap_deg(yaw - front[0]), pitch - pitch_ref
+            rel_yaw, rel_pitch = wrap_deg(yaw - front[0]), self._pitch_in(pitch, absolute=True) - pitch_ref
             self._anchor_yaw, self._anchor_pitch = front[0], pitch_ref
             self._yaw_unwrapped = front[0] + rel_yaw
             self._last_raw_yaw, self._last_pitch = yaw, pitch
@@ -254,6 +266,12 @@ class HeadRetargeter:
         self._hold_since = None
         self.state = HeadState.RUNNING
         return True
+
+    def _pitch_in(self, pitch: float, *, absolute: bool) -> float:
+        """The HMD pitch the tilt follows: down-scaled only in absolute mode (robot front + home pitch)."""
+        if absolute and self.config.tilt_home_pitch_deg is not None:
+            return self.config.camera_pitch_deg(pitch)
+        return pitch
 
     def _hold(self, t_s: float) -> HeadStep:
         if self._hold_since is None:
@@ -304,7 +322,7 @@ class HeadRetargeter:
             self._last_raw_yaw = raw_yaw
         self._last_pitch = pitch
         rel_yaw = self._yaw_unwrapped - self._anchor_yaw
-        rel_pitch = pitch - self._anchor_pitch
+        rel_pitch = self._pitch_in(pitch, absolute=self.front is not None) - self._anchor_pitch
         pan_cmd = self._pan.step(rel_yaw, t_s, dt)
         tilt_cmd = self._tilt.step(rel_pitch, t_s, dt)
         return HeadStep(
