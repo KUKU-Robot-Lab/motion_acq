@@ -71,8 +71,9 @@ def _gloves(context):
     if LaunchConfiguration("sdk").perform(context) == "true":
         from launch_ros.actions import Node
 
+        # respawn: a dead reader leaves the hand nodes without a glove (10.11: an SDK exception killed it)
         actions.append(Node(package="motion_acq_nova2", executable="nova2_sdk", parameters=[{"side": side}],
-                            output="screen"))
+                            output="screen", respawn=True, respawn_delay=1.0))
     return actions
 
 

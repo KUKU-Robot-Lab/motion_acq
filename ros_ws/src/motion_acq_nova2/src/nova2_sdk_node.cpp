@@ -23,6 +23,7 @@
 #include <SenseGlove/Core/Vect3D.hpp>
 
 #include <chrono>
+#include <exception>
 #include <memory>
 #include <string>
 #include <vector>
@@ -101,7 +102,15 @@ private:
   void tick()
   {
     for (auto & glove : gloves_) {
-      read(*glove);
+      // 10.11 arm4090: SGCore threw std::invalid_argument (stof) while a glove came back ("no hand pose yet"
+      // -> "reading") and the uncaught exception killed the node; a bad frame is skipped instead
+      try {
+        read(*glove);
+      } catch (const std::exception & exc) {
+        glove->connected = false;
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000, "%s glove: SDK read failed (%s), retrying", glove->side.c_str(), exc.what());
+      }
     }
   }
 
