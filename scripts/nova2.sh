@@ -88,6 +88,7 @@ cmd_status() {
 connect_one() {
   local side="$1" mac="$2" name="${3//_/ }"
   if is_connected "$mac"; then echo "$side $name: already connected"; return 0; fi
+  need_controller
   bluetoothctl power on >/dev/null
   if ! bluetoothctl info "$mac" >/dev/null 2>&1; then
     echo "$side $name: scanning ${SCAN_TIMEOUT_S} s (glove on, LED lit)..."
@@ -183,7 +184,14 @@ cmd_stop() {
   echo "glove driver stopped (group $pid)"
 }
 
+need_controller() {
+  # 10.11: with the USB Bluetooth dongle unplugged, "power on" failed silently under set -e
+  [[ -n "$(bluetoothctl list 2>/dev/null)" ]] ||
+    die "no Bluetooth adapter on this PC (bluetoothctl list is empty): plug the USB Bluetooth dongle back in (arm4090: Realtek 0bda:a729)"
+}
+
 cmd_up() {
+  need_controller
   bluetoothctl power on >/dev/null
   while read -r side serial mac name; do bluetoothctl trust "$mac" >/dev/null 2>&1 || true; done < <(gloves "$1")
   cmd_sensecom
