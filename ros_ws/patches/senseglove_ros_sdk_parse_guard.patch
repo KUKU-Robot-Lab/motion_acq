@@ -1,0 +1,34 @@
+--- a/senseglove/senseglove_control/senseglove_hardware/src/senseglove_robot.cpp	2026-10-11 18:31:29.432548362 +0900
++++ b/senseglove/senseglove_control/senseglove_hardware/src/senseglove_robot.cpp	2026-10-11 18:31:29.451548108 +0900
+@@ -4,6 +4,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <exception>
+ 
+ #include <senseglove_hardware/senseglove_robot.hpp>
+ 
+@@ -396,8 +397,21 @@
+       break;
+ 
+     case GloveType::Nova2:
+-      gloveUpdate = nova2glovePtr_->GetSensorData(nova2SensorData_);
+-      handUpdate = nova2glovePtr_->GetHandPose(handModel_, handPose_);
++      // motion_acq 10.11: SGCore parses the glove sensor string with std::stof and throws
++      // std::invalid_argument on a corrupt sample, which aborted ros2_control_node (the glove
++      // stopped for good, left and right, several times a day). Skip that sample instead.
++      try
++      {
++        gloveUpdate = nova2glovePtr_->GetSensorData(nova2SensorData_);
++        handUpdate = nova2glovePtr_->GetHandPose(handModel_, handPose_);
++      }
++      catch (const std::exception& e)
++      {
++        RCLCPP_WARN_THROTTLE(logger, *rclcpp::Clock::make_shared(), 2'000,
++                             "Nova 2 sample skipped (SGCore threw: %s)", e.what());
++        gloveUpdate = false;
++        handUpdate = false;
++      }
+       if (gloveUpdate && handUpdate)
+       {
+         handPoseAngles_ = handPose_.GetHandAngles();
