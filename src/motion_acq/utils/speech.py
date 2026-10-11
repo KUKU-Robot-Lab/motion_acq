@@ -9,11 +9,27 @@ a terminal). No extra Python dependency.
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import re
 import subprocess
 
 log = logging.getLogger("handumi.speech")
+
+
+def _session_env() -> dict[str, str]:
+    """The environment with the login session's runtime dir (10.11).
+
+    A process started over ssh has no XDG_RUNTIME_DIR, so spd-say would spawn
+    its own speech-dispatcher that cannot reach the desktop's audio; point it
+    at the user's /run/user/<uid>, where the desktop's dispatcher listens.
+    """
+    env = dict(os.environ)
+    if not env.get("XDG_RUNTIME_DIR"):
+        runtime = f"/run/user/{os.getuid()}"
+        if os.path.isdir(runtime):
+            env["XDG_RUNTIME_DIR"] = runtime
+    return env
 
 
 def say(
@@ -27,7 +43,7 @@ def say(
     system = platform.system()
     if interrupt and system == "Linux":
         try:
-            subprocess.run(["spd-say", "-C"], check=False, timeout=2.0)
+            subprocess.run(["spd-say", "-C"], check=False, timeout=2.0, env=_session_env())
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -48,12 +64,14 @@ def say(
         log.warning("Unsupported OS for text-to-speech (%s); skipping.", system)
         return
 
+    env = _session_env() if system == "Linux" else None
     try:
         if blocking:
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, env=env)
         else:
             subprocess.Popen(
-                cmd, creationflags=subprocess.CREATE_NO_WINDOW if system == "Windows" else 0
+                cmd, env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW if system == "Windows" else 0,
             )
     except FileNotFoundError:
         log.warning(

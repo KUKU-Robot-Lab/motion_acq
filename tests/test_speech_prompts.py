@@ -34,6 +34,7 @@ def spoken(monkeypatch):
     calls: list[list[str]] = []
     monkeypatch.setattr(speech.platform, "system", lambda: "Linux")
     monkeypatch.setattr(speech.subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
     monkeypatch.setattr(speech.subprocess, "Popen", lambda cmd, **kw: calls.append(list(cmd)))
     return calls
 
@@ -59,3 +60,11 @@ def test_the_sdk_calibration_steps_are_read_once_each():
     assert sdk_calibration_speech("left", move, move.replace("State:", "State :")) is None
     assert sdk_calibration_speech("right", move, done) == "오른손 장갑 보정 완료"
     assert sdk_calibration_speech("right", done, "Unknown | Calibration State: All Sensors Moved") is None
+
+
+def test_over_ssh_the_voice_goes_to_the_desktop_session(monkeypatch):
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(speech.os.path, "isdir", lambda path: True)
+    assert speech._session_env()["XDG_RUNTIME_DIR"] == f"/run/user/{speech.os.getuid()}"
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/elsewhere")
+    assert speech._session_env()["XDG_RUNTIME_DIR"] == "/elsewhere"
