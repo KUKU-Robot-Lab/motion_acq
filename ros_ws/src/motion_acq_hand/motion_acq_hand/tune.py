@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import collections
 import math
+import signal
 import statistics
 import time
 import tkinter as tk
@@ -44,7 +45,7 @@ from motion_acq.hand.retarget import DEFAULT_RETARGET, load_hand_retarget_config
 CAPTURE_S = 0.5
 THUMB_SIGNALS = ("thumb_brake", "thumb_mcp", "thumb_pip", "thumb_tip_x", "thumb_tip_y", "thumb_tip_z")
 POINT_COLORS = ("#1f77b4", "#2ca02c", "#d62728")
-DIAL_W, DIAL_H, BAR_W, BAR_H = 230, 130, 420, 46
+DIAL_W, DIAL_H, BAR_W, BAR_H = 190, 108, 360, 42
 
 
 class GloveListener(Node):
@@ -84,23 +85,23 @@ def _deg(q: float) -> float:
 class JointRow:
     """One robot joint: dial, glove bar, source, and its points."""
 
-    def __init__(self, app: TuneApp, parent: tk.Widget, joint: str, row: int) -> None:
+    def __init__(self, app: TuneApp, parent: tk.Widget, joint: str, row: int, column: int) -> None:
         self.app, self.joint = app, joint
         self.lo, self.hi = app.config.limits_rad[joint]
         m = app.start_map(joint)
         self.glove: list[float | None] = list(m.glove) if m else [None] * len(POINTS[joint])
         frame = ttk.LabelFrame(parent, text=JOINT_KO[joint], padding=4)
-        frame.grid(row=row, column=0, sticky="ew", pady=2)
+        frame.grid(row=row, column=column, sticky="new", padx=3, pady=2)
         self.dial = tk.Canvas(frame, width=DIAL_W, height=DIAL_H, bg="white", highlightthickness=0)
         self.dial.grid(row=0, column=0, rowspan=3, padx=(0, 8))
         top = ttk.Frame(frame)
         top.grid(row=0, column=1, sticky="w")
         ttk.Label(top, text="장갑 값:").pack(side="left")
         self.source = tk.StringVar(value=m.source if m else SOURCE_CHOICES[joint][0])
-        box = ttk.Combobox(top, textvariable=self.source, values=SOURCE_CHOICES[joint], width=22, state="readonly")
+        box = ttk.Combobox(top, textvariable=self.source, values=SOURCE_CHOICES[joint], width=20, state="readonly")
         box.pack(side="left", padx=4)
         box.bind("<<ComboboxSelected>>", lambda _e: self._source_changed())
-        self.now_label = ttk.Label(top, text="", width=34)
+        self.now_label = ttk.Label(top, text="", width=30)
         self.now_label.pack(side="left", padx=6)
         self.bar = tk.Canvas(frame, width=BAR_W, height=BAR_H, bg="white", highlightthickness=0)
         self.bar.grid(row=1, column=1, sticky="w")
@@ -110,7 +111,7 @@ class JointRow:
         self.glove_labels: list[ttk.Label] = []
         targets = [m.robot[i] for i in range(len(POINTS[joint]))] if m else app.default_robot(joint)
         for i, (_, _, ko) in enumerate(POINTS[joint]):
-            ttk.Label(pts, text=f"● {ko}", foreground=POINT_COLORS[i]).grid(row=i, column=0, sticky="w")
+            ttk.Label(pts, text=f"● {ko}", foreground=POINT_COLORS[i], width=8).grid(row=i, column=0, sticky="w")
             ttk.Label(pts, text="로봇").grid(row=i, column=1)
             var = tk.DoubleVar(value=round(_deg(targets[i]), 1))
             spin = ttk.Spinbox(pts, from_=round(_deg(self.lo), 1), to=round(_deg(self.hi), 1), increment=1.0,
@@ -118,7 +119,7 @@ class JointRow:
             spin.grid(row=i, column=2)
             ttk.Label(pts, text=f"° ({_deg(self.lo):.0f}~{_deg(self.hi):.0f})").grid(row=i, column=3, sticky="w")
             self.robot_deg.append(var)
-            lab = ttk.Label(pts, text="", width=16)
+            lab = ttk.Label(pts, text="", width=14)
             lab.grid(row=i, column=4, padx=6)
             self.glove_labels.append(lab)
             ttk.Button(pts, text="지금 자세로 기록", command=lambda k=i: self.capture(k)).grid(row=i, column=5)
@@ -254,30 +255,35 @@ class TuneApp:
         self.calibration = HandCalibration.load(path, side=side)
         self.reader = JoystickRetargeter(JoystickMap({}), self.config.home_rad, self.calibration.sweeps)
         self.dirty = False
+        self.stop_requested = False
         side_ko = "오른손" if side == "right" else "왼손"
         root.title(f"손가락 튜닝 (조이스틱) — {side_ko} — {path.name}")
         outer = ttk.Frame(root, padding=6)
         outer.pack(fill="both", expand=True)
         sweeps = "있음 (다른 손가락 간섭을 뺀 값)" if self.calibration.sweeps is not None else "없음 (장갑 값 그대로)"
-        ttk.Label(outer, text=f"보정 파일 {path}  ·  손가락별 맞춤 {sweeps}").grid(row=0, column=0, sticky="w")
-        ttk.Label(outer, text="점마다: 로봇 각도를 정하고, 장갑 손가락을 그 자세로 둔 채 [지금 자세로 기록]. "
-                              "바늘이 지금 로봇이 갈 각도입니다.", foreground="#555").grid(row=1, column=0, sticky="w")
-        self.rows = [JointRow(self, outer, j, 2 + i) for i, j in enumerate(JOINTS)]
-        thumb = ttk.LabelFrame(outer, text="엄지 장갑 값 (어느 값이 엄지 회전만 따라가는지 보기: 최소~최대는 [초기화] 부터)",
+        ttk.Label(outer, text=f"보정 파일 {path}  ·  손가락별 맞춤 {sweeps}").grid(row=0, column=0, columnspan=2,
+                                                                              sticky="w")
+        ttk.Label(outer, text="점마다: 로봇 각도(로봇이 움직일 수 있는 범위 안)를 정하고, 장갑 손가락을 그 자세로 둔 채 "
+                              "[지금 자세로 기록]. 바늘이 지금 로봇이 갈 각도입니다.",
+                  foreground="#555").grid(row=1, column=0, columnspan=2, sticky="w")
+        # left: the thumb's two joints and its glove values; right: the fingers
+        place = {"thumb_1": (2, 0), "thumb_2": (3, 0), "index_1": (2, 1), "middle_1": (3, 1), "ring_1": (4, 1)}
+        self.rows = [JointRow(self, outer, j, *place[j]) for j in JOINTS]
+        thumb = ttk.LabelFrame(outer, text="엄지 장갑 값 (엄지 회전만 따라가는 값 찾기, 최소~최대는 [초기화] 부터)",
                                padding=4)
-        thumb.grid(row=2 + len(JOINTS), column=0, sticky="ew", pady=2)
+        thumb.grid(row=4, column=0, sticky="new", padx=3, pady=2)
         self.thumb_labels = {}
         self.thumb_range: dict[str, list[float]] = {}
         for i, n in enumerate(THUMB_SIGNALS):
-            lab = ttk.Label(thumb, text=n, width=40, font=("TkFixedFont", 9))
-            lab.grid(row=i // 2, column=i % 2, sticky="w", padx=4)
+            lab = ttk.Label(thumb, text=n, width=38, font=("TkFixedFont", 9))
+            lab.grid(row=i, column=0, sticky="w", padx=4)
             self.thumb_labels[n] = lab
-        ttk.Button(thumb, text="초기화", command=self.thumb_range.clear).grid(row=0, column=2, rowspan=3, padx=6)
+        ttk.Button(thumb, text="초기화", command=self.thumb_range.clear).grid(row=0, column=1, rowspan=6, padx=6)
         bottom = ttk.Frame(outer)
-        bottom.grid(row=3 + len(JOINTS), column=0, sticky="ew", pady=(6, 0))
+        bottom.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         ttk.Button(bottom, text="저장", command=self.save).pack(side="left")
         ttk.Button(bottom, text="파일 다시 읽기", command=self.reload).pack(side="left", padx=4)
-        self.status_label = ttk.Label(bottom, text="", width=110)
+        self.status_label = ttk.Label(bottom, text="", width=100)
         self.status_label.pack(side="left", padx=8)
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.status("저장한 맵은 손 노드가 따라가기 중이 아닐 때 읽습니다 ([홈] 뒤 [따라가기]).")
@@ -297,6 +303,9 @@ class TuneApp:
         self.status_label.config(text=text, foreground="#c00000" if error else "#000")
 
     def tick(self) -> None:
+        if self.stop_requested:  # Ctrl+C / SIGTERM (handled here: Tk would swallow a KeyboardInterrupt)
+            self.root.destroy()
+            return
         for _ in range(20):
             rclpy.spin_once(self.node, timeout_sec=0.0)
         signals = self.node.latest()
@@ -367,11 +376,15 @@ def main(argv: list[str] | None = None) -> None:
     if not path.exists():
         raise SystemExit(f"{path} 이 없습니다: 먼저 [보정] 을 하세요")
     topic = args.glove_topic or glove_topic(args.glove_serial or load_gloves()[side].serial, side)
-    rclpy.init()
+    from rclpy.signals import SignalHandlerOptions
+
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = GloveListener(topic, side)
     try:
         root = tk.Tk()
         app = TuneApp(root, node, path, side, args.retarget_config)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda *_: setattr(app, "stop_requested", True))
         root.after(40, app.tick)
         root.mainloop()
     finally:
