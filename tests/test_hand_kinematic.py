@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from hand_fixtures import CONFIG, make_calibration
+from hand_fixtures import KINEMATIC as CONFIG, make_calibration
 
 from motion_acq.hand.calibration import align_open_hand, rezero
 from motion_acq.hand.fk import TipFk

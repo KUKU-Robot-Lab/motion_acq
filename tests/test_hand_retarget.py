@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from hand_fixtures import CONFIG, make_calibration
+from hand_fixtures import EXAMPLES as CONFIG, make_calibration
 
 from motion_acq.hand.calibration import CalibrationError, HandCalibration, rezero
 from motion_acq.hand.nova2 import (

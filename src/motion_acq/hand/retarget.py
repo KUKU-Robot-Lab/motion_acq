@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import yaml
 
@@ -19,6 +19,7 @@ from motion_acq.filters import OneEuroFilter, RateLimiter
 from motion_acq.hand.calibration import HandCalibration
 from motion_acq.hand.admittance import AdmittanceConfig, admittance_config
 from motion_acq.hand.feedback import FeedbackConfig, feedback_config
+from motion_acq.hand.flexion import FLEX_INPUTS, FlexionConfig, FlexionRetargeter, flexion_config
 from motion_acq.hand.grip_guard import GripGuardConfig, grip_guard_config
 from motion_acq.hand.kinematic import KinematicConfig, KinematicRetargeter, TipTables, points_from_signals, table_path
 from motion_acq.hand.rh56f1 import Rh56f1Map
@@ -55,7 +56,10 @@ class HandRetargetConfig:
     # policies); angle_set: plain position (the motion_acq admittance can then run here instead)
     driver_command: str = "angle_target"
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
-    method: str = "examples"  # "kinematic": fingertip retargeting when the calibration has an alignment
+    # "examples": the example-pose map. "kinematic": fingertip retargeting when the calibration has an
+    # alignment. "flexion" (10.11): every finger and thumb_2 show the operator's bend (flexion.py),
+    # thumb_1 from the fingertip match (the example map without an alignment)
+    method: str = "examples"
     # reference at [켜기] (10.06 user): once the hand is home, the operator holds this example pose
     # (the robot hand's home shape: fingers straight, thumb and index in a C, 10.11 user) still for reference_s; that take
     # re-zeroes the map and re-aligns the hand model before following. 0 s: off.
@@ -63,6 +67,7 @@ class HandRetargetConfig:
     reference_s: float = 1.0
     reference_timeout_s: float = 10.0
     kinematic: KinematicConfig = field(default_factory=KinematicConfig)
+    flexion: FlexionConfig = field(default_factory=FlexionConfig)
     grip_guard: GripGuardConfig = field(default_factory=GripGuardConfig)
     admittance: AdmittanceConfig = field(default_factory=AdmittanceConfig)
 
@@ -82,6 +87,9 @@ class HandRetargetConfig:
     def closed_rad(self) -> dict[str, float]:
         """Flexion joints (home at their lower end): where they cannot curl further."""
         return {j: hi for j, (lo, hi) in self.limits_rad.items() if abs(self.home_rad[j] - lo) < 1e-9}
+
+
+METHODS = ("examples", "kinematic", "flexion")
 
 
 def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConfig:
@@ -128,8 +136,8 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
     ref = raw.get("reference") or {}
     if str(ref.get("pose", "flat")) not in examples:
         raise ValueError(f"reference pose {ref.get('pose')!r} is not an example pose")
-    if method not in ("examples", "kinematic"):
-        raise ValueError(f"method must be examples or kinematic, not {method!r}")
+    if method not in METHODS:
+        raise ValueError(f"method must be one of {METHODS}, not {method!r}")
     return HandRetargetConfig(
         groups=groups, examples=examples, limits_rad=limits, home_rad=home, rest_rad=rest,
         min_cutoff_hz=float(flt.get("min_cutoff_hz", 20.0)), beta=float(flt.get("beta", 0.0)),
@@ -145,6 +153,7 @@ def load_hand_retarget_config(path: Path = DEFAULT_RETARGET) -> HandRetargetConf
         reference_pose=str(ref.get("pose", "flat")), reference_s=float(ref.get("seconds", 1.0)),
         reference_timeout_s=float(ref.get("timeout_s", 10.0)),
         kinematic=KinematicConfig(**{k: float(v) for k, v in (raw.get("kinematic") or {}).items()}),
+        flexion=flexion_config(raw.get("flexion")),
         grip_guard=grip_guard_config(raw.get("grip_guard")),
         admittance=admittance_config(raw.get("admittance")),
     )
@@ -199,6 +208,7 @@ class HandRetargeter:
         self.missing_inputs: list[str] = []
         self.method_used: str | None = None
         self.kinematic = None
+        self.flexion: FlexionRetargeter | None = None
         self.set_calibration(calibration)
         self._last_t: float | None = None
         self._filters = {j: OneEuroFilter(config.min_cutoff_hz, config.beta, config.d_cutoff_hz)
@@ -213,9 +223,18 @@ class HandRetargeter:
             raise ValueError(f"calibration is for the {calibration.side} hand, not {self.side}")
         self.calibration = calibration
         self.kinematic = None
-        if self.config.method == "kinematic" and calibration.alignment is not None:
+        if self.config.method in ("kinematic", "flexion") and calibration.alignment is not None:
             self.kinematic = KinematicRetargeter(TipTables.load(table_path(self.side)), calibration.alignment,
                                                  self.config.kinematic)
+        self.flexion = None
+        if self.config.method == "flexion":
+            self.flexion = FlexionRetargeter(calibration.medians,
+                                             {j: self.config.limits_rad[j][1] for j in FLEX_INPUTS},
+                                             self.config.flexion)
+
+    def take_reference(self, samples: Sequence[Mapping[str, float]]) -> list[str]:
+        """The [켜기] reference take (straight hand) for the flexion map; the joints it set."""
+        return self.flexion.take_reference(samples) if self.flexion is not None else []
 
     def command(self) -> dict[str, float]:
         return {j: lim.position for j, lim in self._limiters.items()}
@@ -229,6 +248,8 @@ class HandRetargeter:
             self._limiters[joint].reset(value)
             self._filters[joint].reset(None)
         self._last_t = t_s
+        if self.flexion is not None:
+            self.flexion.reset()
         self._last_registers = self.hand_map.to_registers(self.command(), side=self.side)
         self.state = HandState.RUNNING
 
@@ -252,7 +273,14 @@ class HandRetargeter:
     def target(self, signals: Mapping[str, float]) -> tuple[dict[str, float], dict[str, float]]:
         """(raw map output, limited and amplitude-scaled target) for one glove sample."""
         points = points_from_signals(signals) if self.kinematic is not None else None
-        if points is not None:
+        if self.flexion is not None and self.flexion.ready(signals):
+            raw = self.flexion.solve(signals)
+            if points is not None and self.kinematic is not None:
+                raw["thumb_1"] = self.kinematic.solve(points, fixed=raw)["thumb_1"]
+            else:  # no hand model data / alignment: the example map's thumb rotation
+                raw["thumb_1"] = self.calibration.predict(signals)["thumb_1"]
+            self.missing_inputs, self.method_used = [], "flexion"
+        elif points is not None:
             ratio = self.calibration.thumb_bend_ratio(signals)
             closed = self.config.limits_rad["thumb_2"][1]
             raw = self.kinematic.solve(points, None if ratio is None else ratio * closed)
@@ -305,5 +333,9 @@ class HandRetargeter:
         self._last_registers = self.hand_map.to_registers(q_cmd, side=self.side)
         names = self.calibration.inputs if self.method_used == "examples" else [
             n for n in signals if n.startswith(("knuckle_", "tip_"))]
+        if self.method_used == "flexion":
+            names = list(dict.fromkeys(n for ins in FLEX_INPUTS.values() for n in ins)) + names
         inputs = {n: float(signals[n]) for n in names if n in signals}
+        if self.method_used == "flexion" and self.flexion is not None:
+            inputs.update(self.flexion.ranges())
         return HandStep(HandState.RUNNING, inputs, raw, q_target, q_cmd, self._last_registers)

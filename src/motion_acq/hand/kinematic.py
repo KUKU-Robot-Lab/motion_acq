@@ -180,11 +180,16 @@ class KinematicRetargeter:
             cost = cost + self.c.smooth_weight * (self.t.finger_q - self.prev[FINGER_JOINT[f]]) ** 2
         return int(np.argmin(cost))
 
-    def solve(self, points: Mapping[str, np.ndarray], thumb_bend: float | None = None) -> dict[str, float]:
-        """thumb_bend: the operator's thumb_2 (rad) from the glove's thumb joint, if known."""
+    def solve(self, points: Mapping[str, np.ndarray], thumb_bend: float | None = None,
+              fixed: Mapping[str, float] | None = None) -> dict[str, float]:
+        """thumb_bend: the operator's thumb_2 (rad) from the glove's thumb joint, if known.
+        fixed: joints set elsewhere (flexion.py: the fingers and thumb_2); only the rest is solved
+        (thumb_1 at that thumb_2, the pinch vectors from those fingers' tips)."""
         c = self.c
+        fixed = dict(fixed or {})
         tgt = {f: self.a.apply(points[tip_prefix(f)]) for f in ("thumb",) + FINGERS}
-        idx = {f: self._finger(f, tgt[f], None) for f in FINGERS}
+        idx = {f: (int(np.argmin(np.abs(self.t.finger_q - fixed[FINGER_JOINT[f]])))
+                   if FINGER_JOINT[f] in fixed else self._finger(f, tgt[f], None)) for f in FINGERS}
         tips = {f: self.t.finger_tips[f][idx[f]] for f in FINGERS}
         # thumb: its own tip plus the pinch vectors of the fingers it nears
         cost = np.sum((self.t.thumb_tips - tgt["thumb"]) ** 2, axis=1)
@@ -203,10 +208,15 @@ class KinematicRetargeter:
         if self.prev is not None:
             cost = cost + c.smooth_weight * np.sum(
                 (self.t.thumb_q - np.array([self.prev["thumb_1"], self.prev["thumb_2"]])) ** 2, axis=1)
+        if "thumb_2" in fixed:  # only the table rows at the grid value nearest the given thumb_2
+            grid = self.t.thumb_q[:, 1]
+            nearest = grid[int(np.argmin(np.abs(grid - fixed["thumb_2"])))]
+            cost = np.where(np.abs(grid - nearest) < 1e-9, cost, np.inf)
         k = int(np.argmin(cost))
         thumb_tip = self.t.thumb_tips[k]
         for f, (vec, w) in pinch.items():  # the pinched finger meets the thumb too
-            idx[f] = self._finger(f, tgt[f], (thumb_tip + vec, w))
+            if FINGER_JOINT[f] not in fixed:
+                idx[f] = self._finger(f, tgt[f], (thumb_tip + vec, w))
         q = {"thumb_1": float(self.t.thumb_q[k, 0]), "thumb_2": float(self.t.thumb_q[k, 1])}
         q.update({FINGER_JOINT[f]: float(self.t.finger_q[idx[f]]) for f in FINGERS})
         self.prev = q

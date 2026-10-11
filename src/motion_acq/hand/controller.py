@@ -450,7 +450,9 @@ class HandController:
                 self.retargeter.set_calibration(rezero(cal, window, cfg.reference_pose,
                                                        thumb_of(example.target if example else None)))
                 aligned = "aligned" if self.retargeter.calibration.alignment is not None else "no hand model"
-                self.reference_note = f"reference taken ({len(window)} samples, {aligned})"
+                opened = self.retargeter.take_reference(window)
+                flex = f", flexion open {len(opened)}/5" if self.retargeter.flexion is not None else ""
+                self.reference_note = f"reference taken ({len(window)} samples, {aligned}{flex})"
             except CalibrationError as exc:
                 self.reference_note = f"reference failed ({exc}): following the saved calibration"
             self._set_phase(Phase.FOLLOW, t)
