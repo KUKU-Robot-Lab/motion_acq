@@ -12,7 +12,10 @@ from motion_acq.teleop.motion import add_teleop_motion_arguments
 from motion_acq.teleop.standby import GRIPPER_PARK_HOLD_S
 
 DEFAULT_TRANSLATION_SCALE = 1.7
-DEFAULT_TRACKING_STALE_MS = 150.0
+# 10.12 arm4090 solo runs: Quest Wi-Fi pose gaps of 150-270 ms come about once a minute
+# (saved episodes reach 167 ms), and 150 ms rejected 5 attempts in 5 minutes. The arms hold
+# still during a gap; 400 ms covers every measured gap.
+DEFAULT_TRACKING_STALE_MS = 400.0
 DEFAULT_PARK_MAX_JOINT_SPEED_DEG_S = 30.0
 
 
