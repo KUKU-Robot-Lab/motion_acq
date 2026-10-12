@@ -187,6 +187,25 @@ def test_failed_return_recovers_home_then_rest_instead_of_dropping(monkeypatch, 
     assert max(abs(m.position) for m in motors) < 0.1      # at rest when the motors went off
 
 
+def test_recovery_r_away_from_home_goes_home_first(monkeypatch, caplog):
+    """10.11 16:59: 'r' away from home was refused ("0.734 rad from home"). r = home, then rest."""
+    backend, env, home = fake_right(monkeypatch, feedforward=True)
+    backend.connect()
+    backend.home(home)
+    odd = HOME["right"] + np.deg2rad([20.0, 10.0, 0.0, -25.0, 0.0, 0.0, 30.0])
+    env.streamer.set_targets({"right": odd.astype(np.float32)})
+    env.streamer.wait_until_targets(timeout_s=10.0, tolerance_rad=0.05)
+    env.streamer._error = RuntimeError("following error (test)")
+    env.streamer._stop.set()
+    keys = Keys("r\n")
+    monkeypatch.setattr("sys.stdin", keys)
+    with caplog.at_level("INFO"):
+        backend.disconnect()
+    assert keys.asked == 1 and "Recovery: arms at rest" in caplog.text
+    motors = backend.fake_sdk.arms[env.settings.right_port]._arm.get_motors()
+    assert max(abs(m.position) for m in motors) < 0.1
+
+
 def test_recovery_enter_alone_switches_off_where_it_holds(monkeypatch, caplog):
     backend, env, home = fake_right(monkeypatch, feedforward=True)
     backend.connect()

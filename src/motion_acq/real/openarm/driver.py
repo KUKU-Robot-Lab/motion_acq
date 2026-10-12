@@ -301,9 +301,13 @@ class OpenArmSdkSide:
         self.arm.recv_all(500)
 
     def motor_state(self, joint: int) -> str:
-        """One motor's own report (10.11: enabled, MOS / rotor temperature, torque, velocity)."""
+        """One motor's own report (10.11: MOS / rotor temperature, torque, velocity).
+
+        No "enabled": openarm_can's ``Motor.is_enabled()`` is a flag nothing ever sets (always False,
+        10.12) and the error bits of the feedback frame are not decoded, so it said nothing true.
+        """
         motor = self.arm.get_arm().get_motors()[joint]
-        return (f"enabled {motor.is_enabled()}, MOS {motor.get_state_tmos():.0f} C, "
+        return (f"MOS {motor.get_state_tmos():.0f} C, "
                 f"rotor {motor.get_state_trotor():.0f} C, torque {motor.get_torque():.2f} N m, "
                 f"velocity {motor.get_velocity():.2f} rad/s")
 
@@ -460,6 +464,26 @@ class OpenArmJointStreamer(JointStreamer):
                 self._waiting_for_targets = False
                 self._last_target_at = time.monotonic()
 
+    def _release(self, feedback: dict[str, np.ndarray], grippers: dict[str, float]) -> None:
+        """Stop pushing (10.12 user): the last command stays in the motors after the streamer stops.
+
+        A blocked arm (table, own body) had its last command inside the obstacle and pressed on with
+        kp x error. Command the measured pose instead (gravity kept), so the arm rests where it is
+        until the recovery takes it home.
+        """
+        with self._lock:
+            self._feedback = {side: q.copy() for side, q in feedback.items()}
+            self._commanded = {side: q.copy() for side, q in feedback.items()}
+            self._targets = {side: q.copy() for side, q in feedback.items()}
+        for side, arm in self.arms.items():
+            try:
+                model = self.gravity.get(side)
+                tau = None if model is None else model(feedback[side])
+                arm.send(feedback[side], grippers[side], tau)
+            except Exception as exc:  # noqa: BLE001 - the following error is still the fault to report
+                log.warning("OpenArm %s: could not release to the measured pose: %s", side, exc)
+        log.warning("OpenArm released to the measured pose (%s); no more pushing.", ", ".join(self.arms))
+
     def _run(self) -> None:
         period = 1.0 / self.command_rate_hz
         next_tick = time.monotonic()
@@ -499,11 +523,13 @@ class OpenArmJointStreamer(JointStreamer):
                     joint_errors = np.abs(feedback[side] - commands[side])
                     joint = int(np.argmax(joint_errors))
                     if joint_errors[joint] > self.settings.following_error_rad:
-                        raise RuntimeError(following_error_report(
+                        report = following_error_report(
                             self._trace, side, joint, float(commands[side][joint]),
                             float(feedback[side][joint]), self.settings.following_error_rad,
                             float(targets[side][joint]), motor_state(self.arms[side], joint),
-                        ))
+                        )
+                        self._release(feedback, grippers)
+                        raise RuntimeError(report)
                 with self._lock:
                     self._feedback = feedback
                 now = time.monotonic()
@@ -890,6 +916,13 @@ class OpenArmCanEnvironment:
         self.streamer = OpenArmJointStreamer(self.arms, self.settings, initial)
         self.streamer.start()
 
+    def recover(self) -> bool:
+        """Restart a failed streamer from the measured pose; True when it had failed (10.12 user)."""
+        if self.streamer is None or self.streamer.error is None:
+            return False
+        self._restart_streamer()
+        return True
+
     def _recover_home(self) -> None:
         """[다시 홈] (10.11 user): from wherever the arm stopped, slowly back to home and hold there."""
         if self._home_call is None:
@@ -899,10 +932,14 @@ class OpenArmCanEnvironment:
         log.info("Recovery: arms at home, holding. Look, then r = to rest or h = home again.")
 
     def _recover_rest(self) -> None:
-        """[차렷] from home: the stored path to rest (the hands close first, hand link)."""
+        """[차렷]: home first, then the stored path to rest (the hands close first, hand link).
+
+        10.11 16:59 'r' away from home was refused ("0.734 rad from home"): the path starts at home.
+        """
         if self._home_call is None:
             raise RuntimeError("home pose unknown")
         self._restart_streamer()
+        self.move_home(*self._home_call)
         self.rest(*self._home_call)
         log.info("Recovery: arms at rest.")
 

@@ -198,3 +198,21 @@ def test_arms_return_home_on_exit_unless_the_streamer_failed():
     return_home_on_exit(env, home, log)
     assert env.moved == []
     return_home_on_exit(Env(stuck=True), home, log)  # reported, never raised
+
+
+    class Recovering(Env):  # 10.12 user: a failed streamer restarts from where the arms are
+        def recover(self):
+            self.healthy = True
+            return True
+
+    env = Recovering(healthy=False)
+    return_home_on_exit(env, home, log)
+    assert len(env.moved) == 1
+
+    class Dead(Env):
+        def recover(self):
+            raise RuntimeError("CAN down")
+
+    env = Dead(healthy=False)
+    return_home_on_exit(env, home, log)  # reported, never raised
+    assert env.moved == []

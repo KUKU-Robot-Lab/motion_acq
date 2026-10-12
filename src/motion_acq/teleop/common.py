@@ -472,14 +472,24 @@ def sample_state(sample, widths=None) -> np.ndarray:
 def return_home_on_exit(real_env: Any, home_q: np.ndarray, log: logging.Logger) -> None:
     """End pose = start pose: walk the arms home before the motors are disabled.
 
-    Skipped when the arm streamer has failed (following error, CAN loss):
-    then nothing can be commanded safely and the arms stop where they are.
+    A failed arm streamer (following error: an arm blocked by the table) has already released
+    the arms to where they are; 10.12 user: then restart it from there and still go home.
+    Without a ``recover`` (or when it fails) the arms stay where they are.
     """
     try:
         real_env.check_health()
-    except Exception as exc:  # noqa: BLE001 - report and leave the arms alone
-        log.error("Arms not returned home (streamer failed: %s).", exc)
-        return
+    except Exception as exc:  # noqa: BLE001 - report, then try to recover
+        recover = getattr(real_env, "recover", None)
+        if not callable(recover):
+            log.error("Arms not returned home (streamer failed: %s).", exc)
+            return
+        log.warning("Arm streamer stopped (%s): arms released; restarting and returning home.",
+                    exc.__cause__ or exc)
+        try:
+            recover()
+        except Exception as again:  # noqa: BLE001 - the power-off prompt still follows
+            log.error("Arms not returned home (restart failed: %s).", again)
+            return
     log.info("Returning arms home before exit ...")
     try:
         real_env.move_home(home_q)

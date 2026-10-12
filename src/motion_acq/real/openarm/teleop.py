@@ -120,6 +120,10 @@ class OpenArmBackend:
     def check_health(self) -> None:
         self.environment.check_health()
 
+    def recover(self) -> bool:
+        """Restart a failed arm streamer from where the arms are (10.12 user)."""
+        return self.environment.recover()
+
     def _base_q(self, base_q: np.ndarray | None) -> np.ndarray:
         if base_q is not None:
             return np.asarray(base_q, dtype=np.float32).copy()
