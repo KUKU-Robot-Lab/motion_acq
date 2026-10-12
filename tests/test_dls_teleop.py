@@ -133,3 +133,60 @@ def test_dls_speed_limits_are_derived_from_robot_and_backend() -> None:
             assert np.all(resolved > 0.0)
             assert np.all(resolved <= urdf[indices])
             assert np.all(resolved <= 1.0)
+
+
+def _left_solver(runtime, reference, home_q, *, limit_aware: bool):
+    solver = IncrementalDlsSolver(
+        runtime.solver_cls(),
+        side_joint_indices=reference.side_joint_indices,
+        side_joint_speed_limits_rad_s={
+            side: np.full_like(caps, 100.0)
+            for side, caps in reference.side_joint_speed_limits_rad_s.items()
+        },
+        rest_q=home_q,
+        nominal_rate_hz=30.0,
+        config=DlsConfig(limit_aware=limit_aware),
+    )
+    solver.warmup(home_q)
+    return solver
+
+
+def test_a_joint_at_its_limit_hands_its_share_to_the_other_joints(openarm_dls) -> None:
+    """10.12: with a joint pinned at its limit, the hand still reaches its target.
+
+    The plain step counts on motion of the pinned joint that the clip then
+    removes; the limit-aware step pins that joint and re-solves the rest.
+    """
+    runtime, reference, home_q = openarm_dls
+    indices = np.asarray(reference.side_joint_indices["left"], dtype=np.intp)
+    upper = np.asarray(runtime.robot.joints.upper_limits)[indices]
+    lower = np.asarray(runtime.robot.joints.lower_limits)[indices]
+    start = home_q.copy()
+    wrist = indices[-2]
+    start[wrist] = upper[-2]  # wrist joint sits on its upper limit
+    probe = start.copy()
+    probe[wrist] = upper[-2] + 0.3  # the target turns the wrist past its limit
+    left_pose, _ = reference.fk_pose7(probe)
+    beyond, _ = reference.fk_pose7(start)
+    assert np.linalg.norm(left_pose[:3] - beyond[:3]) > 0.005  # FK does not clip
+    errors = {}
+    for aware in (False, True):
+        solver = _left_solver(runtime, reference, home_q, limit_aware=aware)
+        q = solver.ik(start, left_pose=(left_pose[:3], left_pose[3:7]))
+        achieved, _ = solver.fk_pose7(q)
+        errors[aware] = float(np.linalg.norm(achieved[:3] - left_pose[:3]))
+        assert np.all(q[indices] <= upper + 1e-6) and np.all(q[indices] >= lower - 1e-6)
+    assert errors[True] < errors[False]
+
+
+def test_limit_aware_changes_nothing_away_from_the_limits(openarm_dls) -> None:
+    runtime, reference, home_q = openarm_dls
+    left_pose, _ = reference.fk_pose7(home_q)
+    target = left_pose.copy()
+    target[:3] += np.array((0.01, -0.01, 0.01), dtype=np.float32)
+    steps = [
+        _left_solver(runtime, reference, home_q, limit_aware=aware).ik(
+            home_q, left_pose=(target[:3], target[3:7]))
+        for aware in (False, True)
+    ]
+    np.testing.assert_allclose(steps[0], steps[1], atol=1e-6)

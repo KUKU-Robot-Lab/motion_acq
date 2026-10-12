@@ -59,6 +59,11 @@ class DlsConfig:
     rest_gain: float = 0.02
     orientation_weight: float = 0.1
     rotation_error_hold_rad: float = 2.2
+    # A joint whose step would cross its limit is pinned there and the other
+    # joints re-solve what is left, instead of counting on motion the clip then
+    # removes (10.12 replay of the 10.11 trace: hand error p95 4.3 -> 2.6 cm,
+    # turn error 48 -> 38 deg at the same speed cap).
+    limit_aware: bool = True
 
     def validate(self) -> None:
         values = (
@@ -220,13 +225,25 @@ class IncrementalDlsSolver:
                 + cfg.lambda_singularity**2 * ramp**2
             )
             mu_squared = cfg.rest_gain**2
-            normal = weighted_jacobian.T @ weighted_jacobian
-            normal += (lambda_squared + mu_squared) * jnp.eye(
+            damping = (lambda_squared + mu_squared) * jnp.eye(
                 len(indices), dtype=jnp.float32
             )
-            rhs = weighted_jacobian.T @ weighted_error
-            rhs += mu_squared * (rest_full[index_array] - q_side)
-            delta = jnp.linalg.solve(normal, rhs)
+            rest_pull = mu_squared * (rest_full[index_array] - q_side)
+
+            def solve(error_vec, free):
+                jac = weighted_jacobian * free[None, :]
+                rhs = jac.T @ error_vec + rest_pull * free
+                return jnp.linalg.solve(jac.T @ jac + damping, rhs) * free
+
+            delta = solve(weighted_error, jnp.ones(len(indices), dtype=jnp.float32))
+            if cfg.limit_aware:
+                reached = q_side + delta
+                hit = (reached < lower_array) | (reached > upper_array)
+                pinned = jnp.where(
+                    hit, jnp.clip(reached, lower_array, upper_array) - q_side, 0.0
+                )
+                remaining = weighted_error - weighted_jacobian @ pinned
+                delta = pinned + solve(remaining, jnp.where(hit, 0.0, 1.0))
 
             candidate = jnp.clip(q_side + delta, lower_array, upper_array)
             bounded_delta = candidate - q_side
@@ -291,6 +308,7 @@ def make_real_teleop_dls_solver(
     home_q: np.ndarray,
     *,
     input_rate_hz: float = 30.0,
+    config: DlsConfig | None = None,
 ):
     """Build the DLS adapter while excluding fingers and locked joints."""
     finger_indices = {
@@ -321,6 +339,7 @@ def make_real_teleop_dls_solver(
         side_joint_speed_limits_rad_s=side_speed_limits,
         rest_q=home_q,
         nominal_rate_hz=input_rate_hz,
+        config=config,
     )
 
 

@@ -75,11 +75,14 @@ def test_config_parsing_checks_its_values():
         _rotation_limits({"middle": {}})
 
 
-def test_the_rh56f1_arms_have_mirrored_caps_and_upstream_has_none():
-    limits = load_embodiment("openarm_rh56f1").config.teleop_rotation_limits
-    left, right = limits["left"], limits["right"]
-    assert left.pos_rad[0] == right.neg_rad[0] and left.neg_rad[0] == right.pos_rad[0]
-    assert left.pos_rad[1] == right.pos_rad[1] and left.pos_rad[2] == right.neg_rad[2]
+# The 10.11 left-arm caps, kept here to test the mechanism after 10.12 removed
+# them from the robot YAML.
+LEFT_CAPS = {"knee": 0.6, "left": {"pos_deg": [85, 80, 50], "neg_deg": [40, 30, 45]}}
+
+
+def test_the_rh56f1_hand_turns_are_not_capped():
+    # 10.12 user: the arms follow the operator's hand as far as they can.
+    assert load_embodiment("openarm_rh56f1").config.teleop_rotation_limits == {}
     assert load_embodiment("openarmv1").config.teleop_rotation_limits == {}
 
 
@@ -88,6 +91,7 @@ def test_the_controller_softens_a_100_deg_hand_turn():
     ctl = TeleopController(runtime, home_q=runtime.home_q(), enabled_sides=("left",),
                            source_world_to_robot_world=np.eye(3, dtype=np.float32),
                            translation_scale=0.5)
+    ctl.rotation_limits = _rotation_limits(LEFT_CAPS)
     start = np.array([0.3, 0.2, 0.1, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
     s = math.sin(math.radians(50.0))
     turned = np.array([0.3, 0.2, 0.1, 0.0, 0.0, s, math.cos(math.radians(50.0))], dtype=np.float32)
